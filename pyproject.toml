@@ -5,23 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cutting-board-local-services"
 version = "0.1.0"
-description = "IDE-independent local Services workspace for Ubuntu"
+description = "IDE-independent local Services workspace for Linux and macOS"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Cutting Board contributors" }]
-keywords = ["developer-tools", "local-services", "ports", "process-monitor", "ubuntu"]
+keywords = ["developer-tools", "local-services", "ports", "process-monitor", "linux", "macos"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: X11 Applications",
+  "Environment :: MacOS X :: Cocoa",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Topic :: Software Development",
   "Topic :: System :: Monitoring",
 ]
 dependencies = ["psutil>=5.9,<8"]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.11,<7"]
 
 [project.scripts]
 cutting-board = "cutting_board.app:main"

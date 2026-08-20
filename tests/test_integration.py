@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -10,8 +9,8 @@ import unittest
 from pathlib import Path
 
 from cutting_board.scanner.linux import LinuxServiceScanner
+from cutting_board.scanner.macos import MacOSServiceScanner
 from cutting_board.services.termination import ProcessTerminator
-
 
 _LISTENER_CODE = r"""
 import signal
@@ -27,10 +26,10 @@ while True:
 """
 
 
-class LiveLinuxIntegrationTests(unittest.TestCase):
+class LiveScannerIntegrationTests(unittest.TestCase):
     def test_discover_project_and_terminate_real_listener(self) -> None:
-        if not sys.platform.startswith("linux"):
-            self.skipTest("Linux integration test")
+        if not (sys.platform.startswith("linux") or sys.platform == "darwin"):
+            self.skipTest("Linux/macOS integration test")
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "agent-workspace"
@@ -52,7 +51,7 @@ class LiveLinuxIntegrationTests(unittest.TestCase):
             try:
                 assert process.stdout is not None
                 port = int(process.stdout.readline().strip())
-                scanner = LinuxServiceScanner()
+                scanner = MacOSServiceScanner() if sys.platform == "darwin" else LinuxServiceScanner()
                 service = None
                 for _attempt in range(20):
                     snapshot = scanner.scan()

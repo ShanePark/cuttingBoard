@@ -1,7 +1,7 @@
-PYTHON ?= python3
+PYTHON ?= $(if $(wildcard $(CURDIR)/.venv/bin/python),$(CURDIR)/.venv/bin/python,python3)
 PYTHONPATH := $(CURDIR)/src
 
-.PHONY: run demo snapshot test smoke verify package clean
+.PHONY: run demo snapshot test smoke verify verify-macos install-macos package clean
 
 run:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m cutting_board
@@ -20,6 +20,12 @@ smoke:
 
 verify:
 	./scripts/verify.sh
+
+verify-macos:
+	PYTHON=$(PYTHON) ./scripts/verify-macos.sh
+
+install-macos:
+	./scripts/install-macos.sh
 
 package:
 	./scripts/build-deb.sh

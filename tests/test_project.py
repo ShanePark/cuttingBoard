@@ -22,7 +22,7 @@ class ProjectResolverTests(unittest.TestCase):
 
             self.assertIsNotNone(resolution)
             assert resolution is not None
-            self.assertEqual(resolution.project.root_path, str(root))
+            self.assertEqual(resolution.project.root_path, str(root.resolve()))
             self.assertEqual(resolution.project.name, "platform")
             self.assertEqual(resolution.package_name, "storefront")
             self.assertEqual(resolution.project.detection_source, ".git")
@@ -38,7 +38,7 @@ class ProjectResolverTests(unittest.TestCase):
 
             self.assertIsNotNone(resolution)
             assert resolution is not None
-            self.assertEqual(resolution.project.root_path, str(root))
+            self.assertEqual(resolution.project.root_path, str(root.resolve()))
             self.assertEqual(resolution.project.name, "service")
             self.assertEqual(resolution.project.detection_source, "pom.xml")
 
@@ -55,7 +55,18 @@ class ProjectResolverTests(unittest.TestCase):
             resolution = resolver.resolve(str(root))
             self.assertIsNotNone(resolution)
             assert resolution is not None
-            self.assertEqual(resolution.project.root_path, str(root))
+            self.assertEqual(resolution.project.root_path, str(root.resolve()))
+
+    def test_excluded_root_is_normalized_before_comparison(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            root = Path(directory)
+            nested = root / "src"
+            nested.mkdir()
+            (root / ".git").mkdir()
+
+            resolver = ProjectResolver(excluded_roots=frozenset({root}))
+
+            self.assertIsNone(resolver.resolve(str(nested)))
 
 
 if __name__ == "__main__":

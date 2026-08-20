@@ -48,8 +48,11 @@ class ProjectResolver:
         excluded_roots: frozenset[Path] | None = None,
     ) -> None:
         self._cache_size = cache_size
-        self._excluded_roots = (
-            _default_excluded_roots() if excluded_roots is None else excluded_roots
+        roots = _default_excluded_roots() if excluded_roots is None else excluded_roots
+        self._excluded_roots = frozenset(
+            normalized
+            for root in roots
+            if (normalized := self._normalize(str(root))) is not None
         )
         self._cache: OrderedDict[str, ProjectResolution | None] = OrderedDict()
 

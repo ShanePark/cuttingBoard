@@ -1,6 +1,12 @@
-# Cutting Board
+<p align="center">
+  <img src="assets/cutting-board.png" alt="Cutting Board icon" width="160">
+</p>
 
-A local development services board for Ubuntu, independent of any IDE.
+<h1 align="center">Cutting Board</h1>
+
+<p align="center">
+  A local development services board for Linux and macOS, independent of any IDE.
+</p>
 
 Cutting Board watches the TCP listeners on your machine, works out which of them
 are development services and which are noise, and draws the survivors as tiles
@@ -21,7 +27,27 @@ project it belongs to or whether you still need it. Cutting Board answers those
 two questions at a glance and lets you stop the process without hunting for the
 terminal that started it.
 
-## Install
+## Install on macOS
+
+Homebrew is required. From the checkout, install the Tk-enabled Python runtime
+and create the project environment, then open the board:
+
+```bash
+./scripts/install-macos.sh
+./scripts/run.sh
+```
+
+Verify the runtime, test suite, live scanner and native Tk window with:
+
+```bash
+./scripts/verify-macos.sh
+```
+
+The current `.app`/ZIP build and personal Homebrew Cask skeleton are documented
+in [packaging/macos/README.md](packaging/macos/README.md). Those local artifacts
+are unsigned and not notarized.
+
+## Install on Ubuntu
 
 Build the Debian package from the checkout and install it:
 
@@ -40,7 +66,7 @@ artifact.
 `apt install ./...deb` pulls in the declared dependencies (`python3`,
 `python3-tk`, `python3-psutil`). Uninstall with `sudo apt remove cutting-board`.
 
-## Run from source
+## Run from source on Ubuntu
 
 ```bash
 sudo apt install python3 python3-tk python3-psutil
@@ -87,8 +113,8 @@ name, technology, PID, ports and redacted command. The JSON form contains the
 same set of services with plain strings and JSON primitives, never enum objects,
 and never the raw `command` token array.
 
-Exit codes: `0` success, `1` the scan produced warnings, `2` not Linux, `3`
-Tkinter is missing, `4` no display could be opened.
+Exit codes: `0` success, `1` the scan produced warnings, `2` the platform is not
+supported, `3` Tkinter is missing, `4` no display could be opened.
 
 ## What reaches the board, and what does not
 
@@ -284,9 +310,11 @@ src/cutting_board/
 ├─ scanner/
 │  ├─ base.py           the ServiceScanner protocol
 │  ├─ linux.py          TCP listeners plus process metadata
+│  ├─ macos.py          macOS TCP listeners from /usr/sbin/lsof
 │  ├─ classifier.py     what a process or an image is running
 │  ├─ relevance.py      dev / container / noise
 │  ├─ origin.py         which tool launched a process
+│  ├─ macos_origin.py   macOS process readers for origin detection
 │  └─ docker.py         the docker ps wrapper
 ├─ services/
 │  ├─ termination.py    validated SIGTERM and SIGKILL
@@ -302,7 +330,7 @@ src/cutting_board/
 
 assets/                 committed artwork; assets/icons is generated
 scripts/                run, watch-and-restart, verify, package, asset builds
-packaging/              Debian control and desktop entry
+packaging/              Debian files and the macOS app/Cask skeleton
 tests/                  unit tests and a live TCP integration test
 SPEC.md                 the detailed specification
 CONTRIBUTING.md         development setup and conventions
@@ -335,14 +363,14 @@ runner.
   credential, auth or database URL) are masked before the command is displayed
   or exported.
 - Processes owned by other users are never signalled and never shown.
-- Launcher attribution reads `/proc/<pid>/environ`, but only checks whether
-  certain variable names are present. No environment value is kept, shown or
-  exported.
+- Launcher attribution reads process ancestry and environment marker names from
+  `/proc` on Linux and through psutil on macOS. No environment value is kept,
+  shown or exported.
 
 ## Limitations
 
-- Linux only. The scanner boundary is in place for a future macOS
-  implementation, but none exists yet.
+- Linux and macOS are supported. Other operating systems exit before scanning.
+- macOS listener discovery depends on the system `/usr/sbin/lsof` command.
 - TCP `LISTEN` sockets only. UDP services and portless workers are invisible.
 - The host network namespace only. A port that exists solely inside a container
   network is not visible to the port scanner; the Docker tab covers published

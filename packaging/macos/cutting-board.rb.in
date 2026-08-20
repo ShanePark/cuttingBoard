@@ -1,0 +1,16 @@
+cask "cutting-board" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "@URL@"
+  name "Cutting Board"
+  desc "Desktop board for discovering and managing local development services"
+  homepage "https://github.com/ShanePark/cuttingBoard"
+
+  app "Cutting Board.app"
+
+  caveats <<~EOS
+    This build is not signed or notarized. macOS may require you to approve it
+    in System Settings > Privacy & Security before opening it for the first time.
+  EOS
+end

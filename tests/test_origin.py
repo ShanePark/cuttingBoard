@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import unittest
 
 from cutting_board.scanner import origin as origin_module
@@ -444,6 +445,7 @@ class ModuleApiTests(unittest.TestCase):
         self.assertIsNone(origin_module.read_process_entry(4_194_304))
         self.assertIsNone(origin_module.read_process_environ(4_194_304))
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "/proc reader test requires Linux")
     def test_reading_this_process_returns_a_usable_entry(self) -> None:
         entry = origin_module.read_process_entry(os.getpid())
         self.assertIsNotNone(entry)
@@ -452,6 +454,7 @@ class ModuleApiTests(unittest.TestCase):
         self.assertGreater(entry.start_ticks, 0)
         self.assertTrue(entry.command)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "/proc reader test requires Linux")
     def test_reading_this_environment_returns_the_real_variables(self) -> None:
         environ = origin_module.read_process_environ(os.getpid())
         self.assertIsNotNone(environ)

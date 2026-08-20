@@ -4,7 +4,7 @@
 |---|---|
 | Product | Cutting Board |
 | Version | 0.1.0 |
-| Target | Ubuntu Desktop 24.04 LTS (Linux only) |
+| Target | Ubuntu Desktop 24.04 LTS and macOS |
 | Stack | Python 3.10+, Tkinter/ttk, psutil |
 | Shape | One desktop process; no daemon, no autostart |
 | Documentation language | English |
@@ -86,11 +86,16 @@ is true for `terminated` and `already_exited`.
 
 ## 3. Scanner pipeline
 
-`LinuxServiceScanner.scan()` in `src/cutting_board/scanner/linux.py` produces one
-`WorkspaceSnapshot` per call. Every OS boundary is wrapped: a failure becomes a
-snapshot warning, never an exception that reaches the UI.
+`LinuxServiceScanner.scan()` and `MacOSServiceScanner.scan()` produce one
+`WorkspaceSnapshot` per call. The macOS implementation in
+`src/cutting_board/scanner/macos.py` reuses the shared enrichment pipeline from
+the Linux scanner and replaces listener discovery and origin readers. Every OS
+boundary is wrapped: a failure becomes a snapshot warning, never an exception
+that reaches the UI.
 
 ### 3.1 Listener discovery
+
+On Linux:
 
 1. `psutil.net_connections(kind="tcp")` is called once. On `AccessDenied` the
    scanner records a warning and falls back entirely to the per-process walk.
@@ -128,6 +133,15 @@ rebuilt as a `SimpleNamespace` carrying `process.pid`.
 Each pidless system row is replaced by the owning row of the same
 `(family, address, port)` where one was found. Merged rows are de-duplicated by
 `(family, address, port, pid)`.
+
+#### macOS listener discovery
+
+`MacOSServiceScanner` runs `/usr/sbin/lsof -nP -a -iTCP -sTCP:LISTEN -Fptn` and
+parses its machine-readable process, socket-family and endpoint fields into the
+same connection-row shape used by the shared pipeline. Wildcard and localhost
+addresses are normalised to concrete IPv4 or IPv6 forms. An `lsof` exit status
+of `1` with no output means no matching listener; other failures become snapshot
+warnings.
 
 ### 3.2 Grouping and identity
 
@@ -314,10 +328,13 @@ displayed and is stripped from `to_dict()`.
 
 ### 3.8 Launcher attribution
 
-`src/cutting_board/scanner/origin.py` answers "who started this?" for every
-service that is not noise. `detect_origin(pid, create_time=...)` returns an
+`src/cutting_board/scanner/origin.py` contains the shared rules that answer "who
+started this?" for every service that is not noise.
+`detect_origin(pid, create_time=...)` returns an
 `Origin(kind, id, label, signal)`, which the scanner copies onto the snapshot as
-`origin_kind`, `origin_id` and `origin_label`.
+`origin_kind`, `origin_id` and `origin_label`. Linux supplies direct `/proc`
+readers; `src/cutting_board/scanner/macos_origin.py` supplies the same process
+entry and environment shapes through psutil.
 
 Kinds, in the order that decides a conflict:
 
@@ -342,19 +359,25 @@ Two independent signals feed the answer:
   launchers share. `ANTHROPIC_*` and `OPENAI_*` are deliberately excluded: a
   user can export those globally, which would badge every service on the board.
 
+On macOS, the same ancestry and environment decisions use psutil's process name,
+parent PID, creation time, argv and environment readers because `/proc` is not
+available. Permission failures and processes that disappear during a scan
+degrade to an unknown origin.
+
 Ancestry wins outright when it names an agent. Otherwise the more specific of
 the two answers wins, with ties going to ancestry. This is what makes a
 detached server attributable: `./gradlew bootRun` started by an agent and then
 daemonised reparents to init, so ancestry can only say `system`, while the
 environment it inherited still names the agent.
 
-Both signals read `/proc` directly rather than through psutil, which measured
-6.6× faster on the same tree. Two 512-entry caches are kept: resolved results
-keyed by `(pid, create_time_ms)` — or by `(pid, start_ticks)` when the caller
-has no create time — and per-ancestor verdicts keyed by `(pid, start_ticks)`, so
-a fruitless chain is walked once and not again for every sibling. `UNKNOWN`
-doubles as the "already walked, found nothing" note. Both keys carry a start
-time, so a recycled PID misses rather than inheriting a stale answer.
+On Linux, both signals read `/proc` directly rather than through psutil, which
+measured 6.6× faster on the same tree. Two 512-entry caches are kept: resolved
+results keyed by `(pid, create_time_ms)` — or by `(pid, start_ticks)` when the
+caller has no create time — and per-ancestor verdicts keyed by
+`(pid, start_ticks)`, so a fruitless chain is walked once and not again for every
+sibling. `UNKNOWN` doubles as the "already walked, found nothing" note. Both
+keys carry a start time, so a recycled PID misses rather than inheriting a stale
+answer.
 
 Reads are capped at 512 bytes of `stat`, 8 KB of `cmdline` and 64 KB of
 `environ`, so a process with a pathological argv or environment cannot stall a
@@ -714,7 +737,7 @@ No process, command, port or termination history is ever persisted.
 | `--settings-file PATH` | hidden; used by tests to avoid the real config |
 
 Exit codes: `0` success; `1` the snapshot carried warnings; `2` the platform is
-not Linux; `3` Tkinter is not installed; `4` no display could be opened.
+not supported; `3` Tkinter is not installed; `4` no display could be opened.
 
 The plain listing prints project, service, tech, PID, ports and the redacted
 command. The JSON listing is `to_dict()` filtered to the same service ids.
@@ -801,6 +824,10 @@ Byte-compiled files are stripped, the setgid bit is cleared from every directory
 and directory modes are normalised to 0755, so a developer's setgid checkout
 cannot leak into the package.
 
+The local macOS `.app`/ZIP builder and personal Homebrew Cask template are
+described in [`packaging/macos/README.md`](packaging/macos/README.md). The
+resulting artifacts are unsigned and not notarized.
+
 ## 14. Verification
 
 `scripts/verify.sh` is the release gate and runs seven stages:
@@ -838,6 +865,10 @@ loopback listener inside a temporary Git checkout and verifies discovery, PID
 attribution, project inference and a real `SIGTERM`. The same gate runs on an
 `ubuntu-24.04` GitHub Actions runner, which uploads the `.deb` as an artifact.
 
+On macOS, `scripts/verify-macos.sh` checks the Python and Tk runtime, runs the
+unit and platform integration tests, validates a live JSON snapshot, and opens
+both demo and live native Tk windows. It does not build the Debian package.
+
 ## 15. Performance
 
 | Property | Target | Observed |
@@ -870,18 +901,19 @@ Performance is never a justification for hiding a real listener.
   storage.
 - Keeps snapshots in memory only; the settings file records no process history.
 - Executes no shell command to stop a service — signals go through psutil.
-- Reads `/proc/<pid>/environ` for launcher attribution, but tests only for the
-  presence of specific variable names. No environment value is stored on a
-  snapshot, shown in the interface or written to the exported JSON, and only the
-  first 64 KB is read.
+- Reads launcher ancestry and environment markers directly from `/proc` on
+  Linux and through psutil on macOS. No environment value is stored on a
+  snapshot, shown in the interface or written to exported JSON. Linux
+  environment reads are capped at 64 KB.
 
-The only subprocess the application ever spawns is `docker ps`, with a fixed
-argument list and a timeout.
+The application spawns `docker ps` with a fixed argument list and timeout. On
+macOS it also spawns `/usr/sbin/lsof` with a fixed argument list to discover TCP
+listeners.
 
 ## 17. Known limitations
 
-- Linux only. `ServiceScanner` is the boundary a macOS implementation would
-  satisfy, but no such implementation exists.
+- Linux and macOS are supported. Other platforms are rejected before scanning.
+- macOS listener discovery requires the system `/usr/sbin/lsof` command.
 - TCP `LISTEN` only; UDP services and portless workers are invisible.
 - The host network namespace only. Ports that exist solely inside a container
   network are not visible to the port scanner; the Docker tab covers published
@@ -899,7 +931,6 @@ argument list and a timeout.
 
 Not implemented, and not to be read as current behaviour:
 
-- A macOS scanner behind the existing `ServiceScanner` protocol.
 - Discovery of development workers that open no port.
 - Process-tree display and optional tree termination.
 - User-defined aliases and persistent hide rules.

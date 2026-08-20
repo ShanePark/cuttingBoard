@@ -6,26 +6,31 @@ import os
 import platform
 import signal
 import sys
-import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING
 
 from cutting_board import __version__
 from cutting_board.constants import APP_NAME, DEFAULT_SCAN_INTERVAL_SECONDS
 from cutting_board.controller import ScanController
 from cutting_board.demo import DemoProcessTerminator, demo_containers, demo_snapshot
-from cutting_board.models import WorkspaceSnapshot
+from cutting_board.models import ServiceSnapshot, WorkspaceSnapshot
 from cutting_board.presentation import visible_services
+from cutting_board.scanner.base import ServiceScanner
 from cutting_board.scanner.docker import list_containers
 from cutting_board.scanner.linux import LinuxServiceScanner
+from cutting_board.scanner.macos import MacOSServiceScanner
 from cutting_board.services.settings import SettingsStore
 from cutting_board.services.termination import ProcessTerminator
+
+if TYPE_CHECKING:
+    from cutting_board.ui.main_window import CuttingBoardWindow
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cutting-board",
-        description="IDE-independent local Services workspace for Ubuntu.",
+        description="IDE-independent local Services workspace for Linux and macOS.",
     )
     parser.add_argument("--version", action="version", version=f"{APP_NAME} {__version__}")
     parser.add_argument(
@@ -76,24 +81,38 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if not sys.platform.startswith("linux"):
+    scanner = _scanner_for_platform()
+    if scanner is None:
         print(
-            f"{APP_NAME} {__version__} currently supports Linux only; "
-            "the scanner boundary is prepared for a future macOS implementation.",
+            f"{APP_NAME} {__version__} supports Linux and macOS; "
+            f"this platform ({sys.platform}) is not supported.",
             file=sys.stderr,
         )
         return 2
 
     if args.snapshot:
         return _run_snapshot(
-            containers=args.containers, include_all=args.include_all, as_json=args.json
+            scanner=scanner,
+            containers=args.containers,
+            include_all=args.include_all,
+            as_json=args.json,
         )
 
-    return _run_gui(args)
+    return _run_gui(args, scanner)
 
 
-def _run_snapshot(*, containers: bool, include_all: bool, as_json: bool) -> int:
-    scanner = LinuxServiceScanner()
+def _scanner_for_platform(platform_name: str | None = None) -> ServiceScanner | None:
+    selected = platform_name or sys.platform
+    if selected.startswith("linux"):
+        return LinuxServiceScanner()
+    if selected == "darwin":
+        return MacOSServiceScanner()
+    return None
+
+
+def _run_snapshot(
+    *, scanner: ServiceScanner, containers: bool, include_all: bool, as_json: bool
+) -> int:
     snapshot = scanner.scan()
     if include_all:
         services = snapshot.services
@@ -109,7 +128,7 @@ def _run_snapshot(*, containers: bool, include_all: bool, as_json: bool) -> int:
     return 0 if not snapshot.errors else 1
 
 
-def _print_snapshot(snapshot: WorkspaceSnapshot, services: tuple) -> None:
+def _print_snapshot(snapshot: WorkspaceSnapshot, services: tuple[ServiceSnapshot, ...]) -> None:
     print(f"{APP_NAME} {__version__} · {platform.platform()}")
     print(
         f"scanned {len(snapshot.services)} service(s), {snapshot.endpoint_count} endpoint(s) "
@@ -134,12 +153,13 @@ def _print_snapshot(snapshot: WorkspaceSnapshot, services: tuple) -> None:
         )
 
 
-def _run_gui(args: argparse.Namespace) -> int:
+def _run_gui(args: argparse.Namespace, scanner: ServiceScanner) -> int:
     try:
         import tkinter as tk
     except ImportError:
         print(
-            "Tkinter is not installed. On Ubuntu 24.04 run: sudo apt install python3-tk",
+            "Tkinter is not installed. Install Tk support for your Python "
+            "(Ubuntu 24.04: sudo apt install python3-tk; macOS: use a Python distribution with Tk).",
             file=sys.stderr,
         )
         return 3
@@ -165,10 +185,10 @@ def _run_gui(args: argparse.Namespace) -> int:
     if args.demo:
         controller = None
         initial_snapshot = demo_snapshot()
-        terminator = DemoProcessTerminator()
+        terminator: ProcessTerminator = DemoProcessTerminator()
         container_source = demo_containers
     else:
-        controller = ScanController(LinuxServiceScanner(), interval_seconds=interval)
+        controller = ScanController(scanner, interval_seconds=interval)
         initial_snapshot = None
         terminator = ProcessTerminator()
         container_source = list_containers
@@ -194,7 +214,7 @@ def _run_gui(args: argparse.Namespace) -> int:
     return 0
 
 
-def _close_on_signal(window: "CuttingBoardWindow") -> None:
+def _close_on_signal(window: CuttingBoardWindow) -> None:
     """Shut down cleanly when the process is asked to stop.
 
     Tk never returns to Python while it is inside ``mainloop``, so a signal

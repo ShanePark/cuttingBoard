@@ -25,7 +25,7 @@ from cutting_board.models import (
     WorkspaceSnapshot,
 )
 from cutting_board.scanner.classifier import classify_service
-from cutting_board.scanner.origin import UNKNOWN_ORIGIN, detect_origin
+from cutting_board.scanner.origin import UNKNOWN_ORIGIN, Origin, detect_origin
 from cutting_board.scanner.project import ProjectResolver
 from cutting_board.scanner.relevance import Relevance, relevance_of
 
@@ -40,10 +40,12 @@ class LinuxServiceScanner:
         project_resolver: ProjectResolver | None = None,
         net_connections: Callable[..., list[Any]] | None = None,
         process_factory: Callable[[int], psutil.Process] | None = None,
+        origin_detector: Callable[..., Origin] | None = None,
     ) -> None:
         self._resolver = project_resolver or ProjectResolver()
         self._net_connections = net_connections or psutil.net_connections
         self._process_factory = process_factory or psutil.Process
+        self._detect_origin = origin_detector or detect_origin
         self._current_uid = os.geteuid()
         self._current_username = self._username_for_uid(self._current_uid)
         self._process_cache: dict[tuple[int, int], psutil.Process] = {}
@@ -318,7 +320,7 @@ class LinuxServiceScanner:
         # Only worth asking for services that made it onto the board; noise is
         # discarded before anything is rendered.
         origin = (
-            detect_origin(pid, create_time=create_time)
+            self._detect_origin(pid, create_time=create_time)
             if relevance is not Relevance.NOISE
             else UNKNOWN_ORIGIN
         )

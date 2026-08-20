@@ -16,6 +16,18 @@ English sentence shown to the user is wrong.
 
 ## Setup
 
+macOS with Homebrew:
+
+```bash
+./scripts/install-macos.sh
+./scripts/run.sh
+./scripts/verify-macos.sh
+```
+
+The installer creates `.venv` with Homebrew's Tk-enabled Python. The macOS
+verification script runs the unit suite, a live JSON snapshot and native GUI
+smoke tests.
+
 Ubuntu 24.04:
 
 ```bash
@@ -56,7 +68,8 @@ PYTHONPATH=src python3 -m unittest tests.test_docker -v      # one module
 ```
 
 The suite is standard-library `unittest` — there is no pytest, and no test
-dependency to install. It must stay that way so a clean Ubuntu box can run it.
+dependency to install. It must stay that way so a supported platform can run it
+after installing the application dependencies.
 
 The full release gate:
 
@@ -197,7 +210,10 @@ librsvg. `build-app-icon.py` needs only Pillow. Neither is a runtime dependency,
 and neither should ever become one — the application reads plain committed PNGs.
 Commit the regenerated files.
 
-## Adding a platform
+## Extending platform support
+
+Linux and macOS implementations already exist in `scanner/linux.py` and
+`scanner/macos.py`. For another operating system:
 
 1. Implement the `ServiceScanner` protocol from `scanner/base.py`.
 2. Build the same `Endpoint` and `WorkspaceSnapshot` shapes from that platform's
@@ -218,3 +234,7 @@ The presentation and UI layers must not learn which platform they are on.
 4. Update `TEST_REPORT.md` with the results you actually observed.
 5. Re-run `./scripts/build-deb.sh` and attach the `.deb` to the release. `dist/`
    is ignored by Git — the package is a build output, not a tracked file.
+
+For a local macOS `.app`, ZIP and personal Homebrew Cask template, follow
+[`packaging/macos/README.md`](packaging/macos/README.md). These artifacts are
+currently unsigned and not notarized.
