@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Cutting Board
+GenericName=Local Services Workspace
+Comment=See and stop services running across local development projects
+Comment[ko]=여러 로컬 개발 프로젝트에서 실행 중인 서비스를 확인하고 종료합니다
+Exec=cutting-board
+Icon=cutting-board
+Terminal=false
+Categories=Development;System;Monitor;Utility;
+Keywords=developer;service;process;port;local;agent;IDE;
+StartupNotify=true
+StartupWMClass=CuttingBoard
