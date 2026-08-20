@@ -139,14 +139,14 @@ class LaunchControllerTests(unittest.TestCase):
             runner.active.add(profile.id)
             controller = LaunchController(store=FakeStore((profile,)), runner=runner)
 
-            with self.assertRaisesRegex(ManagedProcessError, "수정"):
+            with self.assertRaisesRegex(ManagedProcessError, "edited"):
                 controller.save_profile(profile)
-            with self.assertRaisesRegex(ManagedProcessError, "삭제"):
+            with self.assertRaisesRegex(ManagedProcessError, "deleted"):
                 controller.delete_profile(profile.id)
 
     def test_unregistered_profile_is_not_started(self) -> None:
         controller = LaunchController(store=FakeStore(()), runner=FakeRunner())
-        with self.assertRaisesRegex(KeyError, "등록되지 않은"):
+        with self.assertRaisesRegex(KeyError, "Unknown launch profile"):
             controller.start_profile("missing")
 
     def test_close_is_idempotent_and_rejects_new_starts(self) -> None:
@@ -159,7 +159,7 @@ class LaunchControllerTests(unittest.TestCase):
             controller.close()
 
             self.assertEqual(runner.closed, 1)
-            with self.assertRaisesRegex(ManagedProcessError, "이미 종료"):
+            with self.assertRaisesRegex(ManagedProcessError, "already closed"):
                 controller.start_task(profile.id, "web")
 
 

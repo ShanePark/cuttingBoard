@@ -11,14 +11,14 @@
 Cutting Board watches the TCP listeners on your machine, works out which of them
 are development services and which are noise, and draws the survivors as tiles
 grouped by project. Nothing has to register with it: start a dev server from a
-terminal, an agent or an IDE and it appears on the next scan. Optionally, register
-the commands that make up a project in the Korean **실행 구성** tab and start or
-stop them together without opening an IDE. The scanner and managed commands share
-the window's lifetime — there is no daemon and no autostart.
+terminal, an agent or an IDE and it appears on the next scan. Optionally,
+register the commands that make up a project in the **Launch Profiles**
+tab and start or stop them together without opening an IDE. The scanner and
+managed commands share the window's lifetime — there is no daemon and no autostart.
 
 ![The Cutting Board services board](assets/cutting-board-screenshot.png)
 
-The application's user interface is in Korean. This documentation is in English.
+The application's user interface and documentation are in English.
 
 ## Why
 
@@ -128,7 +128,7 @@ buckets:
 
 | Bucket | Meaning | Shown |
 |---|---|---|
-| `dev` | A recognised framework, daemon or tool, or an unrecognised process running out of a real project checkout | **서비스** tab |
+| `dev` | A recognised framework, daemon or tool, or an unrecognised process running out of a real project checkout | **Services** tab |
 | `container` | Docker, Podman or Kubernetes plumbing — `docker-proxy`, `dockerd`, `containerd`, `k3s`, and friends | Docker tab, and `--snapshot --containers` |
 | `noise` | Everything else | Never |
 
@@ -161,7 +161,7 @@ prints the unfiltered list when you need to check what was dropped.
 
 Cards are grouped into sections by project and sorted within a section by lowest
 port. Each compact horizontal card carries the brand mark, service name, up to
-two port chips, uptime and visible Korean actions. Uptime under five minutes is
+two port chips, uptime and visible actions. Uptime under five minutes is
 tinted with the accent colour, so a just-restarted service stands out. A card
 also carries a badge when the board can tell which tool launched the service —
 see below. Larger text, higher-contrast secondary copy and visible focus states
@@ -171,23 +171,23 @@ Everything else the scanner knows — endpoints and their scope, PID and PPID,
 user, CPU, resident memory, working directory, executable, the redacted command
 line and any warnings — lives in the detail dialog, one click away.
 
-- **Click a card** or its **상세** action to open the detail dialog.
+- **Click a card** or its **Details** action to open the detail dialog.
 - **Ctrl-click** a card whose service looks like a web endpoint to open it in
-  the default browser; the visible **열기** action does the same.
-- **중지** on a service you own asks for confirmation and then stops it.
+  the default browser; the visible **Open** action does the same.
+- **Stop** on a service you own asks for confirmation and then stops it.
 - Tab focuses cards and controls; arrow keys move between a focused card's
   actions, and Enter or Space activates the selected action.
 - Service, container and settings dialogs close on Escape, on the close button,
   or on a click outside them.
-- **설정** in the header opens settings: the version, the Python and platform
+- **Settings** in the header opens settings: the version, the Python and platform
   it is running on, where the settings file lives, the scan interval, and the
-  **시스템 설정**/**다크**/**라이트** screen mode. The version deliberately
+  **System**/**Dark**/**Light** theme. The version deliberately
   appears nowhere else — not in the title bar, not in the footer.
 
 The grid reflows to the window width. The window remembers its geometry in the
 settings file. Existing and invalid settings retain the compatible dark default.
-Choosing a screen mode saves and reapplies the complete palette immediately
-without stopping scans or managed tasks. **시스템 설정** follows the macOS global
+Choosing a theme saves and reapplies the complete palette immediately
+without stopping scans or managed tasks. **System** follows the macOS global
 appearance when best-effort detection succeeds and otherwise falls back to dark.
 
 The board holds still. A scan lands every two seconds, but a render only redraws
@@ -196,10 +196,11 @@ are left alone and only the uptime line is refreshed in place. Without that the
 whole board would be destroyed and rebuilt twice a minute, which reads as a
 flicker and loses your scroll position every time.
 
-## Launch configurations
+## Launch profiles
 
-The **실행 구성** tab stores optional launch profiles separately from listener
-discovery. A profile has a name and an absolute project root. Each task has:
+The **Launch Profiles** tab stores optional launch profiles separately
+from listener discovery. A profile has a name and an absolute project root.
+Each task has:
 
 - a task name;
 - a working directory inside the project, either relative to the root or an
@@ -233,12 +234,12 @@ If the required JDK or Node executable is not on a GUI application's `PATH`, put
 its absolute path or a `JAVA_HOME=...` prefix in the saved command.
 
 Expected-port matching is deliberately conservative. A listener already running
-from the same project is shown as **외부 실행 중**. It was not started by Cutting
-Board, so neither a task stop nor a profile stop signals it. Conversely, closing
-Cutting Board warns that processes started by Cutting Board will be stopped; if
-confirmed, all of their verified process groups are terminated before the window
-closes. Signal-driven and automated shutdown skip the dialog but perform the same
-cleanup.
+from the same project is shown as **Running externally**. It was not started by
+Cutting Board, so neither a task stop nor a profile stop signals it. Conversely,
+closing Cutting Board warns that processes started by Cutting Board will be
+stopped; if confirmed, all of their verified process groups are terminated before
+the window closes. Signal-driven and automated shutdown skip the dialog but
+perform the same cleanup.
 
 ## Who started it
 
@@ -315,7 +316,7 @@ The stop action sends `SIGTERM` to the PID that actually owns the port and waits
 
 This action stops only the discovered listening process. Managed launch tasks use
 their separate owned process-group lifecycle; they can be restarted and expose
-their bounded output in **실행 구성**.
+their bounded output in **Launch Profiles**.
 
 ## Assets
 
@@ -417,7 +418,7 @@ runner.
 - No network requests, no telemetry, no accounts, no cloud storage.
 - Run it as your normal user; `sudo` is neither required nor recommended.
 - `${XDG_CONFIG_HOME:-~/.config}/cutting-board/settings.json` holds window
-  geometry, the scan interval and the screen-mode preference. Optional launch
+  geometry, the scan interval and the theme preference. Optional launch
   profiles, including their
   commands, are written atomically to
   `${XDG_CONFIG_HOME:-~/.config}/cutting-board/launch_profiles.json` with mode
@@ -445,11 +446,11 @@ runner.
 - The host network namespace only. A port that exists solely inside a container
   network is not visible to the port scanner; the Docker tab covers published
   ports instead.
-- Launch configurations capture bounded output and start or stop their own tasks;
+- Launch profiles capture bounded output and start or stop their own tasks;
   discovered external services still have no log capture or restart control.
 - There are no health checks. An expected port indicates external activity, not
   application health.
-- **시스템 설정** resolves the macOS appearance when the palette is applied; it
+- **System** resolves the macOS appearance when the palette is applied; it
   does not watch for a later OS appearance change while the window remains open.
 - Names and projects are inferred from live process state, so an unusual launcher
   may land in the catch-all group.

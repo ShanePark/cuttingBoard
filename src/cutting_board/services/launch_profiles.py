@@ -29,13 +29,13 @@ class LaunchProfileStore:
             except FileNotFoundError:
                 return ()
             except (PermissionError, OSError, UnicodeError, json.JSONDecodeError) as exc:
-                raise LaunchProfileStoreError("실행 프로필 파일을 읽을 수 없습니다.") from exc
+                raise LaunchProfileStoreError("Unable to read the launch profile file.") from exc
 
             if not isinstance(raw, dict) or raw.get("version") != 1:
-                raise LaunchProfileStoreError("지원하지 않는 실행 프로필 파일 형식입니다.")
+                raise LaunchProfileStoreError("Unsupported launch profile file format.")
             entries = raw.get("profiles")
             if not isinstance(entries, list):
-                raise LaunchProfileStoreError("실행 프로필 목록 형식이 올바르지 않습니다.")
+                raise LaunchProfileStoreError("Invalid launch profile list format.")
             try:
                 profiles = tuple(
                     LaunchProfile.from_dict(item)
@@ -45,7 +45,7 @@ class LaunchProfileStore:
                 )
                 _validate_unique_profiles(profiles)
             except (TypeError, ValueError) as exc:
-                raise LaunchProfileStoreError(f"실행 프로필 설정이 올바르지 않습니다: {exc}") from exc
+                raise LaunchProfileStoreError(f"Invalid launch profile configuration: {exc}") from exc
             return profiles
 
     def save(self, profiles: Iterable[LaunchProfile]) -> tuple[LaunchProfile, ...]:
@@ -82,7 +82,7 @@ class LaunchProfileStore:
                         temporary_path.unlink(missing_ok=True)
                     except OSError:
                         pass
-                raise LaunchProfileStoreError("실행 프로필을 저장할 수 없습니다.") from exc
+                raise LaunchProfileStoreError("Unable to save launch profiles.") from exc
         return checked
 
     def upsert(self, profile: LaunchProfile) -> tuple[LaunchProfile, ...]:
@@ -110,11 +110,11 @@ def _validate_unique_profiles(profiles: tuple[LaunchProfile, ...]) -> None:
     ids: set[str] = set()
     for profile in profiles:
         if not isinstance(profile, LaunchProfile):
-            raise TypeError("실행 프로필 형식이 올바르지 않습니다.")
+            raise TypeError("Invalid launch profile format.")
         if profile.id in ids:
-            raise ValueError(f"프로필 ID가 중복되었습니다: {profile.id}")
+            raise ValueError(f"Duplicate launch profile ID: {profile.id}")
         ids.add(profile.id)
 
 
 def _invalid_profile() -> LaunchProfile:
-    raise TypeError("실행 프로필 형식이 올바르지 않습니다.")
+    raise TypeError("Invalid launch profile format.")

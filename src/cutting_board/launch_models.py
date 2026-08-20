@@ -23,16 +23,16 @@ class LaunchTask:
     watch_command: str | None = None
 
     def __post_init__(self) -> None:
-        _require_text(self.name, "작업 이름")
-        _require_text(self.cwd, "작업 폴더")
-        _require_text(self.command, "실행 명령")
+        _require_text(self.name, "Task name")
+        _require_text(self.cwd, "Task folder")
+        _require_text(self.command, "Run command")
         if self.expected_port is not None:
             if isinstance(self.expected_port, bool) or not isinstance(self.expected_port, int):
-                raise ValueError("예상 포트는 숫자여야 합니다.")
+                raise ValueError("Expected port must be an integer.")
             if not 1 <= self.expected_port <= 65535:
-                raise ValueError("예상 포트는 1~65535 범위여야 합니다.")
+                raise ValueError("Expected port must be between 1 and 65535.")
         if self.watch_command is not None:
-            _require_text(self.watch_command, "자동 빌드 명령")
+            _require_text(self.watch_command, "Auto-build command")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LaunchTask:
@@ -45,7 +45,7 @@ class LaunchTask:
                 watch_command=data.get("watch_command"),
             )
         except KeyError as exc:
-            raise ValueError(f"작업 설정에 {exc.args[0]} 항목이 없습니다.") from exc
+            raise ValueError(f"Task configuration is missing {exc.args[0]}.") from exc
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,21 +65,21 @@ class LaunchProfile:
     tasks: tuple[LaunchTask, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        _require_text(self.id, "프로필 ID")
-        _require_text(self.name, "프로필 이름")
-        _require_text(self.project_root, "프로젝트 폴더")
+        _require_text(self.id, "Launch profile ID")
+        _require_text(self.name, "Launch profile name")
+        _require_text(self.project_root, "Project folder")
         root = Path(self.project_root).expanduser()
         if not root.is_absolute():
-            raise ValueError("프로젝트 폴더는 절대 경로여야 합니다.")
+            raise ValueError("Project folder must be an absolute path.")
         if not self.tasks:
-            raise ValueError("프로필에는 작업이 하나 이상 필요합니다.")
+            raise ValueError("A launch profile must contain at least one task.")
         names: set[str] = set()
         for task in self.tasks:
             if not isinstance(task, LaunchTask):
-                raise TypeError("프로필 작업 형식이 올바르지 않습니다.")
+                raise TypeError("Invalid task format in launch profile.")
             normalized_name = task.name.strip().casefold()
             if normalized_name in names:
-                raise ValueError(f"작업 이름이 중복되었습니다: {task.name}")
+                raise ValueError(f"Duplicate task name: {task.name}")
             names.add(normalized_name)
             self.task_cwd(task)
 
@@ -88,7 +88,7 @@ class LaunchProfile:
         try:
             raw_tasks = data["tasks"]
             if not isinstance(raw_tasks, list):
-                raise TypeError("프로필의 작업 목록 형식이 올바르지 않습니다.")
+                raise TypeError("Invalid task list format in launch profile.")
             return cls(
                 id=data["id"],
                 name=data["name"],
@@ -101,7 +101,7 @@ class LaunchProfile:
                 ),
             )
         except KeyError as exc:
-            raise ValueError(f"프로필 설정에 {exc.args[0]} 항목이 없습니다.") from exc
+            raise ValueError(f"Launch profile configuration is missing {exc.args[0]}.") from exc
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -128,7 +128,7 @@ class LaunchProfile:
         try:
             resolved.relative_to(root)
         except ValueError as exc:
-            raise ValueError(f"작업 폴더는 프로젝트 안에 있어야 합니다: {task.cwd}") from exc
+            raise ValueError(f"Task folder must be inside the project folder: {task.cwd}") from exc
         return resolved
 
 
@@ -151,10 +151,10 @@ class LaunchEvent:
 
 def _require_text(value: object, label: str) -> None:
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{label}을(를) 입력해 주세요.")
+        raise ValueError(f"{label} is required.")
     if "\x00" in value:
-        raise ValueError(f"{label}에 사용할 수 없는 문자가 있습니다.")
+        raise ValueError(f"{label} contains invalid characters.")
 
 
 def _invalid_task() -> LaunchTask:
-    raise TypeError("프로필의 작업 형식이 올바르지 않습니다.")
+    raise TypeError("Invalid task format in launch profile.")

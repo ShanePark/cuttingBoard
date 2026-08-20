@@ -8,7 +8,7 @@
 | Stack | Python 3.10+, Tkinter/ttk, psutil |
 | Shape | One desktop process; no daemon, no autostart |
 | Documentation language | English |
-| Interface language | Korean |
+| Interface language | English |
 
 This document describes the system as it is implemented. It is a specification
 of current behaviour, not a wish list; planned work is confined to the last
@@ -111,7 +111,7 @@ ManagedTaskSnapshot
 ├─ main_pid?, watch_pid?
 ├─ expected_port?
 ├─ logs[]                bounded in-memory lines
-└─ message?              Korean runtime status
+└─ message?              English runtime status
 ```
 
 A profile must have at least one task. `LaunchProfile.task_cwd()` resolves the
@@ -377,8 +377,8 @@ Kinds, in the order that decides a conflict:
 |---|---|---|
 | 0 | `agent` | Claude, Codex, Cursor, Windsurf, Copilot, Aider, Gemini |
 | 1 | `ide` | VS Code, JetBrains |
-| 2 | `terminal` | 터미널 |
-| 3 | `system` | 시스템 |
+| 2 | `terminal` | Terminal |
+| 3 | `system` | System |
 | 4 | `unknown` | `UNKNOWN_ORIGIN` |
 
 Two independent signals feed the answer:
@@ -440,7 +440,7 @@ shortened locally to 12 characters instead.
 timeout (2 seconds by default). It runs on a worker thread on machines that may
 have no Docker binary, no running daemon, or no permission on the socket, and a
 hung CLI would leak the thread. Failures are mapped to a `ContainerListing`
-with `available=False` and a Korean message:
+with `available=False` and an English message:
 
 | Condition | Reported as |
 |---|---|
@@ -526,8 +526,8 @@ with a `GRID_GUTTER` of 6. The wider, shorter shape replaces the old logo-first
 tile with a horizontal information hierarchy and visible actions.
 
 The table above is the backward-compatible dark palette. `Palette` also defines
-a complete high-contrast light set. The saved screen modes are `dark`, `light`
-and `system`, shown as **다크**, **라이트** and **시스템 설정**. Missing or invalid
+a complete high-contrast light set. The saved theme modes are `dark`, `light`
+and `system`, shown as **Dark**, **Light** and **System**. Missing or invalid
 preferences resolve to dark. System mode reads the global macOS appearance on a
 best-effort, one-second-bounded path; an unsupported platform, failed command or
 unknown result falls back to dark. Applying a mode replaces every semantic token
@@ -545,12 +545,12 @@ as a smoothed polygon, because Tk has no rounded primitive.
 ### 6.2 Window and tabs
 
 `CuttingBoardWindow` opens at the saved geometry (default `1280x820`) with a
-minimum of 560×420. The header holds three keyboard-operable tabs — **서비스**,
-**Docker** and **실행 구성** — each with a live count and an accent underline for
-the active one, plus a visible **설정** button at the right edge. The footer shows
-the last scan duration and listener count in Korean. The title bar carries the
-name and icon, so the header does not repeat them, and the version lives in the
-settings dialog.
+minimum of 560×420. The header holds three keyboard-operable tabs — **Services**,
+**Docker** and **Launch Profiles** — each with a live count and an accent
+underline for the active one, plus a visible **Settings** button at the right
+edge. The footer shows the last scan duration and listener count in English. The
+title bar carries the name and icon, so the header does not repeat them, and the
+version lives in the settings dialog.
 
 Switching tabs resets the listener/container scroll position and, for Docker,
 forces a container refresh. The launch tab uses its own scrollable profile panel.
@@ -591,7 +591,7 @@ A `ServiceTile` is a focusable `tk.Canvas` drawing a rounded card, the brand mar
 at 48 px, the elided display name, up to two labelled port chips plus an overflow
 chip, and the uptime line. Uptime below `FRESH_UPTIME_SECONDS` is drawn in the
 accent colour with a matching dot; older services recede to `TEXT_DIM`. A busy
-tile shows `중지 중…` instead.
+tile shows `Stopping…` instead.
 
 When §3.8 attributed the service to an agent or an IDE, a small outlined badge
 carrying the launcher name sits in the metadata row, violet for an agent and cyan
@@ -600,7 +600,7 @@ known but never badged: they are the ordinary case and would put a label on
 almost every tile. The badge stays in the metadata row so it does not compete
 with the visible action buttons.
 
-The **상세**, optional **열기**, and permitted **중지** actions are always visible;
+The **Details**, optional **Open**, and permitted **Stop** actions are always visible;
 termination no longer depends on discovering a hover-only glyph. Hover changes
 the surface and button fill. Keyboard focus draws an accent outline, Left/Right
 moves through enabled actions, and Enter or Space activates the selected action.
@@ -608,7 +608,7 @@ Ctrl-click still opens the browser URL as a shortcut; clicking elsewhere opens
 the detail dialog.
 
 A `ContainerTile` uses the same compact focusable card and exposes a visible
-**상세** action, but never a stop action — stopping a container is an operation on
+**Details** action, but never a stop action — stopping a container is an operation on
 shared infrastructure. It shows a state dot, the name, published-port chips and
 the Docker status line, with stopped containers muted so they do not compete with
 running ones.
@@ -648,12 +648,13 @@ is drawn in its own grey palette, which is jarring against the board.
   and the published ports.
 - `ConfirmDialog` / `ask_confirmation()` — a modal yes/no carrying the brand mark
   of the service being acted on. Enter confirms, Escape cancels.
-- `SettingsDialog` — 정보 (version, Python, platform, settings file path with
-  the home directory folded back to `~`) and 설정. The scan interval is offered
+- `SettingsDialog` — Information (version, Python, platform, settings file path
+  with the home directory folded back to `~`) and Settings. The scan interval is
+  offered
   as 1/2/5/10-second chips; choosing one writes the settings file and calls
   `ScanController.set_interval()`, which clamps the value and wakes the parked
-  worker immediately. Screen-mode chips offer **시스템 설정**, **다크** and
-  **라이트**. Choosing one closes the dialog, persists the preference and rebuilds
+  worker immediately. Theme chips offer **System**, **Dark** and
+  **Light**. Choosing one closes the dialog, persists the preference and rebuilds
   the widget tree against the new palette while retaining the selected tab,
   scanner, launch controller, executor and managed processes. The existing event
   pump remains scheduled; rebuilding does not create a second poll loop.
@@ -678,12 +679,13 @@ non-modal so it does not block the board.
 Action results appear as a transient toast at the bottom of the window for 4.2
 seconds, accented cyan or red.
 
-### 6.6 Launch configurations
+### 6.6 Launch profiles
 
-`LaunchProfilesPanel` backs the **실행 구성** tab. It renders one profile card per
-stored configuration, with profile-level start, stop, edit and delete controls.
+`LaunchProfilesPanel` backs the **Launch Profiles** tab. It renders one profile
+card per stored configuration, with profile-level start, stop, edit and delete
+controls.
 Nested task rows expose individual start/stop and log actions plus state labels:
-`중지됨`, `시작 중`, `실행 중`, `종료 중`, `실패` or `외부 실행 중`. Editing and
+`Stopped`, `Starting`, `Running`, `Stopping`, `Failed` or `Running externally`. Editing and
 deletion are disabled while the profile owns a live process.
 
 `CuttingBoardWindow._expected_listener_is_external()` correlates an optional
@@ -778,7 +780,7 @@ accepts the process only when it is the leader of a new group owned by the
 current user. A failed ownership check immediately cleans up the unverified
 child.
 
-One daemon reader thread per child prefixes output as `실행` or `자동 빌드` and
+One daemon reader thread per child prefixes output as `Run` or `Auto-build` and
 appends it to a 500-line deque. One monitor thread waits for exit and publishes a
 `LaunchEvent`. Output is transient: there is no log file or history store.
 
@@ -790,8 +792,8 @@ older process. It never adopts a process merely because its project and port
 match a profile.
 
 Closing the window calls `LaunchController.close()` before closing the scanner.
-An interactive close with owned work first presents the Korean warning
-`Cutting Board에서 실행한 프로세스가 모두 종료됩니다.` and can be cancelled.
+An interactive close with owned work first presents the warning
+`All processes started by Cutting Board will be stopped.` and can be cancelled.
 SIGTERM, SIGINT and smoke-test auto-close skip the modal but perform the same
 managed-group cleanup.
 
@@ -1014,13 +1016,13 @@ Launch coverage is split by boundary: `test_launch_profiles.py` covers atomic
 mode-`0600` persistence and validation; `test_launch_controller.py` covers profile
 CRUD and active-profile guards; `test_launch_managed_processes.py` covers start,
 bounded output, process-group ownership, escalation and close cleanup;
-`test_launch_ui.py` covers profile-editor validation and Korean/external state
+`test_launch_ui.py` covers profile-editor validation and English/external state
 presentation; and `test_launch_app_integration.py` covers isolated composition,
 external-listener protection and interactive versus non-interactive shutdown.
 Tests never signal a process group they did not create.
 
 `test_ui_theme.py` checks the text scale, contrast in both semantic palettes,
-screen-mode resolution and card behaviour without relying on pixel screenshots.
+theme-mode resolution and card behaviour without relying on pixel screenshots.
 Settings tests keep the missing/invalid mode fallback at `dark`; GUI integration
 checks that switching mode rebuilds the presentation without closing the launch
 controller.
@@ -1097,7 +1099,7 @@ corresponding task.
 - Vite performs its own source watching. A Spring Boot task needs an explicit
   continuous compiler such as `./gradlew classes --continuous` plus DevTools for
   source changes; build-logic and dependency changes require a backend restart.
-- System screen mode resolves the macOS appearance when a palette is applied; it
+- System theme mode resolves the macOS appearance when a palette is applied; it
   does not subscribe to later OS appearance-change notifications.
 - A service whose launcher is unusual, or which exposes no working directory,
   lands in the catch-all group rather than under a project.

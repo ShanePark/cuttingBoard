@@ -35,31 +35,31 @@ def validate_profile_draft(draft: LaunchProfileDraft) -> LaunchProfileDraft:
     """Validate and normalize the value collected by the profile form."""
     name = draft.name.strip()
     if not name:
-        raise LaunchProfileValidationError("구성 이름을 입력해 주세요.")
+        raise LaunchProfileValidationError("Enter a profile name.")
     root_text = draft.project_root.strip()
     if not root_text:
-        raise LaunchProfileValidationError("프로젝트 폴더를 입력해 주세요.")
+        raise LaunchProfileValidationError("Enter a project folder.")
     root = Path(root_text).expanduser()
     if not root.is_absolute():
-        raise LaunchProfileValidationError("프로젝트 폴더는 절대 경로로 입력해 주세요.")
+        raise LaunchProfileValidationError("Enter the project folder as an absolute path.")
     root = root.resolve(strict=False)
     if not draft.tasks:
-        raise LaunchProfileValidationError("실행 작업을 하나 이상 추가해 주세요.")
+        raise LaunchProfileValidationError("Add at least one task.")
 
     names: set[str] = set()
     tasks: list[LaunchTaskDraft] = []
     for index, task in enumerate(draft.tasks, start=1):
         task_name = task.name.strip()
         if not task_name:
-            raise LaunchProfileValidationError(f"{index}번째 작업 이름을 입력해 주세요.")
+            raise LaunchProfileValidationError(f"Enter a name for task {index}.")
         folded = task_name.casefold()
         if folded in names:
-            raise LaunchProfileValidationError(f"작업 이름이 중복되었습니다: {task_name}")
+            raise LaunchProfileValidationError(f"Duplicate task name: {task_name}")
         names.add(folded)
 
         cwd_text = task.cwd.strip()
         if not cwd_text:
-            raise LaunchProfileValidationError(f"'{task_name}' 작업 폴더를 입력해 주세요.")
+            raise LaunchProfileValidationError(f"Enter a task folder for '{task_name}'.")
         configured_cwd = Path(cwd_text).expanduser()
         cwd = (
             configured_cwd.resolve(strict=False)
@@ -70,12 +70,12 @@ def validate_profile_draft(draft: LaunchProfileDraft) -> LaunchProfileDraft:
             cwd.relative_to(root)
         except ValueError as exc:
             raise LaunchProfileValidationError(
-                f"'{task_name}' 작업 폴더는 프로젝트 안에 있어야 합니다."
+                f"The task folder for '{task_name}' must be inside the project."
             ) from exc
 
         command = task.command.strip()
         if not command:
-            raise LaunchProfileValidationError(f"'{task_name}' 실행 명령을 입력해 주세요.")
+            raise LaunchProfileValidationError(f"Enter a run command for '{task_name}'.")
         watch_command = task.watch_command.strip() if task.watch_command else None
         tasks.append(
             LaunchTaskDraft(
@@ -93,7 +93,9 @@ def _validated_port(value: int | None, task_name: str) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
-        raise LaunchProfileValidationError(f"'{task_name}' 예상 포트는 1~65535로 입력해 주세요.")
+        raise LaunchProfileValidationError(
+            f"Enter the expected port for '{task_name}' from 1 to 65535."
+        )
     return value
 
 
@@ -116,7 +118,7 @@ class LaunchProfileDialog(tk.Toplevel):
         self.result: LaunchProfileDraft | None = None
         self._task_editors: list[_TaskEditor] = []
 
-        self.title("실행 구성 편집" if profile else "실행 구성 추가")
+        self.title("Edit Launch Profile" if profile else "Add Launch Profile")
         self.transient(backdrop.window)
         self.minsize(720, 520)
         self.geometry("780x680")
@@ -139,7 +141,7 @@ class LaunchProfileDialog(tk.Toplevel):
         ).pack(fill="x")
         tk.Label(
             header,
-            text="프로젝트에서 함께 실행할 작업과 자동 빌드 명령을 등록합니다.",
+            text="Configure tasks and auto-build commands to run together for this project.",
             bg=theme.SURFACE,
             fg=theme.TEXT_MUTED,
             font=self._fonts["small"],
@@ -172,20 +174,20 @@ class LaunchProfileDialog(tk.Toplevel):
             lambda event: self._canvas.itemconfigure(self._form_window, width=event.width),
         )
 
-        self._name = self._field(self._form, "구성 이름", profile.name if profile else "")
+        self._name = self._field(self._form, "Profile name", profile.name if profile else "")
         root_row = tk.Frame(self._form, bg=theme.CANVAS)
         root_row.pack(fill="x", pady=(0, 14))
         root_field = tk.Frame(root_row, bg=theme.CANVAS)
         root_field.pack(side="left", fill="x", expand=True)
         self._project_root = self._field(
             root_field,
-            "프로젝트 폴더",
+            "Project folder",
             profile.project_root if profile else "",
             bottom_pad=0,
         )
         ActionButton(
             root_row,
-            text="찾아보기",
+            text="Browse",
             fonts=self._fonts,
             command=self._choose_root,
             compact=True,
@@ -195,14 +197,14 @@ class LaunchProfileDialog(tk.Toplevel):
         tasks_head.pack(fill="x", pady=(8, 8))
         tk.Label(
             tasks_head,
-            text="실행 작업",
+            text="Tasks",
             bg=theme.CANVAS,
             fg=theme.TEXT,
             font=self._fonts["section"],
         ).pack(side="left")
         ActionButton(
             tasks_head,
-            text="작업 추가",
+            text="Add Task",
             fonts=self._fonts,
             command=self._add_task,
             foreground=theme.ACCENT,
@@ -229,7 +231,7 @@ class LaunchProfileDialog(tk.Toplevel):
         footer.pack(fill="x", side="bottom")
         ActionButton(
             footer,
-            text="저장",
+            text="Save",
             fonts=self._fonts,
             command=self._save,
             foreground=theme.ON_ACCENT,
@@ -238,7 +240,7 @@ class LaunchProfileDialog(tk.Toplevel):
         ).pack(side="right")
         ActionButton(
             footer,
-            text="취소",
+            text="Cancel",
             fonts=self._fonts,
             command=self.destroy,
         ).pack(side="right", padx=(0, 8))
@@ -268,7 +270,7 @@ class LaunchProfileDialog(tk.Toplevel):
     def _choose_root(self) -> None:
         selected = filedialog.askdirectory(
             parent=self,
-            title="프로젝트 폴더 선택",
+            title="Select Project Folder",
             initialdir=self._project_root.get() or str(Path.home()),
         )
         if selected:
@@ -288,7 +290,7 @@ class LaunchProfileDialog(tk.Toplevel):
 
     def _remove_task(self, editor: _TaskEditor) -> None:
         if len(self._task_editors) == 1:
-            self._error.configure(text="실행 작업은 하나 이상 필요합니다.")
+            self._error.configure(text="At least one task is required.")
             return
         self._task_editors.remove(editor)
         editor.destroy()
@@ -350,7 +352,7 @@ class _TaskEditor(tk.Frame):
         self._title.pack(side="left")
         ActionButton(
             head,
-            text="제거",
+            text="Remove",
             fonts=fonts,
             command=lambda: self._on_remove(self),
             foreground=theme.DANGER,
@@ -359,35 +361,35 @@ class _TaskEditor(tk.Frame):
 
         first = tk.Frame(self, bg=theme.SURFACE)
         first.pack(fill="x")
-        name_holder, self._name = self._labelled_entry(first, "작업 이름", task.name, width=22)
+        name_holder, self._name = self._labelled_entry(first, "Task name", task.name, width=22)
         name_holder.pack(side="left", fill="x", expand=True)
         cwd_holder, self._cwd = self._labelled_entry(
             first,
-            "작업 폴더 (상대 또는 절대 경로)",
+            "Task folder (relative or absolute)",
             task.cwd,
         )
         cwd_holder.pack(side="left", fill="x", expand=True, padx=(10, 0))
 
-        self._command = self._wide_entry("실행 명령", task.command)
+        self._command = self._wide_entry("Run command", task.command)
         second = tk.Frame(self, bg=theme.SURFACE)
         second.pack(fill="x", pady=(9, 0))
         port_text = str(task.expected_port) if task.expected_port is not None else ""
         port_holder, self._port = self._labelled_entry(
             second,
-            "예상 포트 (선택)",
+            "Expected port (optional)",
             port_text,
             width=10,
         )
         port_holder.pack(side="left")
         watch_holder, self._watch = self._labelled_entry(
             second,
-            "자동 빌드 / 감시 명령 (선택)",
+            "Auto-build / watch command (optional)",
             task.watch_command or "",
         )
         watch_holder.pack(side="left", fill="x", expand=True, padx=(10, 0))
 
     def set_number(self, number: int) -> None:
-        self._title.configure(text=f"작업 {number}")
+        self._title.configure(text=f"Task {number}")
 
     def draft(self) -> LaunchTaskDraft:
         raw_port = self._port.get().strip()
@@ -395,9 +397,9 @@ class _TaskEditor(tk.Frame):
             try:
                 port: int | None = int(raw_port)
             except ValueError as exc:
-                name = self._name.get().strip() or "이름 없는 작업"
+                name = self._name.get().strip() or "Unnamed task"
                 raise LaunchProfileValidationError(
-                    f"'{name}' 예상 포트는 숫자로 입력해 주세요."
+                    f"Enter the expected port for '{name}' as a number."
                 ) from exc
         else:
             port = None
@@ -453,7 +455,7 @@ class LaunchLogDialog(tk.Toplevel):
         backdrop = ModalBackdrop(parent)
         super().__init__(backdrop.window, bg=theme.CANVAS)
         self._modal_backdrop = backdrop
-        self.title(f"{task_name} 로그")
+        self.title(f"{task_name} Logs")
         self.transient(backdrop.window)
         self.geometry("820x520")
         self.minsize(620, 360)
@@ -501,7 +503,7 @@ class LaunchLogDialog(tk.Toplevel):
         horizontal.grid(row=1, column=0, sticky="ew")
         body.grid_rowconfigure(0, weight=1)
         body.grid_columnconfigure(0, weight=1)
-        output.insert("1.0", "\n".join(lines) if lines else "아직 출력된 로그가 없습니다.")
+        output.insert("1.0", "\n".join(lines) if lines else "No logs yet.")
         output.configure(state="disabled")
         output.see("end")
 
@@ -509,7 +511,7 @@ class LaunchLogDialog(tk.Toplevel):
         footer.pack(fill="x", side="bottom")
         ActionButton(
             footer,
-            text="닫기",
+            text="Close",
             fonts=fonts,
             command=self.destroy,
         ).pack(side="right")

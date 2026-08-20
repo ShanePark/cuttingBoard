@@ -10,7 +10,7 @@
 ## Language
 
 - Documentation is written in English. This covers Markdown files, docstrings, code comments, and commit messages.
-- User-facing strings in the application itself are Korean.
+- User-facing strings in the application itself are English.
 
 ## Delegation and Parallel Work
 

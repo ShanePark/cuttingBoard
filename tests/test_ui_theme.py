@@ -236,13 +236,13 @@ class WidgetLogicTests(unittest.TestCase):
         malformed = "http://[::1"
         self.assertEqual(_browser_link_label(malformed), malformed)
 
-    def test_pixel_ellipsis_handles_hangul_and_mixed_width_names(self) -> None:
+    def test_pixel_ellipsis_handles_unicode_and_mixed_width_names(self) -> None:
         def measure(text: str) -> int:
             return sum(11 if character > "\u007f" else 6 for character in text)
 
         for name in (
-            "듀티파크개발서비스백엔드",
-            "dutypark-개발용-SpringBoot-service",
+            "DéveloppementÜberServiceBackend",
+            "dutypark-développement-SpringBoot-service",
         ):
             with self.subTest(name=name):
                 fitted = _ellipsis_to_width(name, 96, measure)

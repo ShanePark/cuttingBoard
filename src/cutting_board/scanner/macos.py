@@ -43,15 +43,15 @@ class MacOSServiceScanner(LinuxServiceScanner):
         try:
             result = self._lsof_runner(command)
         except OSError as exc:
-            errors.append(f"macOS 리스너 조회 실패: {exc}")
+            errors.append(f"macOS listener lookup failed: {exc}")
             return []
 
         # lsof exits with 1 when its selection matched no files. That is an
         # empty workspace, not a scan failure.
         no_matches = result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip()
         if result.returncode != 0 and not no_matches:
-            detail = result.stderr.strip() or f"종료 코드 {result.returncode}"
-            errors.append(f"macOS 리스너 조회 실패: {detail}")
+            detail = result.stderr.strip() or f"exit code {result.returncode}"
+            errors.append(f"macOS listener lookup failed: {detail}")
         return parse_lsof_output(result.stdout)
 
 

@@ -69,7 +69,7 @@ def group_services(services: tuple[ServiceSnapshot, ...]) -> tuple[ServiceGroup,
     for service in services:
         if service.relevance == Relevance.CONTAINER.value:
             group_id = "containers"
-            metadata[group_id] = ("컨테이너", None, None, True, False)
+            metadata[group_id] = ("Containers", None, None, True, False)
         elif service.project is not None:
             group_id = service.project.id
             metadata[group_id] = (
@@ -81,7 +81,7 @@ def group_services(services: tuple[ServiceSnapshot, ...]) -> tuple[ServiceGroup,
             )
         else:
             group_id = "unassigned"
-            metadata[group_id] = ("기타", None, None, False, True)
+            metadata[group_id] = ("Other", None, None, False, True)
         buckets.setdefault(group_id, []).append(service)
 
     groups: list[ServiceGroup] = []
@@ -132,15 +132,27 @@ def format_duration(seconds: int | None) -> str:
         return "—"
     seconds = max(0, seconds)
     if seconds < 60:
-        return f"{seconds}초"
+        return _format_count(seconds, "second")
     minutes, _ = divmod(seconds, 60)
     if minutes < 60:
-        return f"{minutes}분"
+        return _format_count(minutes, "minute")
     hours, minutes = divmod(minutes, 60)
     if hours < 24:
-        return f"{hours}시간 {minutes}분" if minutes else f"{hours}시간"
+        return (
+            f"{_format_count(hours, 'hour')} {_format_count(minutes, 'minute')}"
+            if minutes
+            else _format_count(hours, "hour")
+        )
     days, hours = divmod(hours, 24)
-    return f"{days}일 {hours}시간" if hours else f"{days}일"
+    return (
+        f"{_format_count(days, 'day')} {_format_count(hours, 'hour')}"
+        if hours
+        else _format_count(days, "day")
+    )
+
+
+def _format_count(value: int, unit: str) -> str:
+    return f"{value} {unit if value == 1 else unit + 's'}"
 
 
 # A service younger than this is still warming up, and the board tints its
@@ -154,19 +166,19 @@ def format_uptime_compact(seconds: int | None) -> str:
         return ""
     seconds = max(0, seconds)
     if seconds < 60:
-        return f"{seconds}초"
+        return f"{seconds}s"
     minutes, _ = divmod(seconds, 60)
     if minutes < 60:
-        return f"{minutes}분"
+        return f"{minutes}m"
     hours, minutes = divmod(minutes, 60)
     if hours < 24:
-        return f"{hours}시간 {minutes}분" if minutes else f"{hours}시간"
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
     days, hours = divmod(hours, 24)
-    return f"{days}일 {hours}시간" if hours else f"{days}일"
+    return f"{days}d {hours}h" if hours else f"{days}d"
 
 
 def format_cpu(value: float | None) -> str:
-    return "계산 중" if value is None else f"{value:.1f}%"
+    return "Calculating" if value is None else f"{value:.1f}%"
 
 
 def endpoint_label(service: ServiceSnapshot) -> str:

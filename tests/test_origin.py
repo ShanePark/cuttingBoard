@@ -150,7 +150,7 @@ class AncestryTests(unittest.TestCase):
         result = probe.detect(900)
         self.assertIs(result.kind, OriginKind.TERMINAL)
         self.assertEqual(result.id, "terminal")
-        self.assertEqual(result.label, "터미널")
+        self.assertEqual(result.label, "Terminal")
 
     def test_systemd_only_ancestry_is_system(self) -> None:
         probe, _, _ = detector(

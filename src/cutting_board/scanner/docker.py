@@ -22,13 +22,13 @@ _MAX_HINT_LENGTH = 160
 # pathological range would flood the tile, so expansion stops after this many.
 _MAX_RANGE_PORTS = 64
 
-_NO_CLI_MESSAGE = "Docker CLI를 찾을 수 없습니다."
-_LAUNCH_FAILED_MESSAGE = "Docker CLI를 실행할 수 없습니다."
-_TIMEOUT_MESSAGE = "Docker가 제한 시간 안에 응답하지 않았습니다."
-_DAEMON_MESSAGE = "Docker 데몬에 연결할 수 없습니다."
-_PERMISSION_MESSAGE = "Docker 소켓에 접근할 권한이 없습니다."
-_FAILED_MESSAGE = "Docker 명령이 실패했습니다."
-_EMPTY_MESSAGE = "컨테이너가 없습니다."
+_NO_CLI_MESSAGE = "Docker CLI could not be found."
+_LAUNCH_FAILED_MESSAGE = "Docker CLI could not be launched."
+_TIMEOUT_MESSAGE = "Docker did not respond within the time limit."
+_DAEMON_MESSAGE = "Could not connect to the Docker daemon."
+_PERMISSION_MESSAGE = "Permission denied while accessing the Docker socket."
+_FAILED_MESSAGE = "Docker command failed."
+_EMPTY_MESSAGE = "No containers found."
 
 # Takes the command and a timeout in seconds. Exists so tests can drive the
 # parser and the failure paths without a docker installation.

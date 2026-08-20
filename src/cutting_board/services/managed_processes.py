@@ -88,9 +88,9 @@ class ManagedProcessRunner:
         stop_timeout_seconds: float = 2.0,
     ) -> None:
         if max_log_lines < 1:
-            raise ValueError("로그 보관 줄 수는 1 이상이어야 합니다.")
+            raise ValueError("Maximum retained log lines must be at least 1.")
         if stop_timeout_seconds < 0:
-            raise ValueError("종료 대기 시간은 0 이상이어야 합니다.")
+            raise ValueError("Stop timeout must be 0 or greater.")
         self._popen = popen_factory or subprocess.Popen
         self._process_factory = process_factory or psutil.Process
         self._killpg = killpg or os.killpg
@@ -115,23 +115,23 @@ class ManagedProcessRunner:
         key = (profile.id, task.name)
         with self._lock:
             if self._closed:
-                raise ManagedProcessError("실행 관리자가 이미 종료되었습니다.")
+                raise ManagedProcessError("The launch profile manager is already closed.")
             runtime = self._runtimes.get(key)
             if runtime is not None and self._has_live_process(runtime):
-                raise ManagedProcessError(f"이미 실행 중인 작업입니다: {task.name}")
+                raise ManagedProcessError(f"Task is already running: {task.name}")
             runtime = _TaskRuntime(
                 profile_id=profile.id,
                 task=task,
                 state=LaunchState.STARTING,
                 logs=deque(maxlen=self._max_log_lines),
-                message="작업을 시작하고 있습니다.",
+                message="Starting task.",
             )
             self._runtimes[key] = runtime
             self._emit_locked(runtime)
 
         cwd = profile.task_cwd(task)
         if not cwd.is_dir():
-            return self._fail_start(runtime, f"작업 폴더를 찾을 수 없습니다: {cwd}")
+            return self._fail_start(runtime, f"Task folder not found: {cwd}")
 
         try:
             self._spawn(runtime, "main", task.command, cwd)
@@ -149,13 +149,13 @@ class ManagedProcessRunner:
             AttributeError,
         ) as exc:
             self._stop_runtime(runtime, timeout_seconds=self._stop_timeout_seconds)
-            return self._fail_start(runtime, f"작업을 시작하지 못했습니다: {exc}")
+            return self._fail_start(runtime, f"Unable to start task: {exc}")
 
         with self._lock:
             if runtime.state != LaunchState.STARTING:
                 return self._snapshot_locked(runtime)
             runtime.state = LaunchState.RUNNING
-            runtime.message = "작업이 실행 중입니다."
+            runtime.message = "Task is running."
             return self._emit_locked(runtime)
 
     def start_profile(self, profile: LaunchProfile) -> tuple[ManagedTaskSnapshot, ...]:
@@ -179,7 +179,7 @@ class ManagedProcessRunner:
                     profile_id=profile_id,
                     task_name=task_name,
                     state=LaunchState.STOPPED,
-                    message="이미 종료된 작업입니다.",
+                    message="Task has already stopped.",
                 )
         clean = self._stop_runtime(
             runtime,
@@ -188,10 +188,10 @@ class ManagedProcessRunner:
         with self._lock:
             if not clean or self._has_live_process(runtime):
                 runtime.state = LaunchState.FAILED
-                runtime.message = "일부 프로세스를 안전하게 종료하지 못했습니다."
+                runtime.message = "Some processes could not be stopped safely."
             else:
                 runtime.state = LaunchState.STOPPED
-                runtime.message = "작업을 종료했습니다."
+                runtime.message = "Task stopped."
             return self._emit_locked(runtime)
 
     def stop_profile(
@@ -271,7 +271,7 @@ class ManagedProcessRunner:
             uid = int(process.uids().effective)
             pgid = int(self._getpgid(pid))
             if pid in {1, self._own_pid} or uid != self._current_uid or pgid != pid:
-                raise ManagedProcessError("시작한 프로세스의 소유권을 안전하게 확인할 수 없습니다.")
+                raise ManagedProcessError("Unable to safely verify ownership of the started process.")
         except (
             OSError,
             psutil.Error,
@@ -312,7 +312,7 @@ class ManagedProcessRunner:
         stream = process.handle.stdout
         if stream is None:
             return
-        label = "실행" if process.role == "main" else "자동 빌드"
+        label = "Run" if process.role == "main" else "Auto-build"
         try:
             for raw_line in stream:
                 line = raw_line.rstrip("\r\n")
@@ -346,20 +346,18 @@ class ManagedProcessRunner:
         with self._lock:
             if runtime.state in {LaunchState.STARTING, LaunchState.RUNNING}:
                 runtime.state = LaunchState.FAILED if return_code else LaunchState.STOPPED
-                process_label = "자동 빌드 프로세스" if process.role == "watch" else "실행 프로세스"
+                process_label = "Auto-build process" if process.role == "watch" else "Main process"
                 if return_code:
-                    runtime.message = (
-                        f"{process_label}가 종료 코드 {return_code}(으)로 종료되었습니다."
-                    )
+                    runtime.message = f"{process_label} exited with code {return_code}."
                 else:
-                    runtime.message = f"{process_label}가 종료되었습니다."
-                runtime.logs.append(f"[상태] {runtime.message}")
+                    runtime.message = f"{process_label} exited."
+                runtime.logs.append(f"[Status] {runtime.message}")
             self._emit_locked(runtime)
 
     def _stop_runtime(self, runtime: _TaskRuntime, timeout_seconds: float) -> bool:
         with self._lock:
             runtime.state = LaunchState.STOPPING
-            runtime.message = "작업을 종료하고 있습니다."
+            runtime.message = "Stopping task."
             processes = tuple(runtime.processes.values())
             self._emit_locked(runtime)
 
@@ -419,10 +417,10 @@ class ManagedProcessRunner:
         if not self._ownership_matches(owned):
             with self._lock:
                 runtime.logs.append(
-                    f"[안전] PID {owned.pid}의 소유권이 달라 종료 신호를 보내지 않았습니다."
+                    f"[Safety] Process ownership changed; no stop signal was sent to PID {owned.pid}."
                 )
                 runtime.state = LaunchState.FAILED
-                runtime.message = "프로세스 소유권이 달라 안전하게 종료하지 못했습니다."
+                runtime.message = "The process could not be stopped safely because its ownership changed."
                 self._emit_locked(runtime)
             return False
         return self._signal_verified_group(runtime, owned, sig)
@@ -440,9 +438,9 @@ class ManagedProcessRunner:
             return True
         except (PermissionError, OSError) as exc:
             with self._lock:
-                runtime.logs.append(f"[오류] 프로세스 종료 실패: {exc}")
+                runtime.logs.append(f"[Error] Failed to stop process: {exc}")
                 runtime.state = LaunchState.FAILED
-                runtime.message = "프로세스를 종료하지 못했습니다."
+                runtime.message = "Unable to stop process."
                 self._emit_locked(runtime)
             return False
 
@@ -520,7 +518,7 @@ class ManagedProcessRunner:
         with self._lock:
             runtime.state = LaunchState.FAILED
             runtime.message = message
-            runtime.logs.append(f"[오류] {message}")
+            runtime.logs.append(f"[Error] {message}")
             return self._emit_locked(runtime)
 
     @staticmethod

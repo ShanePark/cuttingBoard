@@ -15,16 +15,16 @@ from cutting_board.ui.icons import IconStore
 # The scan interval offered to the user. Every value sits inside the range
 # ``services.settings._clamp_interval`` allows, so a pick is always kept.
 SCAN_INTERVAL_CHOICES: tuple[tuple[str, float], ...] = (
-    ("1초", 1.0),
-    ("2초", 2.0),
-    ("5초", 5.0),
-    ("10초", 10.0),
+    ("1 sec", 1.0),
+    ("2 sec", 2.0),
+    ("5 sec", 5.0),
+    ("10 sec", 10.0),
 )
 
 THEME_MODE_CHOICES: tuple[tuple[str, str], ...] = (
-    ("시스템 설정", "system"),
-    ("다크", "dark"),
-    ("라이트", "light"),
+    ("System", "system"),
+    ("Dark", "dark"),
+    ("Light", "light"),
 )
 
 SCRIM_ALPHA = 0.26
@@ -105,25 +105,25 @@ class ContainerDetailDialog(tk.Toplevel):
         body.pack(fill="both", expand=True)
 
         _section(body, "CONTAINER", self._fonts)
-        _row(body, "이미지", container.image, self._fonts, mono=True)
+        _row(body, "Image", container.image, self._fonts, mono=True)
         _row(body, "ID", container.id, self._fonts, mono=True)
-        _row(body, "상태", container.status or container.state, self._fonts)
-        _row(body, "생성", container.created_at or "—", self._fonts)
+        _row(body, "Status", container.status or container.state, self._fonts)
+        _row(body, "Created", container.created_at or "—", self._fonts)
         if container.compose_service:
-            _row(body, "서비스", container.compose_service, self._fonts)
+            _row(body, "Service", container.compose_service, self._fonts)
 
         _section(body, "PORTS", self._fonts)
         if container.ports:
             for port in container.ports:
                 _row(body, str(port), f"localhost:{port}", self._fonts, mono=True)
         else:
-            _row(body, "—", "게시된 포트 없음", self._fonts)
+            _row(body, "—", "No published ports", self._fonts)
 
         bar = tk.Frame(self, bg=theme.SURFACE, padx=22, pady=14)
         bar.pack(fill="x", side="bottom")
         close = tk.Label(
             bar,
-            text="닫기",
+            text="Close",
             bg=theme.SURFACE_ALT,
             fg=theme.TEXT_MUTED,
             font=self._fonts["small"],
@@ -471,17 +471,17 @@ class ServiceDetailDialog(tk.Toplevel):
             self._row(body, "PID", str(process.pid))
             if process.ppid is not None:
                 self._row(body, "PPID", str(process.ppid))
-            self._row(body, "이름", process.name)
-            self._row(body, "사용자", process.username or "—")
+            self._row(body, "Name", process.name)
+            self._row(body, "User", process.username or "—")
             if service.origin_label:
-                self._row(body, "실행 주체", service.origin_label)
-            self._row(body, "실행 시간", format_duration(process.uptime_seconds))
+                self._row(body, "Started by", service.origin_label)
+            self._row(body, "Uptime", format_duration(process.uptime_seconds))
             self._row(body, "CPU", format_cpu(process.cpu_percent))
-            self._row(body, "메모리", format_bytes(process.memory_bytes))
+            self._row(body, "Memory", format_bytes(process.memory_bytes))
             if process.cwd:
-                self._row(body, "작업 경로", process.cwd, mono=True)
+                self._row(body, "Working dir", process.cwd, mono=True)
             if process.executable:
-                self._row(body, "실행 파일", process.executable, mono=True)
+                self._row(body, "Executable", process.executable, mono=True)
 
             self._section(body, "COMMAND")
             command = tk.Text(
@@ -504,7 +504,7 @@ class ServiceDetailDialog(tk.Toplevel):
             command.pack(fill="x", pady=(4, 0))
         else:
             self._section(body, "PROCESS")
-            self._row(body, "상태", "소유 프로세스를 확인할 수 없음")
+            self._row(body, "Status", "Owning process unavailable")
 
         if service.warnings:
             self._section(body, "NOTES")
@@ -517,12 +517,12 @@ class ServiceDetailDialog(tk.Toplevel):
         bar = tk.Frame(self, bg=theme.SURFACE, padx=22, pady=14)
         bar.pack(fill="x", side="bottom")
 
-        self._button(bar, "닫기", theme.TEXT_MUTED, self.destroy).pack(side="right")
+        self._button(bar, "Close", theme.TEXT_MUTED, self.destroy).pack(side="right")
 
         if self.service.can_terminate:
             self._button(
                 bar,
-                "종료",
+                "Stop",
                 theme.DANGER,
                 self._terminate,
             ).pack(side="right", padx=(0, 8))
@@ -530,7 +530,7 @@ class ServiceDetailDialog(tk.Toplevel):
         if self.service.browser_url():
             self._button(
                 bar,
-                "브라우저에서 열기",
+                "Open in Browser",
                 theme.ACCENT,
                 lambda: self._on_open(self.service),
             ).pack(side="left")
@@ -703,7 +703,7 @@ class ConfirmDialog(tk.Toplevel):
         self._confirm_button.pack(side="right")
         self._action(
             actions,
-            "취소",
+            "Cancel",
             fg=theme.TEXT_MUTED,
             bg=theme.SURFACE_ALT,
             hover=theme.BORDER,
@@ -804,7 +804,7 @@ class SettingsDialog(tk.Toplevel):
         self._chips: list[tuple[float, tk.Canvas, int, int]] = []
         self._theme_chips: list[tuple[str, tk.Canvas, int, int]] = []
 
-        self.title("설정")
+        self.title("Settings")
         self.resizable(False, False)
         self.transient(backdrop.window)
 
@@ -849,13 +849,13 @@ class SettingsDialog(tk.Toplevel):
         body = tk.Frame(self, bg=theme.CANVAS, padx=22, pady=18)
         body.pack(fill="both", expand=True)
 
-        _section(body, "정보", self._fonts)
-        _row(body, "버전", APP_VERSION, self._fonts, mono=True)
-        _row(body, "파이썬", platform.python_version(), self._fonts, mono=True)
-        _row(body, "플랫폼", f"{platform.system()} {platform.release()}", self._fonts)
-        _row(body, "설정 파일", _home_relative(self._settings_path), self._fonts, mono=True)
+        _section(body, "INFORMATION", self._fonts)
+        _row(body, "Version", APP_VERSION, self._fonts, mono=True)
+        _row(body, "Python", platform.python_version(), self._fonts, mono=True)
+        _row(body, "Platform", f"{platform.system()} {platform.release()}", self._fonts)
+        _row(body, "Settings file", _home_relative(self._settings_path), self._fonts, mono=True)
 
-        _section(body, "설정", self._fonts)
+        _section(body, "SETTINGS", self._fonts)
         self._build_interval_row(body)
         self._build_theme_row(body)
 
@@ -863,7 +863,7 @@ class SettingsDialog(tk.Toplevel):
         bar.pack(fill="x", side="bottom")
         close = tk.Label(
             bar,
-            text="닫기",
+            text="Close",
             bg=theme.SURFACE_ALT,
             fg=theme.TEXT_MUTED,
             font=self._fonts["small"],
@@ -879,7 +879,7 @@ class SettingsDialog(tk.Toplevel):
         row.pack(fill="x", pady=(4, 2))
         tk.Label(
             row,
-            text="스캔 주기",
+            text="Scan interval",
             bg=theme.CANVAS,
             fg=theme.TEXT_DIM,
             font=self._fonts["small"],
@@ -930,7 +930,7 @@ class SettingsDialog(tk.Toplevel):
         row.pack(fill="x", pady=(10, 2))
         tk.Label(
             row,
-            text="화면 모드",
+            text="Theme",
             bg=theme.CANVAS,
             fg=theme.TEXT_DIM,
             font=self._fonts["small"],
@@ -1018,5 +1018,5 @@ def _home_relative(path: Path) -> str:
 
 
 def _chip_text_width(label: str) -> int:
-    """Rough pixel width of a short chip label, allowing for wider Hangul."""
+    """Rough pixel width of a short chip label, allowing for wider glyphs."""
     return int(sum(11 if character > "\u007f" else 6 for character in label))

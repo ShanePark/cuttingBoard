@@ -57,7 +57,7 @@ class LinuxServiceScanner:
         try:
             connections = self._read_connections(errors)
         except Exception as exc:  # defensive boundary around OS inspection
-            errors.append(f"리스너 스캔 실패: {exc}")
+            errors.append(f"Listener scan failed: {exc}")
             connections = []
 
         grouped: dict[int | str, set[Endpoint]] = defaultdict(set)
@@ -101,7 +101,10 @@ class LinuxServiceScanner:
         try:
             system_connections = list(self._net_connections(kind="tcp"))
         except psutil.AccessDenied:
-            errors.append("시스템 전체 소켓 정보 접근이 제한되어 확인 가능한 프로세스만 표시합니다.")
+            errors.append(
+                "Access to system-wide socket information is restricted; "
+                "showing only observable processes."
+            )
             return self._read_connections_per_process()
 
         # Linux can return listener rows while withholding their PID. Enrich only
@@ -255,7 +258,7 @@ class LinuxServiceScanner:
     ) -> tuple[ServiceSnapshot, tuple[int, int] | None]:
         warnings: list[str] = []
         if any(endpoint.scope == EndpointScope.WILDCARD for endpoint in endpoints):
-            warnings.append("모든 네트워크 인터페이스에서 수신 중")
+            warnings.append("Listens on all network interfaces")
 
         try:
             process = self._process_factory(pid)
@@ -263,7 +266,7 @@ class LinuxServiceScanner:
         except psutil.NoSuchProcess:
             return self._unknown_service(f"pid:{pid}", endpoints, pid=pid), None
         except (psutil.AccessDenied, psutil.ZombieProcess, OSError) as exc:
-            warnings.append(f"프로세스 정보 접근 제한: {type(exc).__name__}")
+            warnings.append(f"Process information access restricted: {type(exc).__name__}")
             return self._unknown_service(f"pid:{pid}", endpoints, pid=pid, warnings=warnings), None
 
         process_key = (pid, int(create_time * 1000))
@@ -285,13 +288,13 @@ class LinuxServiceScanner:
 
         missing = []
         if not command:
-            missing.append("명령")
+            missing.append("command")
         if cwd is None:
-            missing.append("작업 디렉터리")
+            missing.append("working directory")
         if executable is None:
-            missing.append("실행 파일")
+            missing.append("executable")
         if missing:
-            warnings.append("확인 불가: " + ", ".join(missing))
+            warnings.append("Unavailable: " + ", ".join(missing))
 
         ownership = self._ownership(uid)
         can_terminate = (
@@ -370,7 +373,7 @@ class LinuxServiceScanner:
         warnings: list[str] | None = None,
     ) -> ServiceSnapshot:
         warning_items = list(warnings or [])
-        warning_items.append("소유 프로세스를 확인할 수 없음")
+        warning_items.append("Unable to identify the owning process")
         if any(endpoint.scope == EndpointScope.WILDCARD for endpoint in endpoints):
             warning_items.append("Listens on all network interfaces")
         port_label = ", ".join(str(endpoint.port) for endpoint in endpoints)

@@ -64,12 +64,12 @@ class PresentationTests(unittest.TestCase):
                 make_service(service_id="s1", project=project, port=3000),
             )
         )
-        self.assertEqual([group.name for group in groups], ["a-project", "기타", "컨테이너"])
+        self.assertEqual([group.name for group in groups], ["a-project", "Other", "Containers"])
 
     def test_formatters(self) -> None:
         self.assertEqual(format_bytes(1024 * 1024), "1.0 MB")
-        self.assertEqual(format_duration(3660), "1시간 1분")
-        self.assertEqual(format_cpu(None), "계산 중")
+        self.assertEqual(format_duration(3660), "1 hour 1 minute")
+        self.assertEqual(format_cpu(None), "Calculating")
         self.assertEqual(format_cpu(2.345), "2.3%")
 
 

@@ -32,7 +32,7 @@ class ProcessTerminator:
         if pid in {1, self._own_pid} or pid <= 1:
             return TerminationResult(
                 status="protected",
-                message="보호된 프로세스는 종료하지 않습니다.",
+                message="Protected processes will not be terminated.",
                 pid=pid,
                 force=force,
             )
@@ -43,14 +43,14 @@ class ProcessTerminator:
         except psutil.NoSuchProcess:
             return TerminationResult(
                 status="already_exited",
-                message="프로세스가 이미 종료되었습니다.",
+                message="The process has already exited.",
                 pid=pid,
                 force=force,
             )
         except (psutil.AccessDenied, psutil.ZombieProcess, OSError) as exc:
             return TerminationResult(
                 status="permission_denied",
-                message=f"프로세스 정보를 확인할 수 없습니다: {type(exc).__name__}.",
+                message=f"Could not inspect process information: {type(exc).__name__}.",
                 pid=pid,
                 force=force,
             )
@@ -58,7 +58,7 @@ class ProcessTerminator:
         if abs(actual_create_time - expected_create_time) > 0.5:
             return TerminationResult(
                 status="pid_reused",
-                message="PID가 다른 프로세스에 재사용되어 종료하지 않았습니다.",
+                message="The PID was reused by another process; no signal was sent.",
                 pid=pid,
                 force=force,
             )
@@ -68,14 +68,14 @@ class ProcessTerminator:
         except (AttributeError, psutil.NoSuchProcess):
             return TerminationResult(
                 status="already_exited",
-                message="프로세스가 이미 종료되었습니다.",
+                message="The process has already exited.",
                 pid=pid,
                 force=force,
             )
         except (psutil.AccessDenied, psutil.ZombieProcess, OSError):
             return TerminationResult(
                 status="permission_denied",
-                message="프로세스 소유자를 확인할 수 없습니다.",
+                message="Could not determine the process owner.",
                 pid=pid,
                 force=force,
             )
@@ -83,7 +83,7 @@ class ProcessTerminator:
         if effective_uid != self._current_uid:
             return TerminationResult(
                 status="permission_denied",
-                message="현재 사용자 소유 프로세스만 종료할 수 있습니다.",
+                message="Only processes owned by the current user can be terminated.",
                 pid=pid,
                 force=force,
             )
@@ -96,14 +96,14 @@ class ProcessTerminator:
             process.wait(timeout=timeout_seconds)
             return TerminationResult(
                 status="terminated",
-                message="프로세스를 강제 종료했습니다." if force else "프로세스를 종료했습니다.",
+                message="The process was forcefully terminated." if force else "The process was terminated.",
                 pid=pid,
                 force=force,
             )
         except psutil.NoSuchProcess:
             return TerminationResult(
                 status="terminated",
-                message="프로세스가 종료되었습니다.",
+                message="The process has exited.",
                 pid=pid,
                 force=force,
             )
@@ -111,9 +111,9 @@ class ProcessTerminator:
             return TerminationResult(
                 status="still_running",
                 message=(
-                    "프로세스가 SIGTERM에 응답하지 않고 계속 실행 중입니다."
+                    "The process did not respond to SIGTERM and is still running."
                     if not force
-                    else "SIGKILL 이후에도 프로세스가 실행 중인 것으로 표시됩니다."
+                    else "The process still appears to be running after SIGKILL."
                 ),
                 pid=pid,
                 force=force,
@@ -121,14 +121,14 @@ class ProcessTerminator:
         except psutil.AccessDenied:
             return TerminationResult(
                 status="permission_denied",
-                message="종료 신호를 보낼 권한이 없습니다.",
+                message="Permission denied while sending the termination signal.",
                 pid=pid,
                 force=force,
             )
         except OSError as exc:
             return TerminationResult(
                 status="error",
-                message=f"프로세스 종료 실패: {exc}",
+                message=f"Failed to terminate the process: {exc}",
                 pid=pid,
                 force=force,
             )

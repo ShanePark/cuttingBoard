@@ -202,7 +202,7 @@ class DockerListingTests(unittest.TestCase):
 
         self.assertTrue(listing.available)
         self.assertEqual(listing.containers, ())
-        self.assertEqual(listing.message, "컨테이너가 없습니다.")
+        self.assertEqual(listing.message, "No containers found.")
 
     def test_missing_docker_binary(self) -> None:
         runner = FakeRunner(error=FileNotFoundError(2, "No such file or directory", "docker"))
@@ -211,7 +211,7 @@ class DockerListingTests(unittest.TestCase):
 
         self.assertFalse(listing.available)
         self.assertEqual(listing.containers, ())
-        self.assertEqual(listing.message, "Docker CLI를 찾을 수 없습니다.")
+        self.assertEqual(listing.message, "Docker CLI could not be found.")
 
     def test_daemon_not_running_keeps_the_stderr_hint(self) -> None:
         stderr = (
@@ -224,7 +224,7 @@ class DockerListingTests(unittest.TestCase):
 
         self.assertFalse(listing.available)
         assert listing.message is not None
-        self.assertIn("Docker 데몬에 연결할 수 없습니다.", listing.message)
+        self.assertIn("Could not connect to the Docker daemon.", listing.message)
         self.assertIn("Cannot connect to the Docker daemon", listing.message)
 
     def test_permission_denied_is_reported_as_a_permission_problem(self) -> None:
@@ -235,7 +235,7 @@ class DockerListingTests(unittest.TestCase):
 
         self.assertFalse(listing.available)
         assert listing.message is not None
-        self.assertIn("Docker 소켓에 접근할 권한이 없습니다.", listing.message)
+        self.assertIn("Permission denied while accessing the Docker socket.", listing.message)
         self.assertIn("permission denied", listing.message)
 
     def test_unrecognised_failure_falls_back_to_the_generic_message(self) -> None:
@@ -245,7 +245,7 @@ class DockerListingTests(unittest.TestCase):
 
         self.assertFalse(listing.available)
         assert listing.message is not None
-        self.assertIn("Docker 명령이 실패했습니다.", listing.message)
+        self.assertIn("Docker command failed.", listing.message)
         # Only the first line of stderr, so the tab shows one readable sentence.
         self.assertIn("unknown flag: --all", listing.message)
         self.assertNotIn("--help", listing.message)
@@ -254,7 +254,7 @@ class DockerListingTests(unittest.TestCase):
         listing = list_containers(runner=FakeRunner(returncode=1, stderr=""))
 
         self.assertFalse(listing.available)
-        self.assertEqual(listing.message, "Docker 명령이 실패했습니다.")
+        self.assertEqual(listing.message, "Docker command failed.")
 
     def test_long_stderr_hint_is_trimmed(self) -> None:
         runner = FakeRunner(returncode=1, stderr="x" * 400)
@@ -272,7 +272,7 @@ class DockerListingTests(unittest.TestCase):
 
         self.assertFalse(listing.available)
         self.assertEqual(listing.containers, ())
-        self.assertEqual(listing.message, "Docker가 제한 시간 안에 응답하지 않았습니다.")
+        self.assertEqual(listing.message, "Docker did not respond within the time limit.")
 
     def test_os_error_never_escapes(self) -> None:
         runner = FakeRunner(error=PermissionError(13, "Permission denied"))
@@ -281,7 +281,7 @@ class DockerListingTests(unittest.TestCase):
 
         self.assertFalse(listing.available)
         assert listing.message is not None
-        self.assertIn("Docker CLI를 실행할 수 없습니다.", listing.message)
+        self.assertIn("Docker CLI could not be launched.", listing.message)
 
     def test_timeout_is_handed_to_the_runner(self) -> None:
         runner = FakeRunner(stdout=ps_line())
@@ -347,7 +347,7 @@ class DefaultRunnerTests(unittest.TestCase):
             listing = list_containers()
 
         self.assertFalse(listing.available)
-        self.assertEqual(listing.message, "Docker CLI를 찾을 수 없습니다.")
+        self.assertEqual(listing.message, "Docker CLI could not be found.")
 
 
 class ContainerInfoTests(unittest.TestCase):

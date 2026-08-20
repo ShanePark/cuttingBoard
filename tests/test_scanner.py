@@ -98,7 +98,7 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual(service.ownership, Ownership.CURRENT_USER)
             self.assertTrue(service.can_terminate)
             self.assertEqual(service.process.cpu_percent if service.process else None, 2.5)
-            self.assertIn("모든 네트워크 인터페이스에서 수신 중", service.warnings)
+            self.assertIn("Listens on all network interfaces", service.warnings)
             self.assertEqual(service.endpoints[0].scope, EndpointScope.LOOPBACK)
 
     def test_pidless_global_row_is_enriched_from_current_user_process_scan(self) -> None:

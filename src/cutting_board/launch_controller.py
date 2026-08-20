@@ -39,7 +39,7 @@ class LaunchController:
         with self._lock:
             self._ensure_open_locked()
             if self._runner.is_profile_active(profile.id):
-                raise ManagedProcessError("실행 중인 프로필은 수정할 수 없습니다.")
+                raise ManagedProcessError("A running launch profile cannot be edited.")
             profiles = list(self._profiles)
             for index, existing in enumerate(profiles):
                 if existing.id == profile.id:
@@ -55,7 +55,7 @@ class LaunchController:
         with self._lock:
             self._ensure_open_locked()
             if self._runner.is_profile_active(profile_id):
-                raise ManagedProcessError("실행 중인 프로필은 삭제할 수 없습니다.")
+                raise ManagedProcessError("A running launch profile cannot be deleted.")
             if not any(profile.id == profile_id for profile in self._profiles):
                 return False
             profiles = tuple(profile for profile in self._profiles if profile.id != profile_id)
@@ -102,8 +102,8 @@ class LaunchController:
         for profile in self._profiles:
             if profile.id == profile_id:
                 return profile
-        raise KeyError(f"등록되지 않은 실행 프로필입니다: {profile_id}")
+        raise KeyError(f"Unknown launch profile: {profile_id}")
 
     def _ensure_open_locked(self) -> None:
         if self._closed:
-            raise ManagedProcessError("실행 관리자가 이미 종료되었습니다.")
+            raise ManagedProcessError("The launch profile manager is already closed.")

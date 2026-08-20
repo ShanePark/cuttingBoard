@@ -69,8 +69,8 @@ TAB_LAUNCH = "launch"
 DOCKER_REFRESH_SECONDS = 6.0
 DOCKER_IDLE_REFRESH_SECONDS = 45.0
 
-LOOSE_GROUP = "단독 컨테이너"
-STOPPED_GROUP = "중지됨"
+LOOSE_GROUP = "Standalone Containers"
+STOPPED_GROUP = "Stopped"
 
 
 class _ToolbarTab(tk.Canvas):
@@ -203,7 +203,7 @@ class _SegmentedTabBar(tk.Canvas):
 class _SettingsGear(tk.Canvas):
     """An icon-only settings control sized for a comfortable toolbar target."""
 
-    accessible_name = "설정"
+    accessible_name = "Settings"
 
     def __init__(self, parent: tk.Misc, *, command: Callable[[], None]) -> None:
         super().__init__(
@@ -259,9 +259,9 @@ class CuttingBoardWindow:
     """The board: every development service running right now, as tiles."""
 
     _TAB_LABELS: ClassVar[dict[str, str]] = {
-        TAB_SERVICES: "서비스",
+        TAB_SERVICES: "Services",
         TAB_DOCKER: "Docker",
-        TAB_LAUNCH: "실행 구성",
+        TAB_LAUNCH: "Launch Profiles",
     }
 
     def __init__(
@@ -377,9 +377,9 @@ class CuttingBoardWindow:
 
         self._tabs: dict[str, _ToolbarTab] = {}
         for key, label in (
-            (TAB_SERVICES, "서비스"),
+            (TAB_SERVICES, "Services"),
             (TAB_DOCKER, "Docker"),
-            (TAB_LAUNCH, "실행 구성"),
+            (TAB_LAUNCH, "Launch Profiles"),
         ):
             self._tabs[key] = self._tab_bar.add_tab(
                 text=label,
@@ -511,10 +511,10 @@ class CuttingBoardWindow:
         if snapshot is None:
             self._paint_tabs({TAB_LAUNCH: len(self.launch_controller.profiles)})
             if self.tab == TAB_LAUNCH:
-                self.status.configure(text="서비스를 찾는 중")
+                self.status.configure(text="Finding services")
                 self._render_launch_profiles()
                 return
-            self._draw_body(("loading",), lambda: self._render_empty("서비스를 찾는 중"))
+            self._draw_body(("loading",), lambda: self._render_empty("Finding services"))
             return
 
         services = visible_services(snapshot)
@@ -526,7 +526,8 @@ class CuttingBoardWindow:
             }
         )
         self.status.configure(
-            text=f"리스너 {snapshot.endpoint_count}개  ·  {snapshot.scan_duration_ms} ms"
+            text=f"{_listener_count_label(snapshot.endpoint_count)}  ·  "
+            f"{snapshot.scan_duration_ms} ms"
         )
 
         if self.tab == TAB_DOCKER:
@@ -596,7 +597,7 @@ class CuttingBoardWindow:
     def _render_services(self, services: tuple[ServiceSnapshot, ...]) -> None:
         groups = group_services(services)
         if not groups:
-            message = "실행 중인 개발 서비스 없음"
+            message = "No development services are running"
             self._draw_body(("empty", message), lambda: self._render_empty(message))
             return
 
@@ -645,7 +646,7 @@ class CuttingBoardWindow:
         stopped = snapshot.state in {LaunchState.STOPPED, LaunchState.FAILED} and not owned
         message = snapshot.message
         if external:
-            message = "외부에서 실행한 프로세스입니다. Cutting Board에서는 종료하지 않습니다."
+            message = "This process is running externally and cannot be stopped by Cutting Board."
         return LaunchTaskView(
             name=task.name,
             cwd=task.cwd,
@@ -699,9 +700,9 @@ class CuttingBoardWindow:
         try:
             self.launch_controller.save_profile(profile)
         except (KeyError, OSError, RuntimeError, ValueError) as exc:
-            self._show_toast(f"실행 구성을 저장하지 못했습니다: {exc}", error=True)
+            self._show_toast(f"Could not save the launch profile: {exc}", error=True)
             return
-        self._show_toast("실행 구성을 저장했습니다.")
+        self._show_toast("Launch profile saved.")
         self.render()
 
     def _delete_launch_profile(self, profile_id: str) -> None:
@@ -710,20 +711,20 @@ class CuttingBoardWindow:
             self.root,
             fonts=self.fonts,
             icons=self.icons,
-            title="실행 구성 삭제",
+            title="Delete Launch Profile",
             headline=profile.name,
             meta=profile.project_root,
-            question="이 실행 구성과 저장된 명령을 삭제합니다.",
-            confirm_label="삭제",
+            question="This will delete the launch profile and its saved commands.",
+            confirm_label="Delete",
         )
         if not confirmed:
             return
         try:
             self.launch_controller.delete_profile(profile_id)
         except (KeyError, OSError, RuntimeError, ValueError) as exc:
-            self._show_toast(f"실행 구성을 삭제하지 못했습니다: {exc}", error=True)
+            self._show_toast(f"Could not delete the launch profile: {exc}", error=True)
             return
-        self._show_toast("실행 구성을 삭제했습니다.")
+        self._show_toast("Launch profile deleted.")
         self.render()
 
     def _start_launch_profile(self, profile_id: str) -> None:
@@ -732,7 +733,7 @@ class CuttingBoardWindow:
         if not task_names:
             return
         self._submit_launch_action(
-            "실행 구성을 시작하지 못했습니다",
+            "Could not start the launch profile",
             lambda: tuple(
                 self.launch_controller.start_task(profile_id, task_name)
                 for task_name in task_names
@@ -741,7 +742,7 @@ class CuttingBoardWindow:
 
     def _stop_launch_profile(self, profile_id: str) -> None:
         self._submit_launch_action(
-            "실행 구성을 종료하지 못했습니다",
+            "Could not stop the launch profile",
             lambda: self.launch_controller.stop_profile(profile_id),
         )
 
@@ -749,20 +750,20 @@ class CuttingBoardWindow:
         profile = self.launch_controller.profile(profile_id)
         task = profile.task(task_name)
         if self._expected_listener_is_external(profile, task):
-            self._show_toast("외부 실행 중인 작업은 중복 실행하지 않습니다.", error=True)
+            self._show_toast("A task running externally cannot be started again.", error=True)
             return
         self._submit_launch_action(
-            f"{task_name} 작업을 시작하지 못했습니다",
+            f"Could not start task {task_name}",
             lambda: self.launch_controller.start_task(profile_id, task_name),
         )
 
     def _stop_launch_task(self, profile_id: str, task_name: str) -> None:
         snapshot = self.launch_controller.snapshot(profile_id, task_name)
         if not self._is_owned_snapshot(snapshot):
-            self._show_toast("Cutting Board에서 실행한 작업만 종료할 수 있습니다.", error=True)
+            self._show_toast("Only tasks started by Cutting Board can be stopped.", error=True)
             return
         self._submit_launch_action(
-            f"{task_name} 작업을 종료하지 못했습니다",
+            f"Could not stop task {task_name}",
             lambda: self.launch_controller.stop_task(profile_id, task_name),
         )
 
@@ -895,7 +896,7 @@ class CuttingBoardWindow:
         try:
             listing = future.result()
         except Exception:  # noqa: BLE001 - background integration boundary
-            listing = ContainerListing.unavailable("Docker 정보를 가져오지 못했습니다.")
+            listing = ContainerListing.unavailable("Could not retrieve Docker information.")
         self.container_results.put(listing)
 
     def _drain_container_results(self) -> None:
@@ -922,11 +923,11 @@ class CuttingBoardWindow:
     def _render_docker(self, snapshot: WorkspaceSnapshot) -> None:
         listing = self.containers
         if listing is None:
-            message = "컨테이너를 찾는 중"
+            message = "Finding containers"
             self._draw_body(("containers-pending",), lambda: self._render_empty(message))
             return
         if not listing.available:
-            message = listing.message or "Docker를 사용할 수 없습니다"
+            message = listing.message or "Docker is unavailable"
             services = container_services(snapshot)
             signature = (
                 "docker-unavailable",
@@ -936,7 +937,7 @@ class CuttingBoardWindow:
             self._draw_body(signature, lambda: self._build_port_fallback(message, services))
             return
         if not listing.containers:
-            message = listing.message or "컨테이너가 없습니다"
+            message = listing.message or "No containers found"
             self._draw_body(("containers-none", message), lambda: self._render_empty(message))
             return
 
@@ -993,7 +994,7 @@ class CuttingBoardWindow:
         SectionHeader(
             section,
             fonts=self.fonts,
-            title="게시된 포트",
+            title="Published Ports",
             path=None,
             accent=theme.VIOLET,
         ).pack(fill="x")
@@ -1102,11 +1103,11 @@ class CuttingBoardWindow:
             self.root,
             fonts=self.fonts,
             icons=self.icons,
-            title="종료",
+            title="Stop Service",
             headline=service.display_name,
             meta=f"PID {process.pid}  ·  {ports}",
-            question="SIGTERM을 보내 이 서비스를 종료합니다.",
-            confirm_label="종료",
+            question="Send SIGTERM to stop this service.",
+            confirm_label="Stop",
             tech=service.tech,
         )
         if confirmed:
@@ -1150,7 +1151,7 @@ class CuttingBoardWindow:
         try:
             result = future.result()
         except Exception as exc:  # noqa: BLE001 - background integration boundary
-            self._show_toast(f"종료 실패: {exc}", error=True)
+            self._show_toast(f"Failed to stop: {exc}", error=True)
             self.render()
             return
 
@@ -1162,11 +1163,13 @@ class CuttingBoardWindow:
                 self.root,
                 fonts=self.fonts,
                 icons=self.icons,
-                title="강제 종료",
+                title="Force Stop",
                 headline=service.display_name,
-                meta=f"PID {process.pid}  ·  SIGTERM 무응답" if process else "SIGTERM 무응답",
-                question="아직 실행 중입니다. SIGKILL로 강제 종료할까요?",
-                confirm_label="강제 종료",
+                meta=f"PID {process.pid}  ·  No response to SIGTERM"
+                if process
+                else "No response to SIGTERM",
+                question="It is still running. Force stop it with SIGKILL?",
+                confirm_label="Force Stop",
                 tech=service.tech,
             )
             if confirmed:
@@ -1222,11 +1225,11 @@ class CuttingBoardWindow:
                 self.root,
                 fonts=self.fonts,
                 icons=self.icons,
-                title="Cutting Board 종료",
-                headline="실행 중인 작업이 있습니다",
-                meta="앱이 시작한 작업만 종료합니다.",
-                question="Cutting Board에서 실행한 프로세스가 모두 종료됩니다.",
-                confirm_label="종료",
+                title="Quit Cutting Board",
+                headline="Tasks are still running",
+                meta="Only tasks started by this app will be stopped.",
+                question="All processes started by Cutting Board will be stopped.",
+                confirm_label="Quit",
             )
             if not confirmed:
                 return
@@ -1279,6 +1282,12 @@ def _toolbar_surface_colours(hovered: bool, focused: bool) -> tuple[str, str]:
     if focused:
         return fill, theme.ACCENT
     return fill, theme.BORDER if hovered else theme.CANVAS
+
+
+def _listener_count_label(count: int) -> str:
+    """Format a listener count with the correct singular or plural noun."""
+    noun = "listener" if count == 1 else "listeners"
+    return f"{count} {noun}"
 
 
 def _segmented_surface_colours(

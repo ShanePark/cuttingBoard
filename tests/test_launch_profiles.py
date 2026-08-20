@@ -14,7 +14,7 @@ from cutting_board.services.launch_profiles import LaunchProfileStore, LaunchPro
 def make_profile(root: Path, profile_id: str = "dutypark") -> LaunchProfile:
     return LaunchProfile(
         id=profile_id,
-        name="듀티파크 개발",
+        name="Dutypark Development",
         project_root=str(root),
         tasks=(
             LaunchTask(
@@ -45,16 +45,16 @@ class LaunchModelTests(unittest.TestCase):
             )
 
     def test_validation_rejects_invalid_fields_and_project_escape(self) -> None:
-        with self.assertRaisesRegex(ValueError, "작업 이름"):
+        with self.assertRaisesRegex(ValueError, "Task name"):
             LaunchTask(name=" ", cwd=".", command="run")
-        with self.assertRaisesRegex(ValueError, "1~65535"):
+        with self.assertRaisesRegex(ValueError, "between 1 and 65535"):
             LaunchTask(name="web", cwd=".", command="run", expected_port=70000)
-        with self.assertRaisesRegex(ValueError, "숫자"):
+        with self.assertRaisesRegex(ValueError, "integer"):
             LaunchTask(name="web", cwd=".", command="run", expected_port=True)
-        with self.assertRaisesRegex(ValueError, "자동 빌드 명령"):
+        with self.assertRaisesRegex(ValueError, "Auto-build command"):
             LaunchTask(name="web", cwd=".", command="run", watch_command=" ")
         with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
-            ValueError, "프로젝트 안"
+            ValueError, "inside the project folder"
         ):
             LaunchProfile(
                 id="escape",
@@ -64,7 +64,7 @@ class LaunchModelTests(unittest.TestCase):
             )
 
     def test_validation_rejects_duplicate_task_names(self) -> None:
-        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, "중복"):
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, "Duplicate"):
             LaunchProfile(
                 id="duplicate",
                 name="Duplicate",
@@ -100,7 +100,7 @@ class LaunchProfileStoreTests(unittest.TestCase):
             store.save((first, second))
             replacement = LaunchProfile(
                 id="first",
-                name="수정됨",
+                name="Updated",
                 project_root=str(root),
                 tasks=(LaunchTask(name="worker", cwd=".", command="./worker"),),
             )
@@ -112,17 +112,17 @@ class LaunchProfileStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "launch_profiles.json"
             path.write_text("{broken", encoding="utf-8")
-            with self.assertRaisesRegex(LaunchProfileStoreError, "읽을 수 없습니다"):
+            with self.assertRaisesRegex(LaunchProfileStoreError, "Unable to read"):
                 LaunchProfileStore(path).load()
             path.write_text(json.dumps({"version": 2, "profiles": []}), encoding="utf-8")
-            with self.assertRaisesRegex(LaunchProfileStoreError, "지원하지 않는"):
+            with self.assertRaisesRegex(LaunchProfileStoreError, "Unsupported"):
                 LaunchProfileStore(path).load()
 
     def test_duplicate_profile_ids_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             profile = make_profile(root)
-            with self.assertRaisesRegex(ValueError, "중복"):
+            with self.assertRaisesRegex(ValueError, "Duplicate"):
                 LaunchProfileStore(root / "launch_profiles.json").save((profile, profile))
 
     def test_replace_failure_keeps_previous_file_and_cleans_temporary_file(self) -> None:
@@ -133,7 +133,7 @@ class LaunchProfileStoreTests(unittest.TestCase):
             original = path.read_bytes()
             with patch(
                 "cutting_board.services.launch_profiles.os.replace", side_effect=OSError
-            ), self.assertRaisesRegex(LaunchProfileStoreError, "저장할 수 없습니다"):
+            ), self.assertRaisesRegex(LaunchProfileStoreError, "Unable to save"):
                 LaunchProfileStore(path).save((make_profile(root),))
             self.assertEqual(path.read_bytes(), original)
             self.assertEqual(list(root.glob("*.tmp")), [])

@@ -26,6 +26,7 @@ from cutting_board.ui.launch_widgets import (
     _action_insets,
     _middle_ellipsis,
     _profiles_changed,
+    _task_count_label,
     profile_primary_action,
     state_presentation,
     task_primary_action,
@@ -93,14 +94,14 @@ class LaunchUiTest(unittest.TestCase):
         for port in (0, 65536, -1, True):
             with self.subTest(port=port), self.assertRaisesRegex(
                 LaunchProfileValidationError,
-                "1~65535",
+                "1 to 65535",
             ):
                 validate_profile_draft(
                     _draft(self.root, LaunchTaskDraft("Backend", ".", "run", port))
                 )
 
     def test_profile_draft_rejects_case_insensitive_duplicate_task_names(self) -> None:
-        with self.assertRaisesRegex(LaunchProfileValidationError, "중복"):
+        with self.assertRaisesRegex(LaunchProfileValidationError, "Duplicate"):
             validate_profile_draft(
                 _draft(
                     self.root,
@@ -110,7 +111,7 @@ class LaunchUiTest(unittest.TestCase):
             )
 
     def test_profile_draft_rejects_task_cwd_outside_project(self) -> None:
-        with self.assertRaisesRegex(LaunchProfileValidationError, "프로젝트 안"):
+        with self.assertRaisesRegex(LaunchProfileValidationError, "inside the project"):
             validate_profile_draft(
                 _draft(
                     self.root / "project",
@@ -131,7 +132,7 @@ class LaunchUiTest(unittest.TestCase):
 
         presentation = state_presentation(task.state, external=task.external)
 
-        self.assertEqual(presentation.label, "외부 실행 중")
+        self.assertEqual(presentation.label, "Running externally")
         self.assertFalse(task.can_stop)
 
     def test_unknown_state_remains_visible_instead_of_looking_stopped(self) -> None:
@@ -167,9 +168,9 @@ class LaunchUiTest(unittest.TestCase):
     def test_profile_exposes_only_the_contextual_group_action(self) -> None:
         task = LaunchTaskView("Backend", ".", "run")
         cases = (
-            (True, False, ("start", "▶ 전체 실행")),
-            (False, True, ("stop", "■ 전체 종료")),
-            (True, True, ("start", "▶ 나머지")),
+            (True, False, ("start", "▶ Start All")),
+            (False, True, ("stop", "■ Stop All")),
+            (True, True, ("start", "▶ Start Remaining")),
             (False, False, None),
         )
         for can_start, can_stop, expected in cases:
@@ -185,6 +186,10 @@ class LaunchUiTest(unittest.TestCase):
                 action = profile_primary_action(profile)
                 actual = None if action is None else (action.key, action.label)
                 self.assertEqual(actual, expected)
+
+    def test_task_count_label_uses_singular_and_plural_nouns(self) -> None:
+        self.assertEqual(_task_count_label(1), "1 Task")
+        self.assertEqual(_task_count_label(2), "2 Tasks")
 
     def test_task_exposes_stop_before_start_and_never_both(self) -> None:
         cases = (

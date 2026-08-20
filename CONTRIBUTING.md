@@ -5,15 +5,15 @@
 **Documentation is written in English.** That covers Markdown files, docstrings,
 code comments and commit messages.
 
-**User-facing strings in the application are Korean.** Anything the user reads in
-the window — labels, buttons, dialog text, toasts, warnings attached to a
-service, the messages in `TerminationResult` and `ContainerListing` — stays
-Korean. Product or technology names such as Docker, Vite and Spring Boot remain
-in their established form; the top-level tabs are **서비스**, **Docker** and
-**실행 구성**.
+**User-facing strings in the application are written in English.** Anything the
+user reads in the window — labels, buttons, dialog text, toasts, warnings attached
+to a service, and the messages in `TerminationResult` and `ContainerListing` —
+stays English. Product or technology names such as Docker, Vite and Spring Boot
+remain in their established form; the top-level tabs are **Services**, **Docker**
+and **Launch Profiles**.
 
-The two rules do not overlap: a Korean string in a docstring is wrong, and an
-English sentence shown to the user is wrong.
+Documentation and application text follow the same language policy: all
+repository content is written in English.
 
 ## Setup
 
@@ -185,8 +185,8 @@ classifier's dependency-value exclusion are all worked examples.
 8. **No feature may require a service to register itself** with Cutting Board.
    Discovery stays unconditional.
 9. **External detection is not managed ownership.** A project-root and expected-
-   port match may display `외부 실행 중`, but launch controls must never signal,
-   adopt or capture output from that process.
+   port match may display `Running externally`, but launch controls must never
+   signal, adopt or capture output from that process.
 10. **Close owns cleanup.** Every child process group started by the launch
     runner must be terminated on interactive, signal-driven and automated window
     shutdown. An interactive close warns before cleanup and remains cancellable.
@@ -197,7 +197,7 @@ classifier's dependency-value exclusion are all worked examples.
     to dark when platform detection is unavailable. A mode change rebuilds widgets
     but must not recreate or stop scanner and launch runtimes.
 
-## Developing launch configurations
+## Developing launch profiles
 
 `launch_models.py` defines immutable profiles, tasks, events and runtime
 snapshots. `services/launch_profiles.py` atomically persists the versioned

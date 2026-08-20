@@ -42,7 +42,7 @@ class DemoProcessTerminator(ProcessTerminator):
         del expected_create_time, timeout_seconds
         return TerminationResult(
             status="protected",
-            message="데모 데이터에서는 실제 프로세스를 종료하지 않습니다.",
+            message="Demo data does not terminate real processes.",
             pid=pid,
             force=force,
         )
@@ -109,8 +109,8 @@ class DemoLaunchController:
             task_name=task_name,
             state=LaunchState.RUNNING,
             expected_port=task.expected_port,
-            logs=("[데모] 실제 프로세스를 실행하지 않았습니다.",),
-            message="데모 작업이 실행 중입니다.",
+            logs=("[Demo] No real process was started.",),
+            message="The demo task is running.",
         )
         self._snapshots[(profile_id, task_name)] = snapshot
         self.events.put(LaunchEvent(snapshot))
@@ -128,8 +128,8 @@ class DemoLaunchController:
             task_name=task_name,
             state=LaunchState.STOPPED,
             expected_port=task.expected_port,
-            logs=("[데모] 실제 프로세스를 실행하지 않았습니다.",),
-            message="데모 작업이 종료되었습니다.",
+            logs=("[Demo] No real process was started.",),
+            message="The demo task has stopped.",
         )
         self._snapshots[(profile_id, task_name)] = snapshot
         self.events.put(LaunchEvent(snapshot))
@@ -304,7 +304,7 @@ def demo_snapshot() -> WorkspaceSnapshot:
             cpu=cpu,
             memory=memory_mb * 1024 * 1024,
             uptime=uptime,
-            warnings=("모든 네트워크 인터페이스에서 수신 중",)
+            warnings=("Listens on all network interfaces",)
             if any(scope is EndpointScope.WILDCARD for _, scope in ports)
             else (),
             origin=_DEMO_ORIGINS.get(identity, UNKNOWN_ORIGIN),

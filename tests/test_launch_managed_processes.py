@@ -197,7 +197,7 @@ class ManagedProcessRunnerTests(unittest.TestCase):
             profile = make_profile(Path(directory))
             runner.start_task(profile, "backend")
 
-            with self.assertRaisesRegex(ManagedProcessError, "이미 실행 중"):
+            with self.assertRaisesRegex(ManagedProcessError, "already running"):
                 runner.start_task(profile, "backend")
             self.assertEqual(len(spawner.calls), 1)
             runner.close()
@@ -216,8 +216,8 @@ class ManagedProcessRunnerTests(unittest.TestCase):
                 time.sleep(0.005)
 
             self.assertEqual(len(snapshot.logs), 3)
-            self.assertTrue(any(line.startswith("[실행]") for line in snapshot.logs))
-            self.assertTrue(any(line.startswith("[자동 빌드]") for line in snapshot.logs))
+            self.assertTrue(any(line.startswith("[Run]") for line in snapshot.logs))
+            self.assertTrue(any(line.startswith("[Auto-build]") for line in snapshot.logs))
             self.assertIsNotNone(snapshot.main_pid)
             self.assertIsNotNone(snapshot.watch_pid)
             runner.close()
@@ -238,7 +238,7 @@ class ManagedProcessRunnerTests(unittest.TestCase):
                 time.sleep(0.005)
 
             self.assertEqual(snapshot.state, LaunchState.FAILED)
-            self.assertIn("자동 빌드 프로세스", snapshot.message or "")
+            self.assertIn("Auto-build process", snapshot.message or "")
             self.assertIsNone(spawner.handles[7100].poll())
             stopped = runner.stop_task(profile.id, "backend")
             self.assertEqual(stopped.state, LaunchState.STOPPED)
@@ -388,7 +388,7 @@ class ManagedProcessRunnerTests(unittest.TestCase):
             runner.close()
 
             self.assertIsNotNone(spawner.handles[7100].poll())
-            with self.assertRaisesRegex(ManagedProcessError, "이미 종료"):
+            with self.assertRaisesRegex(ManagedProcessError, "already closed"):
                 runner.start_task(profile, "frontend")
 
     def test_missing_working_directory_is_failed_without_spawning(self) -> None:
@@ -406,7 +406,7 @@ class ManagedProcessRunnerTests(unittest.TestCase):
             snapshot = runner.start_task(profile, "web")
 
             self.assertEqual(snapshot.state, LaunchState.FAILED)
-            self.assertIn("찾을 수 없습니다", snapshot.message or "")
+            self.assertIn("not found", snapshot.message or "")
             self.assertEqual(spawner.calls, [])
 
     @unittest.skipUnless(os.name == "posix" and Path("/bin/zsh").exists(), "POSIX process groups required")

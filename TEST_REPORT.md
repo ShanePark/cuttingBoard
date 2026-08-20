@@ -206,8 +206,8 @@ Still unverified, and needing a human at a real desktop session:
 - Font fallback when the preferred families are absent.
 - Whether the offscreen compositor renders identically to a real GNOME session.
 
-`assets/cutting-board-screenshot.png` was captured from `--demo` on the current
-build. The GUI smoke test in `verify.sh` stage 4 asserts nothing about
+The README's `assets/cutting-board-screenshot.png` is an illustrative demo-board
+screenshot. The GUI smoke test in `verify.sh` stage 4 asserts nothing about
 rendering; it proves only that the window constructs, runs and closes without an
 exception.
 
@@ -237,7 +237,7 @@ Confirm on a real desktop session:
 
 - Cutting Board appears in the Ubuntu application menu and its icon is drawn in
   the task switcher and dock;
-- the window and Korean fonts render correctly under Wayland/XWayland;
+- the window text and fonts render correctly under Wayland/XWayland;
 - real Node, Java and Python development servers are attributed to the right
   PIDs and projects;
 - the power glyph stops a test server owned by the current user;

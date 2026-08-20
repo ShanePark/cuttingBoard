@@ -359,7 +359,7 @@ class ServiceTile(tk.Canvas):
             self.create_text(
                 content_x,
                 54,
-                text="중지 중…",
+                text="Stopping…",
                 fill=theme.WARNING,
                 font=self._fonts["tile_meta"],
                 anchor="w",
@@ -373,7 +373,7 @@ class ServiceTile(tk.Canvas):
         details_hint = self.create_text(
             card_right - theme.SPACE_MD,
             110,
-            text="↵ 상세",
+            text="↵ Details",
             fill=theme.TEXT_MUTED,
             font=self._fonts["tile_meta"],
             anchor="e",
@@ -447,7 +447,7 @@ class ServiceTile(tk.Canvas):
         text = format_uptime_compact(process.uptime_seconds)
         if not text:
             return
-        text = f"실행 {text}"
+        text = f"Running {text}"
         colour = self._uptime_colour(process.uptime_seconds)
         dot = self.create_oval(x, y - 3, x + 6, y + 3, fill=colour, outline="")
         label = self.create_text(
@@ -498,7 +498,7 @@ class ServiceTile(tk.Canvas):
             return
         dot, label = self._uptime_items
         colour = self._uptime_colour(process.uptime_seconds if process else None)
-        text = f"실행 {text}"
+        text = f"Running {text}"
         self.coords(dot, x, y - 3, x + 6, y + 3)
         self.itemconfigure(dot, fill=colour)
         self.itemconfigure(label, text=text, fill=colour)
@@ -509,7 +509,7 @@ class ServiceTile(tk.Canvas):
             self.create_text(
                 x,
                 y,
-                text="포트 정보 없음",
+                text="No port information",
                 fill=theme.TEXT_DIM,
                 font=self._fonts["tile_meta"],
                 anchor="w",
@@ -864,7 +864,7 @@ class ContainerTile(tk.Canvas):
             anchor="w",
         )
 
-        state_text = "실행 중" if running else "중지됨"
+        state_text = "Running" if running else "Stopped"
         if container.status:
             state_text += f" · {_ellipsis(container.status, 22)}"
         self.create_oval(content_x, 51, content_x + 6, 57, fill=accent, outline="")
@@ -881,7 +881,7 @@ class ContainerTile(tk.Canvas):
         self._details_hint = self.create_text(
             card_right - theme.SPACE_MD,
             110,
-            text="↵ 상세",
+            text="↵ Details",
             fill=theme.TEXT_MUTED,
             font=self._fonts["tile_meta"],
             anchor="e",
@@ -894,7 +894,7 @@ class ContainerTile(tk.Canvas):
             self.create_text(
                 x,
                 y,
-                text="공개 포트 없음",
+                text="No published ports",
                 fill=theme.TEXT_DIM,
                 font=self._fonts["tile_meta"],
                 anchor="w",

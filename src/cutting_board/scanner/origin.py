@@ -56,7 +56,7 @@ class Origin:
 
     ``id`` is a stable slug that badge artwork and tests key off; ``label``
     is the string the tile shows, kept short because it renders at about 9px
-    on a 176px wide tile. Korean is used only where no product name exists.
+    on a 176px wide tile. Generic origins use short English labels.
     """
 
     kind: OriginKind
@@ -82,8 +82,8 @@ AIDER = Origin(OriginKind.AGENT, "aider", "Aider")
 GEMINI = Origin(OriginKind.AGENT, "gemini", "Gemini")
 VSCODE = Origin(OriginKind.IDE, "vscode", "VS Code")
 JETBRAINS = Origin(OriginKind.IDE, "jetbrains", "JetBrains")
-TERMINAL = Origin(OriginKind.TERMINAL, "terminal", "터미널")
-SYSTEM = Origin(OriginKind.SYSTEM, "system", "시스템")
+TERMINAL = Origin(OriginKind.TERMINAL, "terminal", "Terminal")
+SYSTEM = Origin(OriginKind.SYSTEM, "system", "System")
 
 # Cursor and Windsurf are editors, but they are here because a service they
 # start was started by their agent, not by a human pressing Run. The badge is

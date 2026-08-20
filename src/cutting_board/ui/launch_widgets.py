@@ -81,17 +81,17 @@ TASK_INSET = (14, 11)
 
 
 _STATE_LABELS: dict[str, str] = {
-    "stopped": "중지됨",
-    "starting": "시작 중",
-    "running": "실행 중",
-    "stopping": "종료 중",
-    "failed": "실패",
-    "external": "외부 실행 중",
+    "stopped": "Stopped",
+    "starting": "Starting",
+    "running": "Running",
+    "stopping": "Stopping",
+    "failed": "Failed",
+    "external": "Running externally",
 }
 
 
 def state_presentation(state: str, *, external: bool = False) -> StatePresentation:
-    """Return the Korean label and colour used for a task state."""
+    """Return the English label and colour used for a task state."""
     key = "external" if external else state.strip().lower()
     colours = {
         "stopped": theme.TEXT_DIM,
@@ -102,7 +102,7 @@ def state_presentation(state: str, *, external: bool = False) -> StatePresentati
         "external": theme.VIOLET,
     }
     return StatePresentation(
-        _STATE_LABELS.get(key, state or "상태 확인 중"),
+        _STATE_LABELS.get(key, state or "Checking status"),
         colours.get(key, theme.TEXT_MUTED),
     )
 
@@ -110,19 +110,19 @@ def state_presentation(state: str, *, external: bool = False) -> StatePresentati
 def profile_primary_action(profile: LaunchProfileView) -> ContextAction | None:
     """Choose the one group action that best matches the current profile state."""
     if profile.can_start:
-        label = "▶ 나머지" if profile.can_stop else "▶ 전체 실행"
+        label = "▶ Start Remaining" if profile.can_stop else "▶ Start All"
         return ContextAction("start", label)
     if profile.can_stop:
-        return ContextAction("stop", "■ 전체 종료")
+        return ContextAction("stop", "■ Stop All")
     return None
 
 
 def task_primary_action(task: LaunchTaskView) -> ContextAction | None:
     """Show at most one lifecycle action for a task."""
     if task.can_stop:
-        return ContextAction("stop", "■ 중지")
+        return ContextAction("stop", "■ Stop")
     if task.can_start:
-        return ContextAction("start", "▶ 실행")
+        return ContextAction("start", "▶ Start")
     return None
 
 
@@ -133,6 +133,12 @@ def _middle_ellipsis(value: str, max_characters: int) -> str:
     left = (max_characters - 1) // 2
     right = max_characters - left - 1
     return f"{value[:left]}…{value[-right:]}"
+
+
+def _task_count_label(count: int) -> str:
+    """Format a task count with the correct singular or plural noun."""
+    noun = "Task" if count == 1 else "Tasks"
+    return f"{count} {noun}"
 
 
 def _profiles_changed(
@@ -209,7 +215,7 @@ class ActionButton(tk.Label):
 
 
 class LaunchProfilesPanel(tk.Frame):
-    """Scrollable registered-profile surface for the ``실행 구성`` tab."""
+    """Scrollable registered-profile surface for the ``Launch Profiles`` tab."""
 
     def __init__(
         self,
@@ -258,7 +264,7 @@ class LaunchProfilesPanel(tk.Frame):
         copy.pack(side="left", fill="x", expand=True)
         tk.Label(
             copy,
-            text="실행 구성",
+            text="Launch Profiles",
             bg=theme.CANVAS,
             fg=theme.TEXT,
             font=self._fonts["section"],
@@ -266,7 +272,7 @@ class LaunchProfilesPanel(tk.Frame):
         ).pack(fill="x")
         tk.Label(
             copy,
-            text="백엔드, 프론트엔드와 자동 빌드를 한곳에서 실행합니다.",
+            text="Run backend, frontend, and auto-build tasks together.",
             bg=theme.CANVAS,
             fg=theme.TEXT_MUTED,
             font=self._fonts["small"],
@@ -274,7 +280,7 @@ class LaunchProfilesPanel(tk.Frame):
         ).pack(fill="x", pady=(3, 0))
         ActionButton(
             header,
-            text="＋ 추가",
+            text="＋ Add",
             fonts=self._fonts,
             command=self._callbacks.on_add,
             foreground=theme.ON_ACCENT,
@@ -287,21 +293,21 @@ class LaunchProfilesPanel(tk.Frame):
         empty.pack(fill="x", padx=18, pady=18)
         tk.Label(
             empty,
-            text="등록된 실행 구성이 없습니다",
+            text="No launch profiles yet",
             bg=theme.SURFACE,
             fg=theme.TEXT,
             font=self._fonts["section"],
         ).pack()
         tk.Label(
             empty,
-            text="프로젝트와 실행 명령을 등록하면 IDE 없이 함께 켜고 끌 수 있습니다.",
+            text="Add a project and run commands to start and stop them together without an IDE.",
             bg=theme.SURFACE,
             fg=theme.TEXT_MUTED,
             font=self._fonts["body"],
         ).pack(pady=(7, 15))
         ActionButton(
             empty,
-            text="첫 구성 추가",
+            text="Add First Profile",
             fonts=self._fonts,
             command=self._callbacks.on_add,
             foreground=theme.ACCENT,
@@ -357,7 +363,7 @@ class ProfileCard(tk.Frame):
         ).pack(side="left", fill="x", expand=True)
         tk.Label(
             title_line,
-            text=f"작업 {len(profile.tasks)}개",
+            text=_task_count_label(len(profile.tasks)),
             bg=theme.SURFACE,
             fg=theme.TEXT_DIM,
             font=self._fonts["small"],
@@ -395,14 +401,14 @@ class ProfileCard(tk.Frame):
         if profile.can_edit:
             self._button(
                 secondary,
-                "편집",
+                "Edit",
                 lambda: self._callbacks.on_edit_profile(profile.id),
                 enabled=True,
             ).pack(side="left")
         if profile.can_delete:
             self._button(
                 secondary,
-                "삭제",
+                "Delete",
                 lambda: self._callbacks.on_delete_profile(profile.id),
                 colour=theme.DANGER,
                 enabled=True,
@@ -557,7 +563,7 @@ class TaskRow(tk.Frame):
             ).pack(side="left")
         ActionButton(
             actions,
-            text="≡ 로그",
+            text="≡ Logs",
             fonts=self._fonts,
             command=lambda: self._callbacks.on_show_logs(self._profile_id, task.name),
             foreground=theme.ACCENT,

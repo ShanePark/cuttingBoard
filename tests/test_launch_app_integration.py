@@ -26,6 +26,7 @@ from cutting_board.ui.main_window import (
     CuttingBoardWindow,
     _bind_action,
     _gear_polygon_points,
+    _listener_count_label,
     _segmented_surface_colours,
     _SettingsGear,
     _toolbar_surface_colours,
@@ -218,7 +219,7 @@ class LaunchCloseLifecycleTests(unittest.TestCase):
         self.assertEqual(calls, ["settings", "launch", "scanner", "executor", "root"])
         self.assertEqual(
             ask.call_args.kwargs["question"],
-            "Cutting Board에서 실행한 프로세스가 모두 종료됩니다.",
+            "All processes started by Cutting Board will be stopped.",
         )
 
     def test_cancelled_interactive_close_keeps_everything_running(self) -> None:
@@ -258,10 +259,14 @@ class LaunchCloseLifecycleTests(unittest.TestCase):
 
 
 class ThemeLifecycleTests(unittest.TestCase):
-    def test_settings_offer_all_persisted_theme_modes_in_korean(self) -> None:
+    def test_listener_count_label_uses_singular_and_plural_nouns(self) -> None:
+        self.assertEqual(_listener_count_label(1), "1 listener")
+        self.assertEqual(_listener_count_label(2), "2 listeners")
+
+    def test_settings_offer_all_persisted_theme_modes_in_english(self) -> None:
         self.assertEqual(
             THEME_MODE_CHOICES,
-            (("시스템 설정", "system"), ("다크", "dark"), ("라이트", "light")),
+            (("System", "system"), ("Dark", "dark"), ("Light", "light")),
         )
 
     def test_settings_dialog_destroys_before_requesting_rebuild(self) -> None:
@@ -398,7 +403,7 @@ class ExternalLaunchIntegrationTests(unittest.TestCase):
 
         self.assertEqual(HEADER_HEIGHT, 56)
         self.assertEqual(SETTINGS_HIT_TARGET, 36)
-        self.assertEqual(_SettingsGear.accessible_name, "설정")
+        self.assertEqual(_SettingsGear.accessible_name, "Settings")
         self.assertEqual(len(points), 64)
         self.assertTrue(all(1 <= coordinate <= 35 for coordinate in points))
 
