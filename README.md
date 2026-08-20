@@ -11,8 +11,10 @@
 Cutting Board watches the TCP listeners on your machine, works out which of them
 are development services and which are noise, and draws the survivors as tiles
 grouped by project. Nothing has to register with it: start a dev server from a
-terminal, an agent or an IDE and it appears on the next scan. The scanner starts
-with the window and stops with it — there is no daemon and no autostart.
+terminal, an agent or an IDE and it appears on the next scan. Optionally, register
+the commands that make up a project in the Korean **실행 구성** tab and start or
+stop them together without opening an IDE. The scanner and managed commands share
+the window's lifetime — there is no daemon and no autostart.
 
 ![The Cutting Board services board](assets/cutting-board-screenshot.png)
 
@@ -25,7 +27,9 @@ a Vite server here, a Spring Boot app there, a Postgres container, a stray
 Storybook. `ss -tlnp` tells you a port is taken; it does not tell you which
 project it belongs to or whether you still need it. Cutting Board answers those
 two questions at a glance and lets you stop the process without hunting for the
-terminal that started it.
+terminal that started it. A launch profile also replaces the common IDE Services
+workflow: one project can start its backend, source watcher and frontend together,
+show their output, and stop the process groups Cutting Board created.
 
 ## Install on macOS
 
@@ -124,7 +128,7 @@ buckets:
 
 | Bucket | Meaning | Shown |
 |---|---|---|
-| `dev` | A recognised framework, daemon or tool, or an unrecognised process running out of a real project checkout | Services tab |
+| `dev` | A recognised framework, daemon or tool, or an unrecognised process running out of a real project checkout | **서비스** tab |
 | `container` | Docker, Podman or Kubernetes plumbing — `docker-proxy`, `dockerd`, `containerd`, `k3s`, and friends | Docker tab, and `--snapshot --containers` |
 | `noise` | Everything else | Never |
 
@@ -155,30 +159,36 @@ prints the unfiltered list when you need to check what was dropped.
 
 ## The board
 
-Tiles are grouped into sections by project, and sorted within a section by
-lowest port. Each tile carries the brand mark, the service name, up to three
-port chips, and how long the process has been up. Uptime under five minutes is
-tinted with the accent colour, so a just-restarted service stands out. A tile
+Cards are grouped into sections by project and sorted within a section by lowest
+port. Each compact horizontal card carries the brand mark, service name, up to
+two port chips, uptime and visible Korean actions. Uptime under five minutes is
+tinted with the accent colour, so a just-restarted service stands out. A card
 also carries a badge when the board can tell which tool launched the service —
-see below.
+see below. Larger text, higher-contrast secondary copy and visible focus states
+keep the board readable and keyboard-operable on both supported platforms.
 
 Everything else the scanner knows — endpoints and their scope, PID and PPID,
 user, CPU, resident memory, working directory, executable, the redacted command
 line and any warnings — lives in the detail dialog, one click away.
 
-- **Click a tile** to open its detail dialog.
-- **Ctrl-click** a tile whose service looks like a web endpoint to open it in
-  the default browser.
-- **Hover** a tile you own to reveal the power glyph in its corner; clicking the
-  glyph asks for confirmation and then stops the service.
-- Dialogs close on Escape, on the close button, or on a click outside them.
-- **The cog in the header** opens settings: the version, the Python and platform
-  it is running on, where the settings file lives, and the scan interval. The
-  version deliberately appears nowhere else — not in the title bar, not in the
-  footer.
+- **Click a card** or its **상세** action to open the detail dialog.
+- **Ctrl-click** a card whose service looks like a web endpoint to open it in
+  the default browser; the visible **열기** action does the same.
+- **중지** on a service you own asks for confirmation and then stops it.
+- Tab focuses cards and controls; arrow keys move between a focused card's
+  actions, and Enter or Space activates the selected action.
+- Service, container and settings dialogs close on Escape, on the close button,
+  or on a click outside them.
+- **설정** in the header opens settings: the version, the Python and platform
+  it is running on, where the settings file lives, the scan interval, and the
+  **시스템 설정**/**다크**/**라이트** screen mode. The version deliberately
+  appears nowhere else — not in the title bar, not in the footer.
 
 The grid reflows to the window width. The window remembers its geometry in the
-settings file.
+settings file. Existing and invalid settings retain the compatible dark default.
+Choosing a screen mode saves and reapplies the complete palette immediately
+without stopping scans or managed tasks. **시스템 설정** follows the macOS global
+appearance when best-effort detection succeeds and otherwise falls back to dark.
 
 The board holds still. A scan lands every two seconds, but a render only redraws
 when something a tile actually paints has changed; otherwise the existing tiles
@@ -186,10 +196,54 @@ are left alone and only the uptime line is refreshed in place. Without that the
 whole board would be destroyed and rebuilt twice a minute, which reads as a
 flicker and loses your scroll position every time.
 
+## Launch configurations
+
+The **실행 구성** tab stores optional launch profiles separately from listener
+discovery. A profile has a name and an absolute project root. Each task has:
+
+- a task name;
+- a working directory inside the project, either relative to the root or an
+  absolute path;
+- the command to run;
+- an optional expected TCP port, used to recognise an already-running external
+  service; and
+- an optional auto-build/watch command that runs alongside the main command.
+
+Profiles and tasks can be started or stopped as a group or individually. Cutting
+Board starts each main and watcher command in its own process group and captures a
+bounded, in-memory combined output stream. Logs disappear when the application
+closes; they are never written to disk.
+
+Commands run through a selected login-capable shell with `shell=False`: macOS
+prefers its executable `/bin/zsh`; other platforms use the current account's safe
+login shell, falling back to `/bin/sh`. Linux therefore has no zsh dependency.
+
+For example, a `dutypark` profile can replace the two IntelliJ Services entries:
+
+| Task | Working directory | Command | Expected port | Auto-build/watch |
+|---|---|---|---:|---|
+| Backend | `.` | `./gradlew bootRun --args=--spring.profiles.active=dev` | 8080 | `./gradlew classes --continuous` |
+| Frontend | `frontend` | `npm run dev` | 5173 | — |
+
+Vite provides its own source watching and hot-module replacement. On the backend,
+the continuous Gradle `classes` task recompiles changed Java/Kotlin sources and
+resources; Spring Boot DevTools then restarts the application context. Changes to
+build logic or dependencies still require stopping and starting the backend task.
+If the required JDK or Node executable is not on a GUI application's `PATH`, put
+its absolute path or a `JAVA_HOME=...` prefix in the saved command.
+
+Expected-port matching is deliberately conservative. A listener already running
+from the same project is shown as **외부 실행 중**. It was not started by Cutting
+Board, so neither a task stop nor a profile stop signals it. Conversely, closing
+Cutting Board warns that processes started by Cutting Board will be stopped; if
+confirmed, all of their verified process groups are terminated before the window
+closes. Signal-driven and automated shutdown skip the dialog but perform the same
+cleanup.
+
 ## Who started it
 
-When an agent or an editor started a service, the tile says so with a small
-badge in its top-left corner — violet for a coding agent, cyan for an IDE.
+When an agent or an editor started a service, the card says so with a small
+badge in its metadata row — violet for a coding agent, cyan for an IDE.
 Claude, Codex, Cursor, Windsurf, Copilot, Aider, Gemini, VS Code and JetBrains
 are recognised. A service you started yourself in a terminal gets no badge:
 that is the ordinary case, and labelling it would put a badge on everything.
@@ -259,8 +313,9 @@ The stop action sends `SIGTERM` to the PID that actually owns the port and waits
   recycled PID cannot be signalled by mistake;
 - the effective UID still matches the current user.
 
-Only the listening process is stopped. Process trees, restarts and log capture
-are out of scope.
+This action stops only the discovered listening process. Managed launch tasks use
+their separate owned process-group lifecycle; they can be restarted and expose
+their bounded output in **실행 구성**.
 
 ## Assets
 
@@ -304,6 +359,8 @@ src/cutting_board/
 ├─ app.py               CLI parsing, platform check, GUI assembly
 ├─ controller.py        the scan thread and its latest-event queue
 ├─ constants.py         name, version, interval bounds, markers, secret flags
+├─ launch_models.py     immutable launch-profile and runtime snapshots
+├─ launch_controller.py persisted profiles plus managed-process coordination
 ├─ models.py            immutable snapshot dataclasses
 ├─ presentation.py      visibility rules, grouping, display formatting
 ├─ demo.py              deterministic data for --demo and smoke tests
@@ -318,10 +375,14 @@ src/cutting_board/
 │  └─ docker.py         the docker ps wrapper
 ├─ services/
 │  ├─ termination.py    validated SIGTERM and SIGKILL
+│  ├─ launch_profiles.py atomic mode-0600 launch-profile JSON
+│  ├─ managed_processes.py owned process groups and bounded in-memory logs
 │  ├─ settings.py       atomic XDG JSON settings
 │  └─ browser.py        opening a local URL
 └─ ui/
    ├─ main_window.py    tabs, board rendering, event pump
+   ├─ launch_widgets.py launch-profile and task cards
+   ├─ launch_dialogs.py launch-profile editor and log viewer
    ├─ widgets.py        scroll area, section headers, tiles
    ├─ dialogs.py        detail and confirmation dialogs
    ├─ theme.py          palette, metrics, fonts
@@ -355,9 +416,14 @@ runner.
 
 - No network requests, no telemetry, no accounts, no cloud storage.
 - Run it as your normal user; `sudo` is neither required nor recommended.
-- Only `${XDG_CONFIG_HOME:-~/.config}/cutting-board/settings.json` is written,
-  and it holds window geometry and the scan interval — never process history.
-- Snapshots exist in memory for the lifetime of the process.
+- `${XDG_CONFIG_HOME:-~/.config}/cutting-board/settings.json` holds window
+  geometry, the scan interval and the screen-mode preference. Optional launch
+  profiles, including their
+  commands, are written atomically to
+  `${XDG_CONFIG_HOME:-~/.config}/cutting-board/launch_profiles.json` with mode
+  `0600`.
+- Snapshots and bounded managed-process logs exist in memory only. No process,
+  port, log or termination history is persisted.
 - Common secrets on a command line (`--token`, `--api-key`, `--password`,
   `KEY=VALUE` pairs whose key mentions a token, password, secret, api-key,
   credential, auth or database URL) are masked before the command is displayed
@@ -366,6 +432,10 @@ runner.
 - Launcher attribution reads process ancestry and environment marker names from
   `/proc` on Linux and through psutil on macOS. No environment value is kept,
   shown or exported.
+- Launch profiles contain exactly the commands and paths the user enters. Cutting
+  Board does not copy the current process environment or secret values into the
+  profile file. Saved commands are not redacted, so do not enter credentials in
+  them.
 
 ## Limitations
 
@@ -375,10 +445,17 @@ runner.
 - The host network namespace only. A port that exists solely inside a container
   network is not visible to the port scanner; the Docker tab covers published
   ports instead.
-- No log capture, no starting or restarting services, no health checks.
+- Launch configurations capture bounded output and start or stop their own tasks;
+  discovered external services still have no log capture or restart control.
+- There are no health checks. An expected port indicates external activity, not
+  application health.
+- **시스템 설정** resolves the macOS appearance when the palette is applied; it
+  does not watch for a later OS appearance change while the window remains open.
 - Names and projects are inferred from live process state, so an unusual launcher
   may land in the catch-all group.
-- Stopping a service signals the listening process, not its process tree.
+- Stopping a discovered service signals the listening process, not its process
+  tree. Stopping a managed launch task terminates only the process groups Cutting
+  Board created for that task.
 
 ## Licence
 

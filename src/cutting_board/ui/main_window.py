@@ -4,13 +4,21 @@ import math
 import queue
 import time
 import tkinter as tk
+import uuid
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from tkinter import font as tkfont
+from typing import Any, ClassVar
 
 from cutting_board.constants import APP_NAME
 from cutting_board.controller import ScanController
+from cutting_board.launch_models import (
+    LaunchProfile,
+    LaunchState,
+    LaunchTask,
+    ManagedTaskSnapshot,
+)
 from cutting_board.models import ServiceSnapshot, TerminationResult, WorkspaceSnapshot
 from cutting_board.presentation import (
     ServiceGroup,
@@ -31,13 +39,28 @@ from cutting_board.ui.dialogs import (
     ask_confirmation,
 )
 from cutting_board.ui.icons import IconStore
+from cutting_board.ui.launch_dialogs import (
+    LaunchLogDialog,
+    LaunchProfileDraft,
+    LaunchTaskDraft,
+    ask_launch_profile,
+)
+from cutting_board.ui.launch_widgets import (
+    LaunchProfileCallbacks,
+    LaunchProfilesPanel,
+    LaunchProfileView,
+    LaunchTaskView,
+)
 from cutting_board.ui.widgets import ContainerTile, ScrollArea, SectionHeader, ServiceTile
 from cutting_board.ui.window_icon import BLOB_NAME, apply_window_icon
 
 POLL_INTERVAL_MS = 120
+HEADER_HEIGHT = 56
+SETTINGS_HIT_TARGET = 36
 
 TAB_SERVICES = "services"
 TAB_DOCKER = "docker"
+TAB_LAUNCH = "launch"
 
 # Shelling out to the docker CLI is far more expensive than a port scan, so the
 # container list is refreshed on its own slower clock instead of once per scan,
@@ -50,16 +73,203 @@ LOOSE_GROUP = "단독 컨테이너"
 STOPPED_GROUP = "중지됨"
 
 
+class _ToolbarTab(tk.Canvas):
+    """A rounded, borderless toolbar tab with explicit focus feedback."""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        text: str,
+        font: tuple[str, int, str],
+        command: Callable[[], None],
+    ) -> None:
+        super().__init__(
+            parent,
+            width=64,
+            height=32,
+            bg=theme.SURFACE_ALT,
+            highlightthickness=0,
+            bd=0,
+            takefocus=True,
+            cursor="hand2",
+        )
+        self._font = font
+        self._font_measure = tkfont.Font(root=parent, font=font)
+        self._text = text
+        self._active = False
+        self._hovered = False
+        self._focused = False
+        self.accessible_name = text
+        _bind_action(self, command)
+        self.bind("<Enter>", lambda _event: self._set_hovered(True))
+        self.bind("<Leave>", lambda _event: self._set_hovered(False))
+        self.bind("<FocusIn>", lambda _event: self._set_focused(True))
+        self.bind("<FocusOut>", lambda _event: self._set_focused(False))
+        self._paint()
+
+    def set_presentation(self, text: str, *, active: bool) -> None:
+        self._text = text
+        self.accessible_name = text
+        self._active = active
+        self._paint()
+
+    def _set_hovered(self, value: bool) -> None:
+        self._hovered = value
+        self._paint()
+
+    def _set_focused(self, value: bool) -> None:
+        self._focused = value
+        self._paint()
+
+    def _paint(self) -> None:
+        width = max(54, self._font_measure.measure(self._text) + 24)
+        self.configure(width=width)
+        self.delete("all")
+        fill, outline = _segmented_surface_colours(
+            self._hovered,
+            self._focused,
+            self._active,
+        )
+        theme.rounded_rect(
+            self,
+            1,
+            1,
+            width - 1,
+            31,
+            9,
+            fill=fill,
+            outline=outline,
+        )
+        foreground = theme.TEXT if self._active or self._hovered or self._focused else theme.TEXT_DIM
+        self.create_text(
+            width / 2,
+            16,
+            text=self._text,
+            fill=foreground,
+            font=self._font,
+        )
+
+
+class _SegmentedTabBar(tk.Canvas):
+    """One rounded toolbar surface containing all navigation segments."""
+
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(
+            parent,
+            width=180,
+            height=36,
+            bg=theme.CANVAS,
+            highlightthickness=0,
+            bd=0,
+        )
+        self._items: list[tuple[int, _ToolbarTab]] = []
+
+    def add_tab(
+        self,
+        *,
+        text: str,
+        font: tuple[str, int, str],
+        command: Callable[[], None],
+    ) -> _ToolbarTab:
+        tab = _ToolbarTab(self, text=text, font=font, command=command)
+        window = self.create_window(2, 2, anchor="nw", window=tab)
+        self._items.append((window, tab))
+        self.layout_tabs()
+        return tab
+
+    def layout_tabs(self) -> None:
+        x = 2
+        for window, tab in self._items:
+            self.coords(window, x, 2)
+            x += int(float(tab.cget("width")))
+        width = x + 2
+        self.configure(width=width)
+        self.delete("bar-surface")
+        theme.rounded_rect(
+            self,
+            0,
+            0,
+            width,
+            36,
+            10,
+            fill=theme.SURFACE_ALT,
+            outline=theme.SURFACE_ALT,
+            tags="bar-surface",
+        )
+        self.tag_lower("bar-surface")
+
+
+class _SettingsGear(tk.Canvas):
+    """An icon-only settings control sized for a comfortable toolbar target."""
+
+    accessible_name = "설정"
+
+    def __init__(self, parent: tk.Misc, *, command: Callable[[], None]) -> None:
+        super().__init__(
+            parent,
+            width=SETTINGS_HIT_TARGET,
+            height=SETTINGS_HIT_TARGET,
+            bg=theme.CANVAS,
+            highlightthickness=0,
+            bd=0,
+            takefocus=True,
+            cursor="hand2",
+        )
+        self._hovered = False
+        self._focused = False
+        _bind_action(self, command)
+        self.bind("<Enter>", lambda _event: self._set_hovered(True))
+        self.bind("<Leave>", lambda _event: self._set_hovered(False))
+        self.bind("<FocusIn>", lambda _event: self._set_focused(True))
+        self.bind("<FocusOut>", lambda _event: self._set_focused(False))
+        self._paint()
+
+    def _set_hovered(self, value: bool) -> None:
+        self._hovered = value
+        self._paint()
+
+    def _set_focused(self, value: bool) -> None:
+        self._focused = value
+        self._paint()
+
+    def _paint(self) -> None:
+        self.delete("all")
+        fill, outline = _toolbar_surface_colours(self._hovered, self._focused)
+        theme.rounded_rect(
+            self,
+            1,
+            1,
+            35,
+            35,
+            11,
+            fill=fill,
+            outline=outline,
+        )
+        gear_colour = theme.TEXT if self._hovered or self._focused else theme.TEXT_MUTED
+        self.create_polygon(
+            _gear_polygon_points(SETTINGS_HIT_TARGET),
+            fill=gear_colour,
+            outline="",
+        )
+        self.create_oval(14.5, 14.5, 21.5, 21.5, fill=fill, outline="")
+
+
 class CuttingBoardWindow:
     """The board: every development service running right now, as tiles."""
 
-    _TAB_LABELS = {TAB_SERVICES: "SERVICES", TAB_DOCKER: "DOCKER"}
+    _TAB_LABELS: ClassVar[dict[str, str]] = {
+        TAB_SERVICES: "서비스",
+        TAB_DOCKER: "Docker",
+        TAB_LAUNCH: "실행 구성",
+    }
 
     def __init__(
         self,
         root: tk.Tk,
         *,
         controller: ScanController | None,
+        launch_controller: Any,
         terminator: Any,
         settings_store: SettingsStore,
         initial_snapshot: WorkspaceSnapshot | None = None,
@@ -69,6 +279,7 @@ class CuttingBoardWindow:
     ) -> None:
         self.root = root
         self.controller = controller
+        self.launch_controller = launch_controller
         self.terminator = terminator
         self.settings_store = settings_store
         self.settings: UISettings = settings_store.load()
@@ -86,6 +297,7 @@ class CuttingBoardWindow:
         self.tab = TAB_SERVICES
         self.containers: ContainerListing | None = None
         self.container_results: queue.Queue[ContainerListing] = queue.Queue()
+        self.launch_action_results: queue.Queue[tuple[Future[Any], str]] = queue.Queue()
         self._containers_requested_at = 0.0
         self._containers_in_flight = False
         self._columns = 0
@@ -96,10 +308,12 @@ class CuttingBoardWindow:
         self._toast: tk.Frame | None = None
         self._toast_job: str | None = None
         self._window_icons: tuple[tk.PhotoImage, ...] = ()
+        self._closing = False
 
         root.title(APP_NAME)
         root.geometry(self.settings.window_geometry)
         root.minsize(560, 420)
+        theme.apply_palette(self.settings.theme_mode)
         self.fonts = theme.configure_theme(root)
         self._load_window_icon()
 
@@ -114,7 +328,10 @@ class CuttingBoardWindow:
         self.render()
 
         if auto_close_seconds is not None:
-            self.root.after(max(100, int(auto_close_seconds * 1000)), self.close)
+            self.root.after(
+                max(100, int(auto_close_seconds * 1000)),
+                lambda: self.close(notify=False),
+            )
 
     # --------------------------------------------------------------- layout
 
@@ -149,18 +366,26 @@ class CuttingBoardWindow:
     def _build_layout(self) -> None:
         self.root.configure(background=theme.CANVAS)
 
-        header = tk.Frame(self.root, bg=theme.CANVAS, height=52)
+        header = tk.Frame(self.root, bg=theme.CANVAS, height=HEADER_HEIGHT)
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
 
         # The title bar already carries the name and the icon, so the header
         # only says which board is open and what is on it.
-        left = tk.Frame(header, bg=theme.CANVAS)
-        left.pack(side="left", padx=(theme.TILE_PAD + 6, 0), fill="y")
+        self._tab_bar = _SegmentedTabBar(header)
+        self._tab_bar.pack(side="left", padx=(theme.TILE_PAD + 8, 0), pady=10)
 
-        self._tabs: dict[str, tuple[tk.Frame, tk.Label, tk.Frame]] = {}
-        for key, label in ((TAB_SERVICES, "SERVICES"), (TAB_DOCKER, "DOCKER")):
-            self._tabs[key] = self._build_tab(left, key, label)
+        self._tabs: dict[str, _ToolbarTab] = {}
+        for key, label in (
+            (TAB_SERVICES, "서비스"),
+            (TAB_DOCKER, "Docker"),
+            (TAB_LAUNCH, "실행 구성"),
+        ):
+            self._tabs[key] = self._tab_bar.add_tab(
+                text=label,
+                font=self.fonts["label"],
+                command=lambda target=key: self._select_tab(target),
+            )
 
         right = tk.Frame(header, bg=theme.CANVAS)
         right.pack(side="right", padx=(0, theme.TILE_PAD + 8))
@@ -184,98 +409,53 @@ class CuttingBoardWindow:
         self.scroll = ScrollArea(self.root)
         self.scroll.pack(fill="both", expand=True, side="top")
         self.scroll.canvas.bind("<Configure>", self._on_resize, add="+")
-
-    def _build_settings_button(self, parent: tk.Misc) -> tk.Canvas:
-        """A gear drawn from canvas primitives, in the style of the other marks.
-
-        The body is one polygon whose radius alternates between the tip and
-        the root of a tooth; the bore is a disc painted back in the canvas
-        colour, because Tk has no way to cut a hole out of a polygon.
-        """
-        size = 20
-        centre = size / 2
-        button = tk.Canvas(
-            parent,
-            width=size,
-            height=size,
-            bg=theme.CANVAS,
-            highlightthickness=0,
-            bd=0,
-            cursor="hand2",
+        self.launch_panel = LaunchProfilesPanel(
+            self.root,
+            fonts=self.fonts,
+            callbacks=LaunchProfileCallbacks(
+                on_add=self._add_launch_profile,
+                on_start_profile=self._start_launch_profile,
+                on_stop_profile=self._stop_launch_profile,
+                on_edit_profile=self._edit_launch_profile,
+                on_delete_profile=self._delete_launch_profile,
+                on_start_task=self._start_launch_task,
+                on_stop_task=self._stop_launch_task,
+                on_show_logs=self._show_launch_logs,
+            ),
         )
 
-        teeth = 8
-        points: list[float] = []
-        for index in range(teeth):
-            base = 2 * math.pi * index / teeth
-            # Half-widths in radians: the tip is narrower than the root, so the
-            # flanks of each tooth slope outwards.
-            for radius, offset in ((6.6, -0.30), (9.4, -0.17), (9.4, 0.17), (6.6, 0.30)):
-                points.append(centre + math.cos(base + offset) * radius)
-                points.append(centre + math.sin(base + offset) * radius)
-        button.create_polygon(points, fill=theme.TEXT_DIM, outline="", tags="gear")
-        button.create_oval(
-            centre - 3.8,
-            centre - 3.8,
-            centre + 3.8,
-            centre + 3.8,
-            fill=theme.CANVAS,
-            outline="",
-        )
-
-        button.bind("<Enter>", lambda _event: button.itemconfigure("gear", fill=theme.ACCENT))
-        button.bind("<Leave>", lambda _event: button.itemconfigure("gear", fill=theme.TEXT_DIM))
-        button.bind("<Button-1>", lambda _event: self._show_settings())
-        return button
-
-    def _build_tab(
-        self,
-        parent: tk.Misc,
-        key: str,
-        label: str,
-    ) -> tuple[tk.Frame, tk.Label, tk.Frame]:
-        """One entry in the tab strip: a label over its own underline."""
-        holder = tk.Frame(parent, bg=theme.CANVAS)
-        holder.pack(side="left", fill="y", padx=(0, 4))
-
-        text = tk.Label(
-            holder,
-            text=label,
-            bg=theme.CANVAS,
-            fg=theme.TEXT_DIM,
-            font=self.fonts["label"],
-            cursor="hand2",
-            padx=10,
-            pady=6,
-        )
-        text.pack(side="top", pady=(12, 0))
-
-        underline = tk.Frame(holder, bg=theme.CANVAS, height=2)
-        underline.pack(side="top", fill="x", pady=(6, 0))
-
-        for widget in (holder, text):
-            widget.bind("<Button-1>", lambda _event, target=key: self._select_tab(target))
-        return holder, text, underline
+    def _build_settings_button(self, parent: tk.Misc) -> _SettingsGear:
+        """Build a visible, keyboard-operable settings affordance."""
+        return _SettingsGear(parent, command=self._show_settings)
 
     def _select_tab(self, key: str) -> None:
         if key == self.tab:
             return
         self.tab = key
         self.scroll.canvas.yview_moveto(0.0)
+        self._pack_tab_body(key)
         if key == TAB_DOCKER:
             self._request_containers(force=True)
         self.render()
 
+    def _pack_tab_body(self, key: str) -> None:
+        if key == TAB_LAUNCH:
+            self.scroll.pack_forget()
+            self.launch_panel.pack(fill="both", expand=True, side="top")
+        else:
+            self.launch_panel.pack_forget()
+            self.scroll.pack(fill="both", expand=True, side="top")
+
     def _paint_tabs(self, counts: dict[str, int]) -> None:
-        for key, (_holder, text, underline) in self._tabs.items():
+        for key, text in self._tabs.items():
             active = key == self.tab
             count = counts.get(key)
             suffix = "" if count is None else f"  {count}"
-            text.configure(
-                text=f"{self._TAB_LABELS[key]}{suffix}",
-                fg=theme.TEXT if active else theme.TEXT_DIM,
+            text.set_presentation(
+                f"{self._TAB_LABELS[key]}{suffix}",
+                active=active,
             )
-            underline.configure(bg=theme.ACCENT if active else theme.CANVAS)
+        self._tab_bar.layout_tabs()
 
     def _on_resize(self, event: tk.Event) -> None:
         columns = self._columns_for(event.width)
@@ -305,7 +485,17 @@ class CuttingBoardWindow:
                     self._accept_snapshot(event.snapshot)
                 elif event.error:
                     self._show_toast(event.error, error=True)
+        launch_changed = False
+        while True:
+            try:
+                self.launch_controller.events.get_nowait()
+            except queue.Empty:
+                break
+            launch_changed = True
+        if launch_changed:
+            self.render()
         self._drain_action_results()
+        self._drain_launch_action_results()
         self._drain_container_results()
         self._request_containers()
         self.root.after(POLL_INTERVAL_MS, self._poll_events)
@@ -319,7 +509,11 @@ class CuttingBoardWindow:
     def render(self) -> None:
         snapshot = self.snapshot
         if snapshot is None:
-            self._paint_tabs({})
+            self._paint_tabs({TAB_LAUNCH: len(self.launch_controller.profiles)})
+            if self.tab == TAB_LAUNCH:
+                self.status.configure(text="서비스를 찾는 중")
+                self._render_launch_profiles()
+                return
             self._draw_body(("loading",), lambda: self._render_empty("서비스를 찾는 중"))
             return
 
@@ -328,14 +522,17 @@ class CuttingBoardWindow:
             {
                 TAB_SERVICES: len(services),
                 TAB_DOCKER: self._docker_tab_count(snapshot),
+                TAB_LAUNCH: len(self.launch_controller.profiles),
             }
         )
         self.status.configure(
-            text=f"{snapshot.scan_duration_ms} ms  ·  {len(snapshot.services)} listeners seen"
+            text=f"리스너 {snapshot.endpoint_count}개  ·  {snapshot.scan_duration_ms} ms"
         )
 
         if self.tab == TAB_DOCKER:
             self._render_docker(snapshot)
+        elif self.tab == TAB_LAUNCH:
+            self._render_launch_profiles()
         else:
             self._render_services(services)
 
@@ -417,6 +614,226 @@ class CuttingBoardWindow:
         )
         self._draw_body(signature, lambda: self._build_service_sections(groups))
 
+    # ----------------------------------------------------------- launch tab
+
+    def _render_launch_profiles(self) -> None:
+        self.launch_panel.render(self._launch_profile_views())
+
+    def _launch_profile_views(self) -> tuple[LaunchProfileView, ...]:
+        views: list[LaunchProfileView] = []
+        for profile in self.launch_controller.profiles:
+            task_views = tuple(self._launch_task_view(profile, task) for task in profile.tasks)
+            can_stop = any(task.can_stop for task in task_views)
+            views.append(
+                LaunchProfileView(
+                    id=profile.id,
+                    name=profile.name,
+                    project_root=profile.project_root,
+                    tasks=task_views,
+                    can_start=any(task.can_start for task in task_views),
+                    can_stop=can_stop,
+                    can_edit=not can_stop,
+                    can_delete=not can_stop,
+                )
+            )
+        return tuple(views)
+
+    def _launch_task_view(self, profile: LaunchProfile, task: LaunchTask) -> LaunchTaskView:
+        snapshot = self.launch_controller.snapshot(profile.id, task.name)
+        owned = self._is_owned_snapshot(snapshot)
+        external = not owned and self._expected_listener_is_external(profile, task)
+        stopped = snapshot.state in {LaunchState.STOPPED, LaunchState.FAILED} and not owned
+        message = snapshot.message
+        if external:
+            message = "외부에서 실행한 프로세스입니다. Cutting Board에서는 종료하지 않습니다."
+        return LaunchTaskView(
+            name=task.name,
+            cwd=task.cwd,
+            command=task.command,
+            state=snapshot.state.value,
+            expected_port=task.expected_port,
+            message=message,
+            can_start=stopped and not external,
+            can_stop=owned,
+            external=external,
+        )
+
+    @staticmethod
+    def _is_owned_snapshot(snapshot: ManagedTaskSnapshot) -> bool:
+        return (
+            snapshot.state in {LaunchState.STARTING, LaunchState.RUNNING, LaunchState.STOPPING}
+            or snapshot.main_pid is not None
+            or snapshot.watch_pid is not None
+        )
+
+    def _expected_listener_is_external(self, profile: LaunchProfile, task: LaunchTask) -> bool:
+        snapshot = self.snapshot
+        if snapshot is None or task.expected_port is None:
+            return False
+        root = Path(profile.project_root).expanduser().resolve(strict=False)
+        return any(
+            task.expected_port in service.unique_ports
+            and service.project is not None
+            and Path(service.project.root_path).expanduser().resolve(strict=False) == root
+            for service in snapshot.services
+        )
+
+    def _add_launch_profile(self) -> None:
+        draft = ask_launch_profile(self.root, fonts=self.fonts)
+        if draft is None:
+            return
+        self._save_launch_profile(self._profile_from_draft(uuid.uuid4().hex, draft))
+
+    def _edit_launch_profile(self, profile_id: str) -> None:
+        profile = self.launch_controller.profile(profile_id)
+        draft = ask_launch_profile(
+            self.root,
+            fonts=self.fonts,
+            profile=self._draft_from_profile(profile),
+        )
+        if draft is None:
+            return
+        self._save_launch_profile(self._profile_from_draft(profile.id, draft))
+
+    def _save_launch_profile(self, profile: LaunchProfile) -> None:
+        try:
+            self.launch_controller.save_profile(profile)
+        except (KeyError, OSError, RuntimeError, ValueError) as exc:
+            self._show_toast(f"실행 구성을 저장하지 못했습니다: {exc}", error=True)
+            return
+        self._show_toast("실행 구성을 저장했습니다.")
+        self.render()
+
+    def _delete_launch_profile(self, profile_id: str) -> None:
+        profile = self.launch_controller.profile(profile_id)
+        confirmed = ask_confirmation(
+            self.root,
+            fonts=self.fonts,
+            icons=self.icons,
+            title="실행 구성 삭제",
+            headline=profile.name,
+            meta=profile.project_root,
+            question="이 실행 구성과 저장된 명령을 삭제합니다.",
+            confirm_label="삭제",
+        )
+        if not confirmed:
+            return
+        try:
+            self.launch_controller.delete_profile(profile_id)
+        except (KeyError, OSError, RuntimeError, ValueError) as exc:
+            self._show_toast(f"실행 구성을 삭제하지 못했습니다: {exc}", error=True)
+            return
+        self._show_toast("실행 구성을 삭제했습니다.")
+        self.render()
+
+    def _start_launch_profile(self, profile_id: str) -> None:
+        profile_view = next(view for view in self._launch_profile_views() if view.id == profile_id)
+        task_names = tuple(task.name for task in profile_view.tasks if task.can_start)
+        if not task_names:
+            return
+        self._submit_launch_action(
+            "실행 구성을 시작하지 못했습니다",
+            lambda: tuple(
+                self.launch_controller.start_task(profile_id, task_name)
+                for task_name in task_names
+            ),
+        )
+
+    def _stop_launch_profile(self, profile_id: str) -> None:
+        self._submit_launch_action(
+            "실행 구성을 종료하지 못했습니다",
+            lambda: self.launch_controller.stop_profile(profile_id),
+        )
+
+    def _start_launch_task(self, profile_id: str, task_name: str) -> None:
+        profile = self.launch_controller.profile(profile_id)
+        task = profile.task(task_name)
+        if self._expected_listener_is_external(profile, task):
+            self._show_toast("외부 실행 중인 작업은 중복 실행하지 않습니다.", error=True)
+            return
+        self._submit_launch_action(
+            f"{task_name} 작업을 시작하지 못했습니다",
+            lambda: self.launch_controller.start_task(profile_id, task_name),
+        )
+
+    def _stop_launch_task(self, profile_id: str, task_name: str) -> None:
+        snapshot = self.launch_controller.snapshot(profile_id, task_name)
+        if not self._is_owned_snapshot(snapshot):
+            self._show_toast("Cutting Board에서 실행한 작업만 종료할 수 있습니다.", error=True)
+            return
+        self._submit_launch_action(
+            f"{task_name} 작업을 종료하지 못했습니다",
+            lambda: self.launch_controller.stop_task(profile_id, task_name),
+        )
+
+    def _submit_launch_action(self, failure_message: str, action: Callable[[], Any]) -> None:
+        future = self.executor.submit(action)
+        future.add_done_callback(
+            lambda completed: self.launch_action_results.put((completed, failure_message))
+        )
+
+    def _drain_launch_action_results(self) -> None:
+        changed = False
+        while True:
+            try:
+                future, failure_message = self.launch_action_results.get_nowait()
+            except queue.Empty:
+                break
+            changed = True
+            try:
+                future.result()
+            except Exception as exc:  # noqa: BLE001 - background action boundary
+                self._show_toast(f"{failure_message}: {exc}", error=True)
+        if changed:
+            self.refresh()
+            self.render()
+
+    def _show_launch_logs(self, profile_id: str, task_name: str) -> None:
+        profile = self.launch_controller.profile(profile_id)
+        snapshot = self.launch_controller.snapshot(profile_id, task_name)
+        LaunchLogDialog(
+            self.root,
+            fonts=self.fonts,
+            profile_name=profile.name,
+            task_name=task_name,
+            lines=snapshot.logs,
+        )
+
+    @staticmethod
+    def _draft_from_profile(profile: LaunchProfile) -> LaunchProfileDraft:
+        return LaunchProfileDraft(
+            name=profile.name,
+            project_root=profile.project_root,
+            tasks=tuple(
+                LaunchTaskDraft(
+                    name=task.name,
+                    cwd=task.cwd,
+                    command=task.command,
+                    expected_port=task.expected_port,
+                    watch_command=task.watch_command,
+                )
+                for task in profile.tasks
+            ),
+        )
+
+    @staticmethod
+    def _profile_from_draft(profile_id: str, draft: LaunchProfileDraft) -> LaunchProfile:
+        return LaunchProfile(
+            id=profile_id,
+            name=draft.name,
+            project_root=draft.project_root,
+            tasks=tuple(
+                LaunchTask(
+                    name=task.name,
+                    cwd=task.cwd,
+                    command=task.command,
+                    expected_port=task.expected_port,
+                    watch_command=task.watch_command,
+                )
+                for task in draft.tasks
+            ),
+        )
+
     def _build_service_sections(self, groups: tuple[ServiceGroup, ...]) -> None:
         for group in groups:
             section = tk.Frame(self.scroll.body, bg=theme.CANVAS)
@@ -445,8 +862,17 @@ class CuttingBoardWindow:
                 on_terminate=self._request_termination,
                 on_open=self._open_service,
             )
-            tile.grid(row=index // columns, column=index % columns, sticky="w")
+            tile.grid(
+                row=index // columns,
+                column=index % columns,
+                sticky=self._tile_grid_sticky(columns),
+            )
             self._tiles.append(tile)
+
+    @staticmethod
+    def _tile_grid_sticky(columns: int) -> str:
+        del columns
+        return "w"
 
     # ---------------------------------------------------------- docker tab
 
@@ -468,7 +894,7 @@ class CuttingBoardWindow:
     def _on_containers(self, future: Future[ContainerListing]) -> None:
         try:
             listing = future.result()
-        except Exception:  # list_containers is total, but a thread must not die silently
+        except Exception:  # noqa: BLE001 - background integration boundary
             listing = ContainerListing.unavailable("Docker 정보를 가져오지 못했습니다.")
         self.container_results.put(listing)
 
@@ -547,7 +973,11 @@ class CuttingBoardWindow:
                     fonts=self.fonts,
                     icons=self.icons,
                     on_details=self._show_container_details,
-                ).grid(row=index // columns, column=index % columns, sticky="w")
+                ).grid(
+                    row=index // columns,
+                    column=index % columns,
+                    sticky=self._tile_grid_sticky(columns),
+                )
 
     def _build_port_fallback(self, message: str, services: tuple[ServiceSnapshot, ...]) -> None:
         """What is still knowable when the docker CLI cannot be reached.
@@ -620,7 +1050,9 @@ class CuttingBoardWindow:
             icons=self.icons,
             settings_path=self.settings_store.path,
             scan_interval_seconds=self.settings.scan_interval_seconds,
+            theme_mode=self.settings.theme_mode,
             on_interval_change=self._apply_scan_interval,
+            on_theme_change=self._apply_theme_mode,
         )
 
     def _apply_scan_interval(self, seconds: float) -> None:
@@ -629,6 +1061,37 @@ class CuttingBoardWindow:
         self.settings_store.save(self.settings)
         if self.controller is not None:  # --demo runs without a scanner behind it
             self.controller.set_interval(seconds)
+
+    def _apply_theme_mode(self, mode: str) -> None:
+        """Persist a palette choice and rebuild widgets without touching runtimes."""
+        if mode == self.settings.theme_mode:
+            return
+        self.settings.theme_mode = mode
+        self.settings_store.save(self.settings)
+        self._rebuild_for_theme()
+
+    def _rebuild_for_theme(self) -> None:
+        selected_tab = self.tab
+        if self._toast_job is not None:
+            try:
+                self.root.after_cancel(self._toast_job)
+            except tk.TclError:
+                pass
+        self._toast = None
+        self._toast_job = None
+        for child in self.root.winfo_children():
+            child.destroy()
+
+        theme.apply_palette(self.settings.theme_mode)
+        self.fonts = theme.configure_theme(self.root)
+        self._columns = 0
+        self._body_columns = 0
+        self._body_signature = None
+        self._tiles = []
+        self._build_layout()
+        self.tab = selected_tab
+        self._pack_tab_body(selected_tab)
+        self.render()
 
     def _request_termination(self, service: ServiceSnapshot) -> None:
         process = service.process
@@ -686,7 +1149,7 @@ class CuttingBoardWindow:
             self.busy_pids.discard(process.pid)
         try:
             result = future.result()
-        except Exception as exc:  # the board must survive a failed action
+        except Exception as exc:  # noqa: BLE001 - background integration boundary
             self._show_toast(f"종료 실패: {exc}", error=True)
             self.render()
             return
@@ -751,12 +1214,29 @@ class CuttingBoardWindow:
 
     # ---------------------------------------------------------------- close
 
-    def close(self) -> None:
+    def close(self, *, notify: bool = True) -> None:
+        if self._closing:
+            return
+        if notify and self._owned_launch_tasks():
+            confirmed = ask_confirmation(
+                self.root,
+                fonts=self.fonts,
+                icons=self.icons,
+                title="Cutting Board 종료",
+                headline="실행 중인 작업이 있습니다",
+                meta="앱이 시작한 작업만 종료합니다.",
+                question="Cutting Board에서 실행한 프로세스가 모두 종료됩니다.",
+                confirm_label="종료",
+            )
+            if not confirmed:
+                return
+        self._closing = True
         try:
             self.settings.window_geometry = self.root.winfo_geometry()
         except tk.TclError:
             pass
         self.settings_store.save(self.settings)
+        self.launch_controller.close()
         if self.controller is not None:
             self.controller.close()
         self.executor.shutdown(wait=False, cancel_futures=True)
@@ -764,6 +1244,66 @@ class CuttingBoardWindow:
             self.root.destroy()
         except tk.TclError:
             pass
+
+    def _owned_launch_tasks(self) -> tuple[ManagedTaskSnapshot, ...]:
+        """Return tasks that may still have app-owned process groups."""
+        active_states = {
+            LaunchState.STARTING,
+            LaunchState.RUNNING,
+            LaunchState.STOPPING,
+        }
+        return tuple(
+            snapshot
+            for snapshot in self.launch_controller.snapshots()
+            if snapshot.state in active_states
+            or snapshot.main_pid is not None
+            or snapshot.watch_pid is not None
+        )
+
+
+def _bind_action(widget: tk.Misc, command: Callable[[], None]) -> None:
+    """Give a custom toolbar control the activation behavior of a button."""
+
+    def activate(_event: tk.Event) -> str:
+        if getattr(_event, "num", None) == 1:
+            widget.focus_set()
+        command()
+        return "break"
+
+    for sequence in ("<Button-1>", "<Return>", "<space>"):
+        widget.bind(sequence, activate)
+
+
+def _toolbar_surface_colours(hovered: bool, focused: bool) -> tuple[str, str]:
+    fill = theme.SURFACE_ALT if hovered or focused else theme.CANVAS
+    if focused:
+        return fill, theme.ACCENT
+    return fill, theme.BORDER if hovered else theme.CANVAS
+
+
+def _segmented_surface_colours(
+    hovered: bool,
+    focused: bool,
+    active: bool,
+) -> tuple[str, str]:
+    if active:
+        fill = theme.SURFACE
+    elif hovered:
+        fill = theme.SURFACE_HOVER
+    else:
+        fill = theme.SURFACE_ALT
+    return fill, theme.ACCENT if focused else fill
+
+
+def _gear_polygon_points(size: int) -> tuple[float, ...]:
+    centre = size / 2
+    points: list[float] = []
+    for index in range(8):
+        base = 2 * math.pi * index / 8
+        for radius, offset in ((7.5, -0.30), (10.8, -0.17), (10.8, 0.17), (7.5, 0.30)):
+            points.append(centre + math.cos(base + offset) * radius)
+            points.append(centre + math.sin(base + offset) * radius)
+    return tuple(points)
 
 
 def _container_signature(container: ContainerInfo) -> tuple[Any, ...]:

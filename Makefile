@@ -1,13 +1,16 @@
 PYTHON ?= $(if $(wildcard $(CURDIR)/.venv/bin/python),$(CURDIR)/.venv/bin/python,python3)
 PYTHONPATH := $(CURDIR)/src
 
-.PHONY: run demo snapshot test smoke verify verify-macos install-macos package clean
+.PHONY: run demo dev-macos snapshot test smoke verify verify-macos install-macos package clean
 
 run:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m cutting_board
 
 demo:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m cutting_board --demo
+
+dev-macos:
+	./scripts/dev-macos.sh
 
 snapshot:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m cutting_board --snapshot

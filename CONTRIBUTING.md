@@ -8,8 +8,9 @@ code comments and commit messages.
 **User-facing strings in the application are Korean.** Anything the user reads in
 the window — labels, buttons, dialog text, toasts, warnings attached to a
 service, the messages in `TerminationResult` and `ContainerListing` — stays
-Korean. Section headings drawn as small-caps labels (`ENDPOINTS`, `PROCESS`,
-`SERVICES`, `DOCKER`) are English by design and are part of the visual style.
+Korean. Product or technology names such as Docker, Vite and Spring Boot remain
+in their established form; the top-level tabs are **서비스**, **Docker** and
+**실행 구성**.
 
 The two rules do not overlap: a Korean string in a docstring is wrong, and an
 English sentence shown to the user is wrong.
@@ -59,6 +60,13 @@ itself at once. The restart is fast because the application saves its geometry
 on the way out and the watcher stops it with SIGTERM rather than killing it, so
 the window comes back the same size in the same place.
 
+On macOS, `make dev-macos` is the convenient entry point and always uses the
+project's `.venv`. App flags can follow a separator, for example
+`./scripts/dev-macos.sh -- --demo`. A reload is a clean application restart, so
+it also stops every launch task owned by Cutting Board before reopening the
+window. Keep long-running development services external while iterating on
+Cutting Board itself if they must survive UI reloads.
+
 ## Tests
 
 ```bash
@@ -94,16 +102,23 @@ finds any. Describe unfinished work in prose in those files.
 ### What to test
 
 - Pure inference and formatting get unit tests: the classifier, relevance,
-  project resolution, presentation, settings, the Docker parser.
+  project resolution, presentation, settings, launch-profile validation, launch
+  state presentation and the Docker parser.
 - OS behaviour gets an integration test driven by a short-lived child process,
   as in `tests/test_integration.py`. Never write a test that signals a process
   the test did not itself create.
 - Docker code is tested through the injected `CommandRunner`, never against a
   real daemon. `tests/test_docker.py` shows the pattern for both parsing and
   every failure path.
+- Managed-process tests may signal only process groups they create themselves.
+  Use injected process and signal adapters for ownership, PID-reuse and failure
+  paths. Keep the launch-profile path isolated with `--launch-profiles-file` in
+  application-level tests so no developer command is read or overwritten.
 - GUI changes must keep the `--demo --auto-close` Xvfb path working. There is no
   automated assertion on rendering, so state the manual checks you performed in
-  the pull request.
+  the pull request. Exercise both dark and light palettes when a change introduces
+  colours; `tests/test_ui_theme.py` owns semantic contrast and the best-effort
+  macOS system-mode fallback.
 
 `tests/helpers.py` builds `ServiceSnapshot`, `ProjectInfo` and
 `WorkspaceSnapshot` fixtures; prefer it over hand-rolling a snapshot.
@@ -169,6 +184,67 @@ classifier's dependency-value exclusion are all worked examples.
    classification only and is stripped from exported JSON.
 8. **No feature may require a service to register itself** with Cutting Board.
    Discovery stays unconditional.
+9. **External detection is not managed ownership.** A project-root and expected-
+   port match may display `외부 실행 중`, but launch controls must never signal,
+   adopt or capture output from that process.
+10. **Close owns cleanup.** Every child process group started by the launch
+    runner must be terminated on interactive, signal-driven and automated window
+    shutdown. An interactive close warns before cleanup and remains cancellable.
+11. **Launch output is memory-only and bounded.** Do not add a log file or place
+    process output in either configuration document.
+12. **UI colours come from semantic theme tokens.** `dark` is the compatibility
+    default; `light` must replace the whole palette, and `system` must fail safely
+    to dark when platform detection is unavailable. A mode change rebuilds widgets
+    but must not recreate or stop scanner and launch runtimes.
+
+## Developing launch configurations
+
+`launch_models.py` defines immutable profiles, tasks, events and runtime
+snapshots. `services/launch_profiles.py` atomically persists the versioned
+profile document to
+`${XDG_CONFIG_HOME:-~/.config}/cutting-board/launch_profiles.json` with mode
+`0600`. `services/managed_processes.py` owns verified process groups and bounded
+combined output; `launch_controller.py` is the coordination boundary used by the
+UI. Keep these responsibilities separate from listener scanning and
+`services/termination.py`.
+
+The managed runner resolves its shell instead of requiring zsh on every platform.
+It prefers executable `/bin/zsh` on macOS; otherwise it accepts the account's
+absolute executable login shell unless it is `false`/`nologin`, with `/bin/sh` as
+the fallback. Commands are always passed as `[shell, "-lc", command]` with
+`shell=False`. Preserve this contract in process tests and Debian packaging.
+
+A profile editor exposes the profile name and absolute project root. Every task
+requires a unique name, project-contained working directory and main command;
+expected port and auto-build/watch command are optional. The store records only
+the fields the user enters. Never copy inherited environment variables into the
+document, and do not place credentials in fixture commands.
+
+For a Spring Boot/Vite development profile, a representative pair is:
+
+```text
+Backend cwd=.         command=./gradlew bootRun --args=--spring.profiles.active=dev
+                      watch=./gradlew classes --continuous   port=8080
+Frontend cwd=frontend command=npm run dev                     port=5173
+```
+
+Vite owns frontend source watching and hot-module replacement. The Gradle
+continuous `classes` task recompiles backend sources and resources so Spring Boot
+DevTools can restart the context. Build-logic and dependency changes still need a
+full backend task restart. A GUI app may have a smaller `PATH` than an interactive
+shell, so use explicit runtime paths or a `JAVA_HOME=...` prefix when a test or
+manual profile depends on a particular installation.
+
+Focused launch checks are:
+
+```bash
+PYTHONPATH=src python3 -m unittest tests.test_launch_profiles -v
+PYTHONPATH=src python3 -m unittest tests.test_launch_controller -v
+PYTHONPATH=src python3 -m unittest tests.test_launch_managed_processes -v
+PYTHONPATH=src python3 -m unittest tests.test_launch_ui -v
+PYTHONPATH=src python3 -m unittest tests.test_launch_app_integration -v
+PYTHONPATH=src python3 -m unittest tests.test_ui_theme -v
+```
 
 ## Adding a classifier rule
 

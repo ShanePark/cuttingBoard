@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import tkinter as tk
 from collections.abc import Callable
+from dataclasses import dataclass
+from ipaddress import ip_address
+from tkinter import font as tkfont
+from urllib.parse import urlsplit
 
 from cutting_board.models import ServiceSnapshot
 from cutting_board.presentation import FRESH_UPTIME_SECONDS, format_uptime_compact
@@ -9,13 +13,10 @@ from cutting_board.scanner.docker import ContainerInfo
 from cutting_board.ui import theme
 from cutting_board.ui.icons import IconStore
 
+# The committed technology marks are 48 px; in the horizontal card they take
+# roughly forty pixels of visual weight without dominating the copy.
 ICON_SIZE = 48
-MAX_CHIPS = 3
-
-# Who started a service is only worth a badge when the answer is interesting.
-# A shell or an init system launched most of what is on the board, so badging
-# those would just add a label to every tile.
-ORIGIN_COLOURS = {"agent": theme.VIOLET, "ide": theme.ACCENT}
+MAX_CHIPS = 2
 
 # X11 reports the wheel as button presses, one per notch; Windows and macOS
 # send <MouseWheel> carrying a delta instead. The horizontal wheel (Button-6
@@ -28,6 +29,30 @@ WHEEL_SEQUENCES = ("<MouseWheel>", "<Button-4>", "<Button-5>")
 # glide rather than the jump a canvas "unit" would give (a unit is a tenth of
 # the viewport, which grows with the window).
 WHEEL_STEP_PIXELS = 54
+
+
+@dataclass(slots=True)
+class _CanvasAction:
+    key: str
+    bounds: tuple[float, float, float, float]
+    shape: int | None
+    visuals: tuple[tuple[int, str], ...]
+    enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ActionStyle:
+    fill: str
+    outline: str
+    foreground: str
+    width: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CardStyle:
+    fill: str
+    outline: str
+    width: int
 
 
 class ScrollArea(tk.Frame):
@@ -175,9 +200,10 @@ class SectionHeader(tk.Frame):
         fonts: dict[str, tuple[str, int, str]],
         title: str,
         path: str | None,
-        accent: str = theme.TEXT_DIM,
+        accent: str | None = None,
     ) -> None:
         super().__init__(master, bg=theme.CANVAS)
+        accent = _section_accent(accent)
 
         row = tk.Frame(self, bg=theme.CANVAS)
         row.pack(fill="x", padx=theme.TILE_PAD + 4)
@@ -205,11 +231,7 @@ class SectionHeader(tk.Frame):
 
 
 class ServiceTile(tk.Canvas):
-    """One service, shown as a brand mark with its ports.
-
-    Everything else the scanner knows lives behind the tile: clicking it opens
-    the detail dialog, so the board itself stays readable at a glance.
-    """
+    """A compact service card with visible, keyboard-accessible actions."""
 
     def __init__(
         self,
@@ -230,7 +252,8 @@ class ServiceTile(tk.Canvas):
             bg=theme.CANVAS,
             highlightthickness=0,
             bd=0,
-            takefocus=False,
+            takefocus=True,
+            cursor="hand2",
         )
         self.service = service
         self._fonts = fonts
@@ -239,122 +262,201 @@ class ServiceTile(tk.Canvas):
         self._on_details = on_details
         self._on_terminate = on_terminate
         self._on_open = on_open
-        self._over_power = False
+        self._hovered = False
+        self._focused = False
+        self._hovered_action: str | None = None
+        self._selected_action: str | None = None
+        self._actions: list[_CanvasAction] = []
         # Where the uptime line sits and which canvas items draw it, so it can
         # be refreshed without touching the rest of the tile.
         self._uptime_at: tuple[float, float] | None = None
         self._uptime_items: tuple[int, int] | None = None
 
-        self._background = self.create_image(0, 0, anchor="nw", image=icons.ui("tile-idle"))
+        self._background = theme.rounded_rect(
+            self,
+            theme.TILE_PAD,
+            6,
+            theme.TILE_SPAN - theme.TILE_PAD,
+            theme.TILE_HEIGHT + theme.TILE_PAD + 2,
+            theme.CARD_RADIUS,
+            fill=theme.SURFACE,
+            outline=theme.HAIRLINE,
+            width=1,
+        )
         self._draw()
 
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
         self.bind("<Motion>", self._on_motion)
         self.bind("<Button-1>", self._on_click)
+        self.bind("<FocusIn>", self._on_focus_in)
+        self.bind("<FocusOut>", self._on_focus_out)
+        self.bind("<Return>", self._on_activate)
+        self.bind("<space>", self._on_activate)
+        self.bind("<Left>", lambda _event: self._cycle_action(-1))
+        self.bind("<Right>", lambda _event: self._cycle_action(1))
 
     # ------------------------------------------------------------------ draw
 
     def _draw(self) -> None:
         service = self.service
+        browser_url = service.browser_url()
         pad = theme.TILE_PAD
-        centre = theme.TILE_SPAN / 2
+        card_left = pad
+        card_right = theme.TILE_SPAN - pad
+        content_x = card_left + 78
         accent = theme.CATEGORY_COLORS.get(service.category.value, theme.TEXT_MUTED)
 
-        self._draw_origin(pad)
+        icon_left = card_left + 10
+        icon_top = 20
+        icon_right = icon_left + theme.ICON_WELL_SIZE
+        icon_bottom = icon_top + theme.ICON_WELL_SIZE
+        theme.rounded_rect(
+            self,
+            icon_left,
+            icon_top,
+            icon_right,
+            icon_bottom,
+            theme.ICON_WELL_RADIUS,
+            fill=theme.SURFACE_ALT,
+            outline="",
+        )
 
         icon = self._icons.tech(service.tech, ICON_SIZE)
         if icon is not None:
-            self.create_image(centre, pad + 44, image=icon)
+            self.create_image(
+                (icon_left + icon_right) / 2,
+                (icon_top + icon_bottom) / 2,
+                image=icon,
+            )
         else:
             self.create_text(
-                centre,
-                pad + 44,
+                (icon_left + icon_right) / 2,
+                (icon_top + icon_bottom) / 2,
                 text=service.tech[:2].upper(),
                 fill=accent,
                 font=self._fonts["section"],
             )
 
-        self.create_text(
-            centre,
-            pad + 88,
-            text=_ellipsis(service.display_name, 20),
-            fill=theme.TEXT if not self._busy else theme.TEXT_DIM,
-            font=self._fonts["tile_name"],
-            anchor="center",
-        )
+        title_right = card_right - theme.SPACE_MD
+        if service.can_terminate:
+            title_right -= theme.CONTROL_SIZE + theme.SPACE_SM
 
-        self._draw_chips(centre, pad + 112, accent)
+        self.create_text(
+            content_x,
+            26,
+            text=_ellipsis_to_width(
+                service.display_name,
+                title_right - content_x,
+                tkfont.Font(root=self, font=self._fonts["tile_name"]).measure,
+            ),
+            fill=theme.TEXT if not self._busy else theme.TEXT_MUTED,
+            font=self._fonts["tile_name"],
+            anchor="w",
+        )
 
         if self._busy:
             self.create_text(
-                centre,
-                pad + 134,
-                text="stopping…",
+                content_x,
+                54,
+                text="중지 중…",
                 fill=theme.WARNING,
                 font=self._fonts["tile_meta"],
+                anchor="w",
             )
         else:
-            self._draw_uptime(centre, pad + 134)
+            self._draw_uptime(content_x, 54)
 
-        self._power = self.create_image(
-            theme.TILE_SPAN - pad - 16,
-            pad + 16,
-            image=self._icons.ui("power-idle"),
+        self._draw_origin(card_right - theme.SPACE_MD, 54)
+        self._draw_chips(content_x, 82, accent)
+
+        details_hint = self.create_text(
+            card_right - theme.SPACE_MD,
+            110,
+            text="↵ 상세",
+            fill=theme.TEXT_MUTED,
+            font=self._fonts["tile_meta"],
+            anchor="e",
             state="hidden",
         )
+        self._actions.append(
+            _CanvasAction(
+                key="details",
+                bounds=(-1, -1, -1, -1),
+                shape=None,
+                visuals=((details_hint, "fill"),),
+                enabled=True,
+            )
+        )
+        if browser_url:
+            self._draw_link_action(
+                content_x,
+                110,
+                browser_url,
+                max_width=card_right - content_x - 72,
+            )
+        if service.can_terminate:
+            self._draw_power_action(card_right, disabled=self._busy)
 
-    def _draw_origin(self, pad: int) -> None:
+    def _draw_origin(self, right: float, y: float) -> None:
         """A badge naming the tool that started the service, when one is known."""
-        colour = ORIGIN_COLOURS.get(self.service.origin_kind)
+        colour = _origin_colour(self.service.origin_kind)
         label = self.service.origin_label
         if colour is None or not label:
             return
-        width = 14 + _text_width(label)
-        left = pad + 8
-        top = pad + 8
+        width = 24 + _text_width(label)
+        left = right - width
         theme.rounded_rect(
             self,
             left,
-            top,
-            left + width,
-            top + 17,
-            5,
+            y - 9,
+            right,
+            y + 9,
+            6,
             fill=theme.SURFACE_ALT,
-            outline=colour,
+            outline="",
+        )
+        self.create_oval(
+            left + 7,
+            y - 2,
+            left + 11,
+            y + 2,
+            fill=colour,
+            outline="",
         )
         self.create_text(
-            left + width / 2,
-            top + 9,
+            left + 15,
+            y,
             text=label,
-            fill=colour,
+            fill=theme.TEXT_MUTED,
             font=self._fonts["chip"],
+            anchor="w",
         )
 
-    def _draw_uptime(self, centre: float, y: float) -> None:
+    def _draw_uptime(self, x: float, y: float) -> None:
         """How long the service has been up, as its own quiet line.
 
         A freshly started process is the one a developer is most likely to be
         looking for, so the first few minutes are tinted; after that the line
         recedes into the tile.
         """
-        self._uptime_at = (centre, y)
+        self._uptime_at = (x, y)
         process = self.service.process
         if process is None:
             return
         text = format_uptime_compact(process.uptime_seconds)
         if not text:
             return
+        text = f"실행 {text}"
         colour = self._uptime_colour(process.uptime_seconds)
-        left = centre - _uptime_width(text) / 2 - 9
-        dot = self.create_oval(left, y - 2, left + 4, y + 2, fill=colour, outline="")
+        dot = self.create_oval(x, y - 3, x + 6, y + 3, fill=colour, outline="")
         label = self.create_text(
-            centre + 3,
+            x + 11,
             y,
             text=text,
             fill=colour,
             font=self._fonts["tile_meta"],
-            anchor="center",
+            anchor="w",
         )
         self._uptime_items = (dot, label)
 
@@ -383,7 +485,7 @@ class ServiceTile(tk.Canvas):
         """
         if self._busy or self._uptime_at is None:
             return
-        centre, y = self._uptime_at
+        x, y = self._uptime_at
         process = self.service.process
         text = format_uptime_compact(process.uptime_seconds) if process else ""
         if not text:
@@ -392,28 +494,33 @@ class ServiceTile(tk.Canvas):
                 self._uptime_items = None
             return
         if self._uptime_items is None:  # nothing to show before, something now
-            self._draw_uptime(centre, y)
+            self._draw_uptime(x, y)
             return
         dot, label = self._uptime_items
         colour = self._uptime_colour(process.uptime_seconds if process else None)
-        left = centre - _uptime_width(text) / 2 - 9
-        self.coords(dot, left, y - 2, left + 4, y + 2)
+        text = f"실행 {text}"
+        self.coords(dot, x, y - 3, x + 6, y + 3)
         self.itemconfigure(dot, fill=colour)
         self.itemconfigure(label, text=text, fill=colour)
 
-    def _draw_chips(self, centre: float, y: float, accent: str) -> None:
+    def _draw_chips(self, x: float, y: float, accent: str) -> None:
         ports = self.service.unique_ports
         if not ports:
+            self.create_text(
+                x,
+                y,
+                text="포트 정보 없음",
+                fill=theme.TEXT_DIM,
+                font=self._fonts["tile_meta"],
+                anchor="w",
+            )
             return
-        labels = [str(port) for port in ports[:MAX_CHIPS]]
-        overflow = len(ports) - len(labels)
-        if overflow > 0:
-            labels.append(f"+{overflow}")
+        labels = _port_badge_labels(ports)
 
+        self.create_oval(x, y - 2, x + 4, y + 2, fill=accent, outline="")
+        x += 10
         font = self._fonts["chip"]
-        widths = [max(30, 11 + 7 * len(label)) for label in labels]
-        total = sum(widths) + 5 * (len(widths) - 1)
-        x = centre - total / 2
+        widths = [max(34, 16 + _text_width(label)) for label in labels]
         for label, width in zip(labels, widths):
             theme.rounded_rect(
                 self,
@@ -423,70 +530,233 @@ class ServiceTile(tk.Canvas):
                 y + 9,
                 6,
                 fill=theme.SURFACE_ALT,
-                outline=accent if label[0] != "+" else theme.BORDER,
+                outline="",
             )
             self.create_text(
                 x + width / 2,
                 y,
                 text=label,
-                fill=accent if label[0] != "+" else theme.TEXT_DIM,
+                fill=theme.TEXT_DIM if label.startswith("+") else theme.TEXT_MUTED,
                 font=font,
             )
-            x += width + 5
+            x += width + 6
+
+    def _draw_link_action(
+        self,
+        x: float,
+        y: float,
+        url: str,
+        *,
+        max_width: float,
+    ) -> None:
+        font = tkfont.Font(root=self, font=self._fonts["tile_meta"])
+        label = _ellipsis_to_width(_browser_link_label(url), max_width, font.measure)
+        width = max(1.0, float(font.measure(label)))
+        bounds = (x - 4, y - 12, x + width + 4, y + 12)
+        shape = theme.rounded_rect(
+            self,
+            *bounds,
+            theme.SPACE_SM,
+            fill=theme.SURFACE,
+            outline="",
+        )
+        label_item = self.create_text(
+            x,
+            y,
+            text=label,
+            fill=theme.ACCENT,
+            font=self._fonts["tile_meta"],
+            anchor="w",
+        )
+        underline = self.create_line(
+            x,
+            y + 8,
+            x + width,
+            y + 8,
+            fill=theme.ACCENT_HOVER,
+            width=1,
+            state="hidden",
+        )
+        self._actions.append(
+            _CanvasAction(
+                key="open",
+                bounds=bounds,
+                shape=shape,
+                visuals=((label_item, "fill"), (underline, "fill")),
+                enabled=True,
+            )
+        )
+
+    def _draw_power_action(self, card_right: float, *, disabled: bool) -> None:
+        hit_bounds, visual_bounds, centre = _power_action_geometry(card_right)
+        cx, cy = centre
+        icon_radius = theme.CONTROL_ICON_SIZE / 2
+        shape = self.create_oval(
+            *visual_bounds,
+            fill=theme.SURFACE_ALT,
+            outline="",
+            width=1,
+        )
+        arc = self.create_arc(
+            cx - icon_radius + 2,
+            cy - icon_radius + 2,
+            cx + icon_radius - 2,
+            cy + icon_radius - 2,
+            start=135,
+            extent=270,
+            style="arc",
+            outline=theme.TEXT_DIM if disabled else theme.DANGER,
+            width=2,
+        )
+        stem = self.create_line(
+            cx,
+            cy - icon_radius,
+            cx,
+            cy,
+            fill=theme.TEXT_DIM if disabled else theme.DANGER,
+            width=2,
+            capstyle="round",
+        )
+        self._actions.append(
+            _CanvasAction(
+                key="terminate",
+                bounds=hit_bounds,
+                shape=shape,
+                visuals=((arc, "outline"), (stem, "fill")),
+                enabled=not disabled,
+            )
+        )
 
     # ----------------------------------------------------------- interaction
 
     def _on_enter(self, _event: tk.Event) -> None:
-        self.itemconfigure(self._background, image=self._icons.ui("tile-hover"))
-        if self.service.can_terminate and not self._busy:
-            self.itemconfigure(self._power, state="normal")
+        self._hovered = True
+        self._paint_card()
+        self._paint_actions()
 
     def _on_leave(self, _event: tk.Event) -> None:
-        self._over_power = False
-        self.itemconfigure(self._background, image=self._icons.ui("tile-idle"))
-        self.itemconfigure(self._power, image=self._icons.ui("power-idle"), state="hidden")
+        self._hovered = False
+        self._set_hovered_action(None)
+        self._paint_card()
+        self._paint_actions()
 
     def _on_motion(self, event: tk.Event) -> None:
-        if not self.service.can_terminate or self._busy:
-            return
-        over = self._in_power_zone(event.x, event.y)
-        if over == self._over_power:
-            return
-        self._over_power = over
-        self.itemconfigure(
-            self._background,
-            image=self._icons.ui("tile-armed" if over else "tile-hover"),
-        )
-        self.itemconfigure(
-            self._power,
-            image=self._icons.ui("power-hot" if over else "power-idle"),
-        )
-        self.configure(cursor="hand2" if over else "")
+        action = self._action_at(event.x, event.y)
+        self._set_hovered_action(action.key if action is not None else None)
 
     def _on_click(self, event: tk.Event) -> None:
-        if self._busy:
-            return
-        if self.service.can_terminate and self._in_power_zone(event.x, event.y):
-            self._on_terminate(self.service)
+        self.focus_set()
+        action = self._action_at(event.x, event.y)
+        if action is not None:
+            if action.enabled:
+                self._selected_action = action.key
+                self._paint_actions()
+                self._invoke_action(action.key)
             return
         if self.service.browser_url() and event.state & 0x0004:  # Ctrl-click
             self._on_open(self.service)
             return
+        self._selected_action = "details"
+        self._paint_actions()
         self._on_details(self.service)
 
     def _in_power_zone(self, x: int, y: int) -> bool:
-        pad = theme.TILE_PAD
-        cx = theme.TILE_SPAN - pad - 16
-        cy = pad + 16
-        return abs(x - cx) <= 17 and abs(y - cy) <= 17
+        action = self._action_at(x, y)
+        return action is not None and action.enabled and action.key == "terminate"
+
+    def _action_at(self, x: float, y: float) -> _CanvasAction | None:
+        for action in self._actions:
+            left, top, right, bottom = action.bounds
+            if left <= x <= right and top <= y <= bottom:
+                return action
+        return None
+
+    def _set_hovered_action(self, key: str | None) -> None:
+        if key == self._hovered_action:
+            return
+        self._hovered_action = key
+        self._paint_actions()
+
+    def _paint_actions(self) -> None:
+        for action in self._actions:
+            hovered = action.enabled and action.key == self._hovered_action
+            selected = action.enabled and self._focused and action.key == self._selected_action
+            if action.shape is None:
+                for item, _option in action.visuals:
+                    self.itemconfigure(
+                        item,
+                        state="normal" if selected else "hidden",
+                    )
+                continue
+            style = _action_style(
+                action.key,
+                enabled=action.enabled,
+                hovered=hovered,
+                selected=selected,
+                card_hovered=self._hovered,
+            )
+            self.itemconfigure(
+                action.shape,
+                fill=style.fill,
+                outline=style.outline,
+                width=style.width,
+            )
+            for item, option in action.visuals:
+                self.itemconfigure(item, **{option: style.foreground})
+            if action.key == "open" and len(action.visuals) > 1:
+                self.itemconfigure(
+                    action.visuals[1][0],
+                    state="normal" if hovered or selected else "hidden",
+                )
+
+    def _on_focus_in(self, _event: tk.Event) -> None:
+        self._focused = True
+        self._selected_action = next(
+            (action.key for action in self._actions if action.enabled),
+            None,
+        )
+        self._paint_card()
+        self._paint_actions()
+
+    def _on_focus_out(self, _event: tk.Event) -> None:
+        self._focused = False
+        self._paint_card()
+        self._paint_actions()
+
+    def _on_activate(self, _event: tk.Event) -> str:
+        selected = self._selected_action or "details"
+        self._invoke_action(selected)
+        return "break"
+
+    def _cycle_action(self, step: int) -> str:
+        keys = tuple(action.key for action in self._actions if action.enabled)
+        self._selected_action = _next_action_key(keys, self._selected_action, step)
+        self._paint_actions()
+        return "break"
+
+    def _invoke_action(self, key: str) -> None:
+        if key == "terminate":
+            if not self._busy and self.service.can_terminate:
+                self._on_terminate(self.service)
+            return
+        if key == "open":
+            if self.service.browser_url():
+                self._on_open(self.service)
+            return
+        self._on_details(self.service)
+
+    def _paint_card(self) -> None:
+        style = _card_style(hovered=self._hovered, focused=self._focused)
+        self.itemconfigure(
+            self._background,
+            fill=style.fill,
+            outline=style.outline,
+            width=style.width,
+        )
 
 
 class ContainerTile(tk.Canvas):
-    """One Docker container, drawn like a service tile.
-
-    Containers are shown but never acted on: stopping one is an operation on
-    shared infrastructure, and the board is a place to see what is running.
-    """
+    """A read-only Docker card whose surface opens its details."""
 
     def __init__(
         self,
@@ -505,70 +775,136 @@ class ContainerTile(tk.Canvas):
             bg=theme.CANVAS,
             highlightthickness=0,
             bd=0,
-            takefocus=False,
+            takefocus=True,
+            cursor="hand2",
         )
         self.container = container
         self._tech = tech
         self._fonts = fonts
         self._icons = icons
         self._on_details = on_details
+        self._hovered = False
+        self._focused = False
 
-        self._background = self.create_image(0, 0, anchor="nw", image=icons.ui("tile-idle"))
+        self._background = theme.rounded_rect(
+            self,
+            theme.TILE_PAD,
+            6,
+            theme.TILE_SPAN - theme.TILE_PAD,
+            theme.TILE_HEIGHT + theme.TILE_PAD + 2,
+            theme.CARD_RADIUS,
+            fill=theme.SURFACE,
+            outline=theme.HAIRLINE,
+            width=1,
+        )
         self._draw()
 
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
-        self.bind("<Button-1>", lambda _event: self._on_details(self.container))
-        self.configure(cursor="hand2")
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<FocusIn>", self._on_focus_in)
+        self.bind("<FocusOut>", self._on_focus_out)
+        self.bind("<Return>", self._on_activate)
+        self.bind("<space>", self._on_activate)
+        self.bind("<Left>", self._keep_details_selected)
+        self.bind("<Right>", self._keep_details_selected)
 
     def _draw(self) -> None:
         container = self.container
         pad = theme.TILE_PAD
-        centre = theme.TILE_SPAN / 2
+        card_left = pad
+        card_right = theme.TILE_SPAN - pad
+        content_x = card_left + 78
         running = container.running
         accent = theme.OK if running else theme.TEXT_DIM
 
+        icon_left = card_left + 10
+        icon_top = 20
+        icon_right = icon_left + theme.ICON_WELL_SIZE
+        icon_bottom = icon_top + theme.ICON_WELL_SIZE
+        theme.rounded_rect(
+            self,
+            icon_left,
+            icon_top,
+            icon_right,
+            icon_bottom,
+            theme.ICON_WELL_RADIUS,
+            fill=theme.SURFACE_ALT,
+            outline="",
+        )
+
         icon = self._icons.tech(self._tech, ICON_SIZE)
         if icon is not None:
-            self.create_image(centre, pad + 44, image=icon)
+            self.create_image(
+                (icon_left + icon_right) / 2,
+                (icon_top + icon_bottom) / 2,
+                image=icon,
+            )
+        else:
+            self.create_text(
+                (icon_left + icon_right) / 2,
+                (icon_top + icon_bottom) / 2,
+                text="DK",
+                fill=accent,
+                font=self._fonts["section"],
+            )
 
         # A stopped container is still worth seeing, but it must not compete
         # with the running ones for attention.
         self.create_text(
-            centre,
-            pad + 88,
-            text=_ellipsis(container.name, 20),
+            content_x,
+            26,
+            text=_ellipsis_to_width(
+                container.name,
+                card_right - theme.SPACE_MD - content_x,
+                tkfont.Font(root=self, font=self._fonts["tile_name"]).measure,
+            ),
             fill=theme.TEXT if running else theme.TEXT_MUTED,
             font=self._fonts["tile_name"],
-            anchor="center",
+            anchor="w",
         )
 
-        self._draw_port_chips(centre, pad + 112, theme.VIOLET if running else theme.BORDER)
-
+        state_text = "실행 중" if running else "중지됨"
         if container.status:
-            self.create_text(
-                centre,
-                pad + 134,
-                text=_ellipsis(container.status, 22),
-                fill=accent,
-                font=self._fonts["tile_meta"],
-                anchor="center",
-            )
+            state_text += f" · {_ellipsis(container.status, 22)}"
+        self.create_oval(content_x, 51, content_x + 6, 57, fill=accent, outline="")
+        self.create_text(
+            content_x + 11,
+            54,
+            text=state_text,
+            fill=accent,
+            font=self._fonts["tile_meta"],
+            anchor="w",
+        )
 
-        self.create_oval(pad + 12, pad + 12, pad + 18, pad + 18, fill=accent, outline="")
+        self._draw_port_chips(content_x, 82, theme.VIOLET if running else theme.TEXT_DIM)
+        self._details_hint = self.create_text(
+            card_right - theme.SPACE_MD,
+            110,
+            text="↵ 상세",
+            fill=theme.TEXT_MUTED,
+            font=self._fonts["tile_meta"],
+            anchor="e",
+            state="hidden",
+        )
 
-    def _draw_port_chips(self, centre: float, y: float, accent: str) -> None:
+    def _draw_port_chips(self, x: float, y: float, accent: str) -> None:
         ports = self.container.ports
         if not ports:
+            self.create_text(
+                x,
+                y,
+                text="공개 포트 없음",
+                fill=theme.TEXT_DIM,
+                font=self._fonts["tile_meta"],
+                anchor="w",
+            )
             return
-        labels = [str(port) for port in ports[:MAX_CHIPS]]
-        overflow = len(ports) - len(labels)
-        if overflow > 0:
-            labels.append(f"+{overflow}")
+        labels = _port_badge_labels(ports)
 
-        widths = [max(30, 11 + 7 * len(label)) for label in labels]
-        total = sum(widths) + 5 * (len(widths) - 1)
-        x = centre - total / 2
+        self.create_oval(x, y - 2, x + 4, y + 2, fill=accent, outline="")
+        x += 10
+        widths = [max(34, 16 + _text_width(label)) for label in labels]
         for label, width in zip(labels, widths):
             theme.rounded_rect(
                 self,
@@ -578,22 +914,55 @@ class ContainerTile(tk.Canvas):
                 y + 9,
                 6,
                 fill=theme.SURFACE_ALT,
-                outline=accent if label[0] != "+" else theme.BORDER,
+                outline="",
             )
             self.create_text(
                 x + width / 2,
                 y,
                 text=label,
-                fill=accent if label[0] != "+" else theme.TEXT_DIM,
+                fill=theme.TEXT_DIM if label.startswith("+") else theme.TEXT_MUTED,
                 font=self._fonts["chip"],
             )
-            x += width + 5
+            x += width + 6
 
     def _on_enter(self, _event: tk.Event) -> None:
-        self.itemconfigure(self._background, image=self._icons.ui("tile-hover"))
+        self._hovered = True
+        self._paint_card()
 
     def _on_leave(self, _event: tk.Event) -> None:
-        self.itemconfigure(self._background, image=self._icons.ui("tile-idle"))
+        self._hovered = False
+        self._paint_card()
+
+    def _on_click(self, event: tk.Event) -> None:
+        del event
+        self.focus_set()
+        self._on_details(self.container)
+
+    def _on_activate(self, _event: tk.Event) -> str:
+        self._on_details(self.container)
+        return "break"
+
+    def _keep_details_selected(self, _event: tk.Event) -> str:
+        return "break"
+
+    def _on_focus_in(self, _event: tk.Event) -> None:
+        self._focused = True
+        self._paint_card()
+        self.itemconfigure(self._details_hint, state="normal")
+
+    def _on_focus_out(self, _event: tk.Event) -> None:
+        self._focused = False
+        self._paint_card()
+        self.itemconfigure(self._details_hint, state="hidden")
+
+    def _paint_card(self) -> None:
+        style = _card_style(hovered=self._hovered, focused=self._focused)
+        self.itemconfigure(
+            self._background,
+            fill=style.fill,
+            outline=style.outline,
+            width=style.width,
+        )
 
 
 def _wheel_notches(event: tk.Event) -> int:
@@ -624,14 +993,163 @@ def _text_width(text: str) -> float:
     return sum(9.0 if character > "\u007f" else 5.5 for character in text)
 
 
-def _uptime_width(text: str) -> float:
-    """Rough pixel width of the uptime line.
+def _origin_colour(kind: str) -> str | None:
+    """Resolve launcher colours after the active palette has been applied."""
+    return {"agent": theme.VIOLET, "ide": theme.ACCENT}.get(kind)
 
-    Measuring through a font object would need a live widget for every tile;
-    the dot beside the text only has to sit close, so a per-character estimate
-    that accounts for the wider Hangul glyphs is enough.
-    """
-    return sum(9.0 if character > "\u007f" else 5.0 for character in text)
+
+def _port_badge_labels(ports: tuple[int, ...]) -> tuple[str, ...]:
+    """Keep the quiet port row numeric, compact, and truthful."""
+    if len(ports) > MAX_CHIPS:
+        return str(ports[0]), f"+{len(ports) - 1}"
+    return tuple(str(port) for port in ports)
+
+
+def _browser_link_label(url: str) -> str:
+    """Turn a browser URL into a compact destination without changing it."""
+    value = url.strip()
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return value
+    if not host:
+        return value
+
+    display_host = host
+    normalized_host = host.casefold().rstrip(".")
+    if normalized_host in {"localhost", "localhost.localdomain", "*", "+"} or normalized_host.endswith(
+        ".localhost"
+    ):
+        display_host = "localhost"
+    else:
+        try:
+            address = ip_address(normalized_host)
+        except ValueError:
+            address = None
+        if address is not None and (address.is_loopback or address.is_unspecified):
+            display_host = "localhost"
+        elif ":" in display_host:
+            display_host = f"[{display_host}]"
+
+    destination = display_host
+    if port is not None:
+        destination += f":{port}"
+    if parsed.path and parsed.path != "/":
+        destination += parsed.path
+    if parsed.query:
+        destination += f"?{parsed.query}"
+    if parsed.fragment:
+        destination += f"#{parsed.fragment}"
+    return destination
+
+
+def _section_accent(accent: str | None) -> str:
+    """Resolve the optional section accent at widget construction time."""
+    return theme.TEXT_DIM if accent is None else accent
+
+
+def _ellipsis_to_width(
+    text: str,
+    max_width: float,
+    measure: Callable[[str], int],
+) -> str:
+    """Fit one line to a measured pixel width, preserving a visible ellipsis."""
+    text = text.strip()
+    if not text or max_width <= 0:
+        return ""
+    if measure(text) <= max_width:
+        return text
+
+    suffix = "…"
+    if measure(suffix) > max_width:
+        return ""
+    low = 0
+    high = len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = text[:middle].rstrip() + suffix
+        if measure(candidate) <= max_width:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low].rstrip() + suffix
+
+
+def _next_action_key(
+    keys: tuple[str, ...],
+    selected: str | None,
+    step: int,
+) -> str | None:
+    """Cycle through enabled canvas actions without depending on a Tk display."""
+    if not keys:
+        return None
+    if selected not in keys:
+        return keys[0]
+    index = keys.index(selected)
+    return keys[(index + step) % len(keys)]
+
+
+def _power_action_geometry(
+    card_right: float,
+) -> tuple[
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+    tuple[float, float],
+]:
+    """Return a 36 px hit target around the smaller circular control."""
+    centre_x = card_right - theme.SPACE_MD - theme.CONTROL_HIT_SIZE / 2
+    centre_y = 26.0
+    hit_radius = theme.CONTROL_HIT_SIZE / 2
+    visual_radius = theme.CONTROL_RADIUS
+    return (
+        (
+            centre_x - hit_radius,
+            centre_y - hit_radius,
+            centre_x + hit_radius,
+            centre_y + hit_radius,
+        ),
+        (
+            centre_x - visual_radius,
+            centre_y - visual_radius,
+            centre_x + visual_radius,
+            centre_y + visual_radius,
+        ),
+        (centre_x, centre_y),
+    )
+
+
+def _action_style(
+    key: str,
+    *,
+    enabled: bool,
+    hovered: bool,
+    selected: bool,
+    card_hovered: bool,
+) -> _ActionStyle:
+    """Resolve action states without relying on a live Tk display."""
+    card_fill = theme.SURFACE_HOVER if card_hovered else theme.SURFACE
+    if key == "terminate":
+        if not enabled:
+            return _ActionStyle(theme.SURFACE_ALT, "", theme.TEXT_DIM, 1)
+        if selected:
+            return _ActionStyle(theme.SURFACE_ALT, theme.ACCENT, theme.DANGER, 2)
+        if hovered:
+            return _ActionStyle(theme.SURFACE_HOVER, theme.BORDER, theme.DANGER, 1)
+        return _ActionStyle(theme.SURFACE_ALT, "", theme.DANGER, 1)
+
+    if hovered or selected:
+        return _ActionStyle(card_fill, "", theme.ACCENT_HOVER, 1)
+    return _ActionStyle(card_fill, "", theme.ACCENT, 1)
+
+
+def _card_style(*, hovered: bool, focused: bool) -> _CardStyle:
+    """Keep keyboard focus inside actions instead of selecting the card."""
+    del focused
+    if hovered:
+        return _CardStyle(theme.SURFACE_HOVER, theme.BORDER, 1)
+    return _CardStyle(theme.SURFACE, theme.HAIRLINE, 1)
 
 
 def _ellipsis(text: str, limit: int) -> str:

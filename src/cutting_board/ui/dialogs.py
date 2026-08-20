@@ -7,8 +7,8 @@ from pathlib import Path
 
 from cutting_board.constants import APP_NAME, APP_VERSION
 from cutting_board.models import ServiceSnapshot
-from cutting_board.scanner.docker import ContainerInfo
 from cutting_board.presentation import format_bytes, format_cpu, format_duration
+from cutting_board.scanner.docker import ContainerInfo
 from cutting_board.ui import theme
 from cutting_board.ui.icons import IconStore
 
@@ -20,6 +20,14 @@ SCAN_INTERVAL_CHOICES: tuple[tuple[str, float], ...] = (
     ("5초", 5.0),
     ("10초", 10.0),
 )
+
+THEME_MODE_CHOICES: tuple[tuple[str, str], ...] = (
+    ("시스템 설정", "system"),
+    ("다크", "dark"),
+    ("라이트", "light"),
+)
+
+SCRIM_ALPHA = 0.26
 
 
 class ContainerDetailDialog(tk.Toplevel):
@@ -34,7 +42,9 @@ class ContainerDetailDialog(tk.Toplevel):
         fonts: dict[str, tuple[str, int, str]],
         icons: IconStore,
     ) -> None:
-        super().__init__(parent, bg=theme.CANVAS)
+        backdrop = ModalBackdrop(parent)
+        super().__init__(backdrop.window, bg=theme.CANVAS)
+        self._modal_backdrop = backdrop
         self.container = container
         self._tech = tech
         self._fonts = fonts
@@ -42,16 +52,12 @@ class ContainerDetailDialog(tk.Toplevel):
 
         self.title(container.name)
         self.resizable(False, False)
-        self.transient(parent.winfo_toplevel())
+        self.transient(backdrop.window)
 
         self._build()
 
-        self.bind("<Escape>", lambda _event: self.destroy())
         self.update_idletasks()
-        _centre_on(self, parent)
-        self.grab_set()
-        self.focus_set()
-        dismiss_on_outside_click(self, self.destroy)
+        configure_detail_dismiss(self, backdrop)
 
     def _build(self) -> None:
         container = self.container
@@ -171,32 +177,201 @@ def _row(
     ).pack(side="left", fill="x", expand=True)
 
 
-def _centre_on(dialog: tk.Toplevel, parent: tk.Misc) -> None:
-    top = parent.winfo_toplevel()
-    x = top.winfo_rootx() + (top.winfo_width() - dialog.winfo_width()) // 2
-    y = top.winfo_rooty() + (top.winfo_height() - dialog.winfo_height()) // 3
-    dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
+def _centred_modal_geometry(
+    *,
+    parent_x: int,
+    parent_y: int,
+    parent_width: int,
+    parent_height: int,
+    dialog_width: int,
+    dialog_height: int,
+) -> str:
+    """Return an exact parent-centred position in the global desktop space."""
+    x, y = _centred_modal_position(
+        parent_x=parent_x,
+        parent_y=parent_y,
+        parent_width=parent_width,
+        parent_height=parent_height,
+        dialog_width=dialog_width,
+        dialog_height=dialog_height,
+    )
+    return f"{x:+d}{y:+d}"
 
 
-def dismiss_on_outside_click(dialog: tk.Toplevel, on_dismiss: Callable[[], None]) -> None:
-    """Close `dialog` when the pointer is pressed anywhere outside it.
+def _centred_modal_position(
+    *,
+    parent_x: int,
+    parent_y: int,
+    parent_width: int,
+    parent_height: int,
+    dialog_width: int,
+    dialog_height: int,
+) -> tuple[int, int]:
+    x = parent_x + (parent_width - dialog_width) // 2
+    y = parent_y + (parent_height - dialog_height) // 2
+    return x, y
 
-    The dialog holds an application grab, so a press over the board behind it
-    is redirected here rather than reaching the board. The pointer's root
-    coordinates are compared against the dialog's own rectangle, because the
-    widget the event names is the grab holder and not the widget that was
-    actually under the pointer.
-    """
 
-    def handle(event: tk.Event) -> None:
-        left = dialog.winfo_rootx()
-        top = dialog.winfo_rooty()
-        inside_x = left <= event.x_root < left + dialog.winfo_width()
-        inside_y = top <= event.y_root < top + dialog.winfo_height()
-        if not (inside_x and inside_y):
-            on_dismiss()
+class ModalBackdrop:
+    """A dim modal scrim that physically blocks the parent client area."""
 
-    dialog.bind("<Button-1>", handle, add="+")
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        _window_factory: Callable[..., tk.Toplevel] | None = None,
+    ) -> None:
+        self.parent = parent.winfo_toplevel()
+        factory = _window_factory or tk.Toplevel
+        self.window = factory(self.parent, bg="#000000")
+        self._dialog: tk.Toplevel | None = None
+        self._on_outside: Callable[[], None] | None = None
+        self._parent_bindings: dict[str, str] = {}
+        self._closed = False
+
+        self.window.withdraw()
+        self.window.overrideredirect(True)
+        self.window.transient(self.parent)
+        self.window.attributes("-alpha", SCRIM_ALPHA)
+        self.window.configure(cursor="arrow")
+        self.window.bind("<Button-1>", self._handle_click, add="+")
+        self.window.bind("<Destroy>", self._handle_backdrop_destroy, add="+")
+
+    def activate(
+        self,
+        dialog: tk.Toplevel,
+        *,
+        on_outside: Callable[[], None] | None,
+    ) -> None:
+        """Show the scrim and layer the interactive dialog above it."""
+        if self._closed:
+            return
+        self._dialog = dialog
+        self._on_outside = on_outside
+        self._bind_parent("<Configure>", self._handle_parent_configure)
+        self._bind_parent("<Destroy>", self._handle_parent_destroy)
+        dialog.bind("<Destroy>", self._handle_dialog_destroy, add="+")
+        self._sync_scrim_geometry()
+        self.window.deiconify()
+        self.window.update_idletasks()
+        try:
+            self.window.wait_visibility()
+        except tk.TclError:
+            pass
+        self.window.lift(self.parent)
+        self._show_dialog()
+        try:
+            dialog.after_idle(self._show_dialog)
+        except tk.TclError:
+            pass
+
+    def close(self) -> None:
+        """Destroy the scrim and remove parent bindings exactly once."""
+        if self._closed:
+            return
+        self._closed = True
+        self._cleanup_parent_bindings()
+        try:
+            if self.window.winfo_exists():
+                self.window.destroy()
+        except tk.TclError:
+            pass
+
+    def _bind_parent(self, sequence: str, handler: Callable[[tk.Event], object]) -> None:
+        binding_id = self.parent.bind(sequence, handler, add="+")
+        if binding_id is not None:
+            self._parent_bindings[sequence] = binding_id
+
+    def _cleanup_parent_bindings(self) -> None:
+        for sequence, binding_id in self._parent_bindings.items():
+            try:
+                self.parent.unbind(sequence, binding_id)
+            except tk.TclError:
+                pass
+        self._parent_bindings.clear()
+
+    def _handle_click(self, _event: tk.Event) -> str:
+        if not self._closed and self._on_outside is not None:
+            self._on_outside()
+        return "break"
+
+    def _handle_parent_configure(self, event: tk.Event) -> None:
+        if getattr(event, "widget", None) is self.parent:
+            self._sync_scrim_geometry()
+            if self._dialog is not None:
+                self._dialog.lift(self.window)
+            self._position_dialog()
+
+    def _handle_parent_destroy(self, event: tk.Event) -> None:
+        if getattr(event, "widget", None) is self.parent:
+            self.close()
+
+    def _handle_dialog_destroy(self, event: tk.Event) -> None:
+        if getattr(event, "widget", None) is self._dialog:
+            self.close()
+
+    def _handle_backdrop_destroy(self, event: tk.Event) -> None:
+        if getattr(event, "widget", None) is self.window:
+            self._closed = True
+            self._cleanup_parent_bindings()
+
+    def _sync_scrim_geometry(self) -> None:
+        if self._closed:
+            return
+        try:
+            width = max(1, self.parent.winfo_width())
+            height = max(1, self.parent.winfo_height())
+            x = self.parent.winfo_rootx()
+            y = self.parent.winfo_rooty()
+            self.window.geometry(f"{width}x{height}+{x}+{y}")
+            self.window.lift(self.parent)
+        except tk.TclError:
+            pass
+
+    def _position_dialog(self) -> None:
+        if self._closed or self._dialog is None:
+            return
+        try:
+            self._dialog.update_idletasks()
+            dialog_width = self._dialog.winfo_width()
+            dialog_height = self._dialog.winfo_height()
+            target_x, target_y = _centred_modal_position(
+                parent_x=self.parent.winfo_rootx(),
+                parent_y=self.parent.winfo_rooty(),
+                parent_width=self.parent.winfo_width(),
+                parent_height=self.parent.winfo_height(),
+                dialog_width=dialog_width,
+                dialog_height=dialog_height,
+            )
+            self._dialog.geometry(f"{target_x:+d}{target_y:+d}")
+            self._dialog.update_idletasks()
+
+            # On macOS, wm geometry positions the outer frame while winfo_root*
+            # reports the client area. Correct the title-bar inset after map.
+            frame_x = self._dialog.winfo_x() + target_x - self._dialog.winfo_rootx()
+            frame_y = self._dialog.winfo_y() + target_y - self._dialog.winfo_rooty()
+            self._dialog.geometry(f"{frame_x:+d}{frame_y:+d}")
+            self._dialog.update_idletasks()
+        except tk.TclError:
+            pass
+
+    def _show_dialog(self) -> None:
+        """Map and raise the modal after its withdrawn scrim is visible."""
+        if self._closed or self._dialog is None:
+            return
+        try:
+            self._dialog.deiconify()
+            self._dialog.lift(self.window)
+            self._position_dialog()
+            self._dialog.focus_set()
+        except tk.TclError:
+            pass
+
+
+def configure_detail_dismiss(dialog: tk.Toplevel, backdrop: ModalBackdrop) -> None:
+    """Give a read-only detail popup Escape and scrim-click dismissal."""
+    dialog.bind("<Escape>", lambda _event: dialog.destroy())
+    backdrop.activate(dialog, on_outside=dialog.destroy)
 
 
 class ServiceDetailDialog(tk.Toplevel):
@@ -216,7 +391,9 @@ class ServiceDetailDialog(tk.Toplevel):
         on_open: Callable[[ServiceSnapshot], None],
         on_terminate: Callable[[ServiceSnapshot], None],
     ) -> None:
-        super().__init__(parent, bg=theme.CANVAS)
+        backdrop = ModalBackdrop(parent)
+        super().__init__(backdrop.window, bg=theme.CANVAS)
+        self._modal_backdrop = backdrop
         self.service = service
         self._fonts = fonts
         self._icons = icons
@@ -226,16 +403,12 @@ class ServiceDetailDialog(tk.Toplevel):
         self.title(service.display_name)
         self.configure(padx=0, pady=0)
         self.resizable(False, False)
-        self.transient(parent.winfo_toplevel())
+        self.transient(backdrop.window)
 
         self._build()
 
-        self.bind("<Escape>", lambda _event: self.destroy())
         self.update_idletasks()
-        self._centre_on(parent)
-        self.grab_set()
-        self.focus_set()
-        dismiss_on_outside_click(self, self.destroy)
+        configure_detail_dismiss(self, backdrop)
 
     # --------------------------------------------------------------- layout
 
@@ -424,13 +597,6 @@ class ServiceDetailDialog(tk.Toplevel):
         button.bind("<Leave>", lambda _event: button.configure(bg=theme.SURFACE_ALT))
         return button
 
-    def _centre_on(self, parent: tk.Misc) -> None:
-        top = parent.winfo_toplevel()
-        x = top.winfo_rootx() + (top.winfo_width() - self.winfo_width()) // 2
-        y = top.winfo_rooty() + (top.winfo_height() - self.winfo_height()) // 3
-        self.geometry(f"+{max(0, x)}+{max(0, y)}")
-
-
 class ConfirmDialog(tk.Toplevel):
     """A themed yes/no modal.
 
@@ -452,14 +618,16 @@ class ConfirmDialog(tk.Toplevel):
         confirm_label: str,
         tech: str = "service",
     ) -> None:
-        super().__init__(parent, bg=theme.BORDER)
+        backdrop = ModalBackdrop(parent)
+        super().__init__(backdrop.window, bg=theme.BORDER)
+        self._modal_backdrop = backdrop
         self.confirmed = False
         self._fonts = fonts
         self._icons = icons
 
         self.title(title)
         self.resizable(False, False)
-        self.transient(parent.winfo_toplevel())
+        self.transient(backdrop.window)
         self.configure(padx=1, pady=1)  # the 1px border is the parent background
 
         self._build(headline, meta, question, confirm_label, tech)
@@ -467,11 +635,8 @@ class ConfirmDialog(tk.Toplevel):
         self.bind("<Escape>", lambda _event: self._answer(False))
         self.bind("<Return>", lambda _event: self._answer(True))
         self.update_idletasks()
-        self._centre_on(parent)
-        self.grab_set()
+        backdrop.activate(self, on_outside=lambda: self._answer(False))
         self._confirm_button.focus_set()
-        # Clicking away from a question is a refusal, never a confirmation.
-        dismiss_on_outside_click(self, lambda: self._answer(False))
 
     # --------------------------------------------------------------- layout
 
@@ -530,7 +695,7 @@ class ConfirmDialog(tk.Toplevel):
         self._confirm_button = self._action(
             actions,
             confirm_label,
-            fg=theme.CANVAS,
+            fg=theme.ON_ACCENT,
             bg=theme.DANGER,
             hover="#FF8CA0",
             command=lambda: self._answer(True),
@@ -579,13 +744,6 @@ class ConfirmDialog(tk.Toplevel):
         self.confirmed = confirmed
         self.destroy()
 
-    def _centre_on(self, parent: tk.Misc) -> None:
-        top = parent.winfo_toplevel()
-        x = top.winfo_rootx() + (top.winfo_width() - self.winfo_width()) // 2
-        y = top.winfo_rooty() + (top.winfo_height() - self.winfo_height()) // 3
-        self.geometry(f"+{max(0, x)}+{max(0, y)}")
-
-
 def ask_confirmation(
     parent: tk.Misc,
     *,
@@ -629,28 +787,32 @@ class SettingsDialog(tk.Toplevel):
         icons: IconStore,
         settings_path: Path,
         scan_interval_seconds: float,
+        theme_mode: str,
         on_interval_change: Callable[[float], None],
+        on_theme_change: Callable[[str], None],
     ) -> None:
-        super().__init__(parent, bg=theme.CANVAS)
+        backdrop = ModalBackdrop(parent)
+        super().__init__(backdrop.window, bg=theme.CANVAS)
+        self._modal_backdrop = backdrop
         self._fonts = fonts
         self._icons = icons
         self._settings_path = settings_path
         self._interval = float(scan_interval_seconds)
+        self._theme_mode = theme_mode
         self._on_interval_change = on_interval_change
+        self._on_theme_change = on_theme_change
         self._chips: list[tuple[float, tk.Canvas, int, int]] = []
+        self._theme_chips: list[tuple[str, tk.Canvas, int, int]] = []
 
         self.title("설정")
         self.resizable(False, False)
-        self.transient(parent.winfo_toplevel())
+        self.transient(backdrop.window)
 
         self._build()
 
         self.bind("<Escape>", lambda _event: self.destroy())
         self.update_idletasks()
-        _centre_on(self, parent)
-        self.grab_set()
-        self.focus_set()
-        dismiss_on_outside_click(self, self.destroy)
+        backdrop.activate(self, on_outside=self.destroy)
 
     # --------------------------------------------------------------- layout
 
@@ -695,6 +857,7 @@ class SettingsDialog(tk.Toplevel):
 
         _section(body, "설정", self._fonts)
         self._build_interval_row(body)
+        self._build_theme_row(body)
 
         bar = tk.Frame(self, bg=theme.SURFACE, padx=22, pady=14)
         bar.pack(fill="x", side="bottom")
@@ -753,10 +916,65 @@ class SettingsDialog(tk.Toplevel):
                 fill=theme.TEXT_MUTED,
                 font=self._fonts["small"],
             )
-            chip.bind("<Button-1>", lambda _event, choice=value: self._choose_interval(choice))
+
+            def choose_interval(_event: tk.Event, choice: float = value) -> None:
+                self._choose_interval(choice)
+
+            chip.bind("<Button-1>", choose_interval)
             self._chips.append((value, chip, shape, text))
 
         self._paint_chips()
+
+    def _build_theme_row(self, parent: tk.Misc) -> None:
+        row = tk.Frame(parent, bg=theme.CANVAS)
+        row.pack(fill="x", pady=(10, 2))
+        tk.Label(
+            row,
+            text="화면 모드",
+            bg=theme.CANVAS,
+            fg=theme.TEXT_DIM,
+            font=self._fonts["small"],
+            width=12,
+            anchor="w",
+        ).pack(side="left")
+
+        for label, value in THEME_MODE_CHOICES:
+            width = 24 + _chip_text_width(label)
+            chip = tk.Canvas(
+                row,
+                width=width,
+                height=24,
+                bg=theme.CANVAS,
+                highlightthickness=0,
+                bd=0,
+                cursor="hand2",
+            )
+            chip.pack(side="left", padx=(0, 6))
+            shape = theme.rounded_rect(
+                chip,
+                1,
+                1,
+                width - 1,
+                23,
+                7,
+                fill=theme.SURFACE_ALT,
+                outline=theme.BORDER,
+            )
+            text = chip.create_text(
+                width / 2,
+                12,
+                text=label,
+                fill=theme.TEXT_MUTED,
+                font=self._fonts["small"],
+            )
+
+            def choose_theme(_event: tk.Event, choice: str = value) -> None:
+                self._choose_theme(choice)
+
+            chip.bind("<Button-1>", choose_theme)
+            self._theme_chips.append((value, chip, shape, text))
+
+        self._paint_theme_chips()
 
     # --------------------------------------------------------------- choice
 
@@ -767,9 +985,22 @@ class SettingsDialog(tk.Toplevel):
         self._paint_chips()
         self._on_interval_change(seconds)
 
+    def _choose_theme(self, mode: str) -> None:
+        if mode == self._theme_mode:
+            return
+        self._theme_mode = mode
+        self.destroy()
+        self._on_theme_change(mode)
+
     def _paint_chips(self) -> None:
         for value, chip, shape, text in self._chips:
             selected = value == self._interval
+            chip.itemconfigure(shape, outline=theme.ACCENT if selected else theme.BORDER)
+            chip.itemconfigure(text, fill=theme.ACCENT if selected else theme.TEXT_MUTED)
+
+    def _paint_theme_chips(self) -> None:
+        for value, chip, shape, text in self._theme_chips:
+            selected = value == self._theme_mode
             chip.itemconfigure(shape, outline=theme.ACCENT if selected else theme.BORDER)
             chip.itemconfigure(text, fill=theme.ACCENT if selected else theme.TEXT_MUTED)
 

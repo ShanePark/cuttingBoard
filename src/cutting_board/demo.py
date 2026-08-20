@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 import os
+import queue
 import time
 
+from cutting_board.launch_models import (
+    LaunchEvent,
+    LaunchProfile,
+    LaunchState,
+    LaunchTask,
+    ManagedTaskSnapshot,
+)
 from cutting_board.models import (
     Endpoint,
     EndpointScope,
@@ -38,6 +46,118 @@ class DemoProcessTerminator(ProcessTerminator):
             pid=pid,
             force=force,
         )
+
+
+class DemoLaunchController:
+    """Exercise launch controls without creating or signaling OS processes."""
+
+    def __init__(self) -> None:
+        self.events: queue.Queue[LaunchEvent] = queue.Queue()
+        self._profiles = (
+            LaunchProfile(
+                id="demo-shop",
+                name="shop-platform",
+                project_root="/home/developer/work/shop-platform",
+                tasks=(
+                    LaunchTask(
+                        name="Backend",
+                        cwd=".",
+                        command="./gradlew bootRun --args=--spring.profiles.active=dev",
+                        expected_port=8080,
+                        watch_command="./gradlew classes --continuous",
+                    ),
+                    LaunchTask(
+                        name="Frontend",
+                        cwd="frontend",
+                        command="npm run dev",
+                        expected_port=5173,
+                    ),
+                ),
+            ),
+        )
+        self._snapshots: dict[tuple[str, str], ManagedTaskSnapshot] = {}
+        self.closed = False
+
+    @property
+    def profiles(self) -> tuple[LaunchProfile, ...]:
+        return self._profiles
+
+    def profile(self, profile_id: str) -> LaunchProfile:
+        return next(profile for profile in self._profiles if profile.id == profile_id)
+
+    def save_profile(self, profile: LaunchProfile) -> tuple[LaunchProfile, ...]:
+        profiles = list(self._profiles)
+        for index, existing in enumerate(profiles):
+            if existing.id == profile.id:
+                profiles[index] = profile
+                break
+        else:
+            profiles.append(profile)
+        self._profiles = tuple(profiles)
+        return self._profiles
+
+    def delete_profile(self, profile_id: str) -> bool:
+        kept = tuple(profile for profile in self._profiles if profile.id != profile_id)
+        deleted = len(kept) != len(self._profiles)
+        self._profiles = kept
+        return deleted
+
+    def start_task(self, profile_id: str, task_name: str) -> ManagedTaskSnapshot:
+        task = self.profile(profile_id).task(task_name)
+        snapshot = ManagedTaskSnapshot(
+            profile_id=profile_id,
+            task_name=task_name,
+            state=LaunchState.RUNNING,
+            expected_port=task.expected_port,
+            logs=("[데모] 실제 프로세스를 실행하지 않았습니다.",),
+            message="데모 작업이 실행 중입니다.",
+        )
+        self._snapshots[(profile_id, task_name)] = snapshot
+        self.events.put(LaunchEvent(snapshot))
+        return snapshot
+
+    def start_profile(self, profile_id: str) -> tuple[ManagedTaskSnapshot, ...]:
+        return tuple(
+            self.start_task(profile_id, task.name) for task in self.profile(profile_id).tasks
+        )
+
+    def stop_task(self, profile_id: str, task_name: str) -> ManagedTaskSnapshot:
+        task = self.profile(profile_id).task(task_name)
+        snapshot = ManagedTaskSnapshot(
+            profile_id=profile_id,
+            task_name=task_name,
+            state=LaunchState.STOPPED,
+            expected_port=task.expected_port,
+            logs=("[데모] 실제 프로세스를 실행하지 않았습니다.",),
+            message="데모 작업이 종료되었습니다.",
+        )
+        self._snapshots[(profile_id, task_name)] = snapshot
+        self.events.put(LaunchEvent(snapshot))
+        return snapshot
+
+    def stop_profile(self, profile_id: str) -> tuple[ManagedTaskSnapshot, ...]:
+        return tuple(
+            self.stop_task(profile_id, task.name) for task in self.profile(profile_id).tasks
+        )
+
+    def snapshot(self, profile_id: str, task_name: str) -> ManagedTaskSnapshot:
+        stored = self._snapshots.get((profile_id, task_name))
+        if stored is not None:
+            return stored
+        task = self.profile(profile_id).task(task_name)
+        return ManagedTaskSnapshot(
+            profile_id=profile_id,
+            task_name=task_name,
+            state=LaunchState.STOPPED,
+            expected_port=task.expected_port,
+        )
+
+    def snapshots(self, profile_id: str | None = None) -> tuple[ManagedTaskSnapshot, ...]:
+        profiles = self._profiles if profile_id is None else (self.profile(profile_id),)
+        return tuple(self.snapshot(profile.id, task.name) for profile in profiles for task in profile.tasks)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def demo_containers() -> ContainerListing:

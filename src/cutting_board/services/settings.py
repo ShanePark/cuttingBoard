@@ -21,9 +21,10 @@ class UISettings:
     window_geometry: str = "1280x820"
     scan_interval_seconds: float = DEFAULT_SCAN_INTERVAL_SECONDS
     collapsed_project_ids: list[str] = field(default_factory=list)
+    theme_mode: str = "dark"
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "UISettings":
+    def from_dict(cls, data: dict[str, Any]) -> UISettings:
         interval = _clamp_interval(data.get("scan_interval_seconds", DEFAULT_SCAN_INTERVAL_SECONDS))
         collapsed = data.get("collapsed_project_ids", [])
         if not isinstance(collapsed, list):
@@ -33,6 +34,7 @@ class UISettings:
             window_geometry=_safe_geometry(data.get("window_geometry")),
             scan_interval_seconds=interval,
             collapsed_project_ids=[str(item) for item in collapsed if isinstance(item, str)],
+            theme_mode=_safe_theme_mode(data.get("theme_mode")),
         )
 
 
@@ -101,3 +103,7 @@ def _clamp_interval(value: Any) -> float:
     except (TypeError, ValueError):
         return DEFAULT_SCAN_INTERVAL_SECONDS
     return min(MAX_SCAN_INTERVAL_SECONDS, max(MIN_SCAN_INTERVAL_SECONDS, parsed))
+
+
+def _safe_theme_mode(value: Any) -> str:
+    return value if value in {"dark", "light", "system"} else "dark"

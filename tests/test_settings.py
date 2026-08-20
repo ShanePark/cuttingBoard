@@ -19,6 +19,7 @@ class SettingsTests(unittest.TestCase):
                 window_geometry="1200x700+10+20",
                 scan_interval_seconds=4.0,
                 collapsed_project_ids=["project:a"],
+                theme_mode="system",
             )
             store.save(expected)
             self.assertEqual(store.load(), expected)
@@ -32,6 +33,7 @@ class SettingsTests(unittest.TestCase):
                         "window_geometry": "20x10",
                         "scan_interval_seconds": 999,
                         "collapsed_project_ids": "wrong",
+                        "theme_mode": "sepia",
                     }
                 ),
                 encoding="utf-8",
@@ -40,6 +42,15 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(settings.window_geometry, "1280x820")
             self.assertEqual(settings.scan_interval_seconds, 30.0)
             self.assertEqual(settings.collapsed_project_ids, [])
+            self.assertEqual(settings.theme_mode, "dark")
+
+    def test_supported_theme_modes_are_loaded(self) -> None:
+        for mode in ("dark", "light", "system"):
+            with self.subTest(mode=mode):
+                self.assertEqual(UISettings.from_dict({"theme_mode": mode}).theme_mode, mode)
+
+    def test_legacy_settings_keep_dark_default(self) -> None:
+        self.assertEqual(UISettings.from_dict({}).theme_mode, "dark")
 
     def test_corrupt_json_returns_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

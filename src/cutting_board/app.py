@@ -13,13 +13,15 @@ from typing import TYPE_CHECKING
 from cutting_board import __version__
 from cutting_board.constants import APP_NAME, DEFAULT_SCAN_INTERVAL_SECONDS
 from cutting_board.controller import ScanController
-from cutting_board.demo import DemoProcessTerminator, demo_containers, demo_snapshot
+from cutting_board.demo import DemoLaunchController, DemoProcessTerminator, demo_containers, demo_snapshot
+from cutting_board.launch_controller import LaunchController
 from cutting_board.models import ServiceSnapshot, WorkspaceSnapshot
 from cutting_board.presentation import visible_services
 from cutting_board.scanner.base import ServiceScanner
 from cutting_board.scanner.docker import list_containers
 from cutting_board.scanner.linux import LinuxServiceScanner
 from cutting_board.scanner.macos import MacOSServiceScanner
+from cutting_board.services.launch_profiles import LaunchProfileStore
 from cutting_board.services.settings import SettingsStore
 from cutting_board.services.termination import ProcessTerminator
 
@@ -73,6 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--settings-file",
+        type=Path,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--launch-profiles-file",
         type=Path,
         help=argparse.SUPPRESS,
     )
@@ -164,7 +171,16 @@ def _run_gui(args: argparse.Namespace, scanner: ServiceScanner) -> int:
         )
         return 3
 
+    from cutting_board.ui import theme
     from cutting_board.ui.main_window import CuttingBoardWindow
+
+    settings_store = SettingsStore(args.settings_file)
+    settings = settings_store.load()
+    interval = args.scan_interval if args.scan_interval is not None else settings.scan_interval_seconds
+    interval = max(0.75, min(30.0, float(interval or DEFAULT_SCAN_INTERVAL_SECONDS)))
+    settings.scan_interval_seconds = interval
+    settings_store.save(settings)
+    theme.apply_palette(settings.theme_mode)
 
     try:
         # The class name has to be handed to Tk up front: it becomes WM_CLASS,
@@ -175,13 +191,7 @@ def _run_gui(args: argparse.Namespace, scanner: ServiceScanner) -> int:
         print(f"Could not open the desktop display: {exc}", file=sys.stderr)
         return 4
 
-    settings_store = SettingsStore(args.settings_file)
-    settings = settings_store.load()
-    interval = args.scan_interval if args.scan_interval is not None else settings.scan_interval_seconds
-    interval = max(0.75, min(30.0, float(interval or DEFAULT_SCAN_INTERVAL_SECONDS)))
-    settings.scan_interval_seconds = interval
-    settings_store.save(settings)
-
+    launch_controller = _launch_controller_for(args)
     if args.demo:
         controller = None
         initial_snapshot = demo_snapshot()
@@ -196,6 +206,7 @@ def _run_gui(args: argparse.Namespace, scanner: ServiceScanner) -> int:
     window = CuttingBoardWindow(
         root,
         controller=controller,
+        launch_controller=launch_controller,
         terminator=terminator,
         settings_store=settings_store,
         initial_snapshot=initial_snapshot,
@@ -207,11 +218,17 @@ def _run_gui(args: argparse.Namespace, scanner: ServiceScanner) -> int:
     try:
         root.mainloop()
     except KeyboardInterrupt:
-        try:
-            root.destroy()
-        except tk.TclError:
-            pass
+        window.close(notify=False)
     return 0
+
+
+def _launch_controller_for(
+    args: argparse.Namespace,
+) -> LaunchController | DemoLaunchController:
+    """Compose the safe launch implementation selected for this GUI run."""
+    if args.demo:
+        return DemoLaunchController()
+    return LaunchController(LaunchProfileStore(args.launch_profiles_file))
 
 
 def _close_on_signal(window: CuttingBoardWindow) -> None:
@@ -226,7 +243,7 @@ def _close_on_signal(window: CuttingBoardWindow) -> None:
 
     def handle(signum: int, frame: object) -> None:
         del signum, frame
-        window.close()
+        window.close(notify=False)
 
     for number in (signal.SIGTERM, signal.SIGINT):
         try:
