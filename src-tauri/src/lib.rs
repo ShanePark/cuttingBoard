@@ -474,7 +474,8 @@ pub fn run() {
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
                 let state = app.state::<AppState>();
-                if let Some(window) = app.get_window("main") {
+                if let Some(window) = app.get_webview_window("main") {
+                    let window = window.as_ref().window();
                     persist_window_geometry(&window, state.inner());
                 }
                 stop_managed_tasks(state.inner());

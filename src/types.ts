@@ -107,6 +107,9 @@ export interface ManagedTaskSnapshot {
   task_name: string;
   state: LaunchState;
   main_pid: number | null;
+  external_pid?: number | null;
+  external_working_directory?: string | null;
+  external_log_path?: string | null;
   started_at: number | null;
   message: string | null;
   log_tail: string;

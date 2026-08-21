@@ -478,14 +478,28 @@ function renderProfile(profile: LaunchProfile): string {
   const snapshots = profile.tasks.map((task) => snapshotFor(profile.id, task.name));
   const canStop = snapshots.some((snapshot) => snapshot && ["starting", "running", "stopping"].includes(snapshot.state));
   const canStart = profile.tasks.some((task) => !["starting", "running", "stopping", "external"].includes(snapshotFor(profile.id, task.name)?.state ?? "stopped"));
+  const activeCount = snapshots.filter((snapshot) => snapshot && ["starting", "running", "stopping"].includes(snapshot.state)).length;
+  const externalCount = snapshots.filter((snapshot) => snapshot?.state === "external").length;
+  const failedCount = snapshots.filter((snapshot) => snapshot?.state === "failed").length;
+  const profileStatus = failedCount > 0 ? `${failedCount} failed` : activeCount > 0 ? `${activeCount} active` : externalCount > 0 ? `${externalCount} external` : "Ready";
+  const profileStatusClass = failedCount > 0 ? "is-failed" : activeCount > 0 || externalCount > 0 ? "is-active" : "is-idle";
   const primary = canStart
     ? `<button class="primary-button icon-button-label" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}">${uiIcon("play", 14)} ${canStop ? "Start Remaining" : "Start All"}</button>`
     : canStop ? `<button class="secondary-button warning-action icon-button-label" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}">${uiIcon("stop", 14)} Stop All</button>` : "";
-  return `<section class="profile-card"><div class="profile-content">
-    <header class="profile-header"><div class="profile-title-line"><h2>${h(profile.name)}</h2><span class="task-count">${profile.tasks.length} ${profile.tasks.length === 1 ? "Task" : "Tasks"}</span></div><p class="profile-path">${h(middleEllipsis(profile.project_root, 120))}</p></header>
-    <div class="profile-actions-row"><div>${primary}</div><div class="profile-secondary-actions"><button class="quiet-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" ${appInfo?.demo || canStop ? "disabled" : ""}>Edit</button><button class="quiet-button danger-button" type="button" data-action="delete-profile" data-profile-id="${h(profile.id)}" ${appInfo?.demo || canStop ? "disabled" : ""}>Delete</button></div></div>
-    <div class="task-list" role="list" aria-label="Tasks">${profile.tasks.map((task) => renderTask(profile, task)).join("")}</div>
-  </div></section>`;
+  return `<section class="launch-profile service-section" aria-labelledby="launch-profile-${h(profile.id)}">
+    <header class="section-header launch-profile-header">
+      <span class="section-accent accent-runtime" aria-hidden="true"></span>
+      <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${h(profile.name)}</h2><p title="${h(profile.project_root)}">${h(shortenPath(profile.project_root))}</p></div>
+      <span class="launch-profile-status ${profileStatusClass}" aria-label="Profile status: ${h(profileStatus)}">${h(profileStatus)}</span>
+      <span class="section-count" aria-label="${profile.tasks.length} ${profile.tasks.length === 1 ? "task" : "tasks"}">${profile.tasks.length}</span>
+      <div class="section-actions launch-profile-actions">
+        ${primary}
+        <button class="section-action" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" ${appInfo?.demo || canStop ? "disabled" : ""}>Edit</button>
+        <button class="section-action danger-button" type="button" data-action="delete-profile" data-profile-id="${h(profile.id)}" ${appInfo?.demo || canStop ? "disabled" : ""}>Delete</button>
+      </div>
+    </header>
+    <div class="task-list" role="list" aria-label="Tasks in ${h(profile.name)}">${profile.tasks.map((task) => renderTask(profile, task)).join("")}</div>
+  </section>`;
 }
 
 function renderTask(profile: LaunchProfile, task: LaunchTask): string {
@@ -494,13 +508,10 @@ function renderTask(profile: LaunchProfile, task: LaunchTask): string {
   const active = ["starting", "running", "stopping"].includes(state);
   const external = state === "external";
   const busy = operations.has(`task:${profile.id}:${task.name}`);
-  const meta = snapshot?.message || `${middleEllipsis(task.cwd, 54)}  ·  ${middleEllipsis(task.command, 100)}`;
   const selected = selectedTaskKey === launchTaskKey(profile.id, task.name);
-  return `<article class="task-row state-${state}${selected ? " is-selected" : ""}" data-action="select-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" tabindex="0" role="listitem" aria-current="${selected ? "true" : "false"}" aria-label="${h(`${profile.name} · ${task.name}, ${stateLabel(state)}`)}"><div class="task-copy">
-    <h3>${h(middleEllipsis(task.name, 72))}</h3>
-    <div class="task-status-line"><span class="task-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span>${task.expected_port ? `<span class="task-port">localhost:${task.expected_port}</span>` : ""}</div>
-    <p class="task-message">${h(meta)}</p>
-    <div class="task-actions-row"><div>${active ? `<button class="quiet-button warning-action icon-button-label" type="button" data-action="stop-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>${uiIcon("stop", 13)} Stop</button>` : !external ? `<button class="quiet-button start-action icon-button-label" type="button" data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>${uiIcon("play", 13)} Start</button>` : ""}</div><span class="task-console-hint">${selected ? `${uiIcon("terminal", 12)} Viewing output` : `${uiIcon("chevronDown", 12)} Select to view output`}</span></div>
+  return `<article class="task-row state-${state}${selected ? " is-selected" : ""}" data-action="select-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" tabindex="0" role="listitem" aria-current="${selected ? "true" : "false"}" aria-label="${h(`${profile.name} · ${task.name}, ${stateLabel(state)}${task.expected_port ? `, port ${task.expected_port}` : ""}`)}"><div class="task-copy">
+    <div class="task-heading-line"><h3>${h(middleEllipsis(task.name, 72))}</h3><span class="task-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span></div>
+    <div class="task-actions-row"><div class="task-port-group">${task.expected_port ? `<span class="task-port">localhost:${task.expected_port}</span>` : ""}</div><div>${active ? `<button class="quiet-button warning-action icon-button-label" type="button" data-action="stop-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>${uiIcon("stop", 13)} Stop</button>` : !external ? `<button class="quiet-button start-action icon-button-label" type="button" data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>${uiIcon("play", 13)} Start</button>` : ""}</div></div>
   </div></article>`;
 }
 
@@ -547,31 +558,36 @@ function launchStatePriority(state: LaunchState): number {
 
 function renderLaunchConsole(ref: LaunchTaskRef | null): string {
   if (!ref) {
-    return `<section class="launch-console launch-console-empty" aria-labelledby="launch-console-title"><header class="console-header"><div class="console-title"><span class="console-icon" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">Task console</h2><p>Select a task to view its output.</p></div></div></header><div class="console-output console-empty-output" role="status"><div class="console-message"><strong>No tasks available</strong><span>Add at least one task to this launch profile.</span></div></div></section>`;
+    return `<section class="launch-console launch-console-empty" aria-labelledby="launch-console-title"><header class="console-header"><div class="console-title"><span class="console-icon" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">Task console</h2><p>No task selected</p></div></div></header><div class="console-output console-empty-output" role="status"><div class="console-message"><strong>No tasks available</strong><span>Add at least one task to this launch profile.</span></div></div></section>`;
   }
   const { profile, task } = ref;
   const snapshot = snapshotFor(profile.id, task.name);
   const state: LaunchState = snapshot?.state ?? "stopped";
-  const pid = snapshot?.main_pid ?? null;
+  const pid = state === "external" ? snapshot?.external_pid ?? snapshot?.main_pid ?? null : snapshot?.main_pid ?? null;
   const port = task.expected_port;
   const command = task.command || "No command configured";
-  const cwd = task.cwd || "No working directory configured";
+  const cwd = state === "external" ? snapshot?.external_working_directory || task.cwd : task.cwd;
+  const externalLogPath = state === "external" ? snapshot?.external_log_path : null;
   return `<section class="launch-console state-${state}" aria-labelledby="launch-console-title" data-console-task-key="${h(launchTaskDomKey(profile.id, task.name))}">
     <header class="console-header">
-      <div class="console-title"><span class="console-icon state-${state}" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">Task console</h2><p><strong>${h(task.name)}</strong><span> in ${h(profile.name)}</span></p></div></div>
-      <div class="console-meta" aria-label="Task status"><span class="console-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span><span class="console-meta-item"><span>PID</span><code>${pid ?? "—"}</code></span>${port ? `<span class="console-meta-item"><span>PORT</span><code>localhost:${port}</code></span>` : ""}</div>
+      <div class="console-title"><span class="console-icon state-${state}" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">${h(task.name)}</h2><p>${h(profile.name)}</p></div></div>
+      <div class="console-meta" aria-label="Task status"><span class="console-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span>${pid !== null ? `<span class="console-meta-item"><span>PID</span><code>${pid}</code></span>` : ""}${port ? `<span class="console-meta-item"><span>PORT</span><code>localhost:${port}</code></span>` : ""}${externalLogPath ? `<span class="console-meta-item console-meta-source" title="External log source: ${h(externalLogPath)}"><span>LOG</span><code>${h(middleEllipsis(externalLogPath, 52))}</code></span>` : ""}</div>
     </header>
-    <div class="console-context" aria-label="Task context"><div class="console-context-item"><span>COMMAND</span><code title="${h(task.command)}">${h(middleEllipsis(command, 240))}</code></div><div class="console-context-item"><span>WORKING DIRECTORY</span><code title="${h(task.cwd)}">${h(middleEllipsis(cwd, 240))}</code></div></div>
+    <details class="console-context-details"><summary>${uiIcon("details", 13)} Task details</summary><div class="console-context" aria-label="Task context"><div class="console-context-item"><span>COMMAND</span><code title="${h(task.command)}">${h(middleEllipsis(command, 240))}</code></div><div class="console-context-item"><span>WORKING DIRECTORY</span><code title="${h(cwd)}">${h(middleEllipsis(cwd, 240))}</code></div></div></details>
     <div class="console-toolbar"><span class="console-toolbar-label">${uiIcon("log", 13)} Output</span><div class="console-tools"><button class="console-tool${consoleWrap ? " is-active" : ""}" type="button" data-action="toggle-log-wrap" aria-pressed="${consoleWrap ? "true" : "false"}" title="${consoleWrap ? "Disable line wrapping" : "Wrap long lines"}">${uiIcon("chevronDown", 12)}<span>Wrap</span></button><button class="console-tool${consoleFollow ? " is-active" : ""}" type="button" data-action="toggle-log-follow" aria-pressed="${consoleFollow ? "true" : "false"}" title="${consoleFollow ? "Pause following new output" : "Follow new output"}">${uiIcon(consoleFollow ? "refresh" : "play", 12)}<span data-console-follow-label>${consoleFollow ? "Following" : "Follow output"}</span></button></div></div>
     <div class="console-output${consoleWrap ? " is-wrapped" : ""}" tabindex="0" role="log" aria-live="polite" aria-label="Output for ${h(task.name)}">${renderConsoleOutput(snapshot, state)}</div>
   </section>`;
 }
 
 function renderConsoleOutput(snapshot: ManagedTaskSnapshot | undefined, state: LaunchState): string {
-  if (state === "external") {
-    return `<div class="console-message is-external"><span class="console-message-icon">${uiIcon("terminal", 18)}</span><strong>Output unavailable</strong><span>This task is already running outside Cutting Board, so its output is not captured.</span></div>`;
-  }
   const log = snapshot?.log_tail ?? "";
+  if (state === "external") {
+    if (log.length > 0) return `<pre class="console-log">${h(log)}</pre>`;
+    const message = snapshot?.external_log_path
+      ? "No output is available from the configured external log source yet."
+      : "External process output is not captured.";
+    return `<div class="console-message is-external"><span class="console-message-icon">${uiIcon("terminal", 18)}</span><strong>${snapshot?.external_log_path ? "Waiting for external output" : "Output unavailable"}</strong><span>${message}</span></div>`;
+  }
   const message = snapshot?.message?.trim() ?? "";
   const notice = state === "failed"
     ? `<div class="console-alert">${uiIcon("warning", 14)}<span>${h(message || "The task exited before completing successfully.")}</span></div>`

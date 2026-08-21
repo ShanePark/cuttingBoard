@@ -149,6 +149,15 @@ pub struct ManagedTaskSnapshot {
     pub started_at: Option<u64>,
     pub message: Option<String>,
     pub log_tail: String,
+    /// PID of a process detected outside Cutting Board for this launch task.
+    #[serde(default)]
+    pub external_pid: Option<u32>,
+    /// Working directory reported for a detected external process.
+    #[serde(default)]
+    pub external_working_directory: Option<String>,
+    /// Readable regular file connected to the external process's stdout/stderr.
+    #[serde(default)]
+    pub external_log_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,5 +249,25 @@ mod tests {
         .unwrap();
 
         assert!(service.active_profiles.is_empty());
+    }
+
+    #[test]
+    fn older_task_snapshot_payloads_default_external_metadata() {
+        let snapshot: ManagedTaskSnapshot = serde_json::from_str(
+            r#"{
+                "profile_id": "profile",
+                "task_name": "web",
+                "state": "running",
+                "main_pid": 42,
+                "started_at": 1,
+                "message": null,
+                "log_tail": "ready"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.external_pid, None);
+        assert_eq!(snapshot.external_working_directory, None);
+        assert_eq!(snapshot.external_log_path, None);
     }
 }
