@@ -50,6 +50,7 @@ export interface ServiceSnapshot {
   origin_label: string | null;
   can_terminate: boolean;
   browser_url: string | null;
+  active_profiles: string[];
 }
 
 export interface WorkspaceSnapshot {

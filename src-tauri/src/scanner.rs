@@ -36,6 +36,7 @@ struct SpringSettings {
     livereload_port: u16,
     context_path: String,
     ssl_enabled: bool,
+    active_profiles: Vec<String>,
 }
 
 impl Default for SpringSettings {
@@ -46,6 +47,7 @@ impl Default for SpringSettings {
             livereload_port: 35_729,
             context_path: String::new(),
             ssl_enabled: false,
+            active_profiles: Vec::new(),
         }
     }
 }
@@ -227,6 +229,10 @@ pub fn scan_workspace(
             origin_label,
             can_terminate,
             browser_url,
+            active_profiles: spring_settings
+                .as_ref()
+                .map(|settings| settings.active_profiles.clone())
+                .unwrap_or_default(),
         };
         if can_terminate {
             index.insert(
@@ -976,7 +982,7 @@ fn resolve_spring_settings(
         .get("spring.profiles.active")
         .or_else(|| environment_properties.get("spring.profiles.active"))
         .or_else(|| base_properties.get("spring.profiles.active"))
-        .map(|value| spring_profiles(value))
+        .map(|value| spring_profiles(&resolve_spring_placeholder(value, &environment)))
         .unwrap_or_default();
     let mut properties = load_spring_properties(&locations, &active_profiles);
     properties.extend(environment_properties);
@@ -1006,6 +1012,7 @@ fn resolve_spring_settings(
             .map(String::as_str)
             .unwrap_or_default(),
     );
+    settings.active_profiles = active_profiles;
     settings
 }
 
@@ -1320,6 +1327,7 @@ pub fn demo_snapshot() -> WorkspaceSnapshot {
         process: Some(ProcessInfo { pid: 20_000 + port as u32, parent_pid: Some(1000), name: tech.into(), executable: Some(format!("/usr/local/bin/{tech}")), working_directory: Some(path.into()), command: format!("{tech} run --port {port}"), launch_command: Some(format!("{tech} run --port {port}")), create_time: now.saturating_sub(age), uptime_seconds: age, cpu_percent: Some(1.4), memory_bytes: Some(146_800_640), uid: current_uid() }),
         project: Some(project(&format!("project-{id}"), path.rsplit('/').next().unwrap_or(name), path)), status: "healthy".into(), warnings: vec![], origin_kind: origin_kind.into(), origin_label: Some(origin.into()), can_terminate: false,
         browser_url: Some(format!("http://localhost:{port}")),
+        active_profiles: Vec::new(),
     };
     let services = vec![
         service("demo-api", "cutting-board-api · Spring Boot", "spring", "api", 8080, "/Users/shane/Developer/cutting-board-api", 94, "ide", "IntelliJ IDEA"),
@@ -1615,6 +1623,98 @@ mod tests {
         );
         assert_eq!(settings.port, Some(49_000));
         assert_eq!(settings.context_path, "/env/");
+    }
+
+    #[test]
+    fn active_profiles_follow_command_environment_and_file_priority() {
+        let temporary = tempfile::tempdir().unwrap();
+        fs::write(
+            temporary.path().join("application.properties"),
+            "spring.profiles.active=file-a, file-b\n",
+        )
+        .unwrap();
+
+        let command = resolve_spring_settings(
+            &[
+                "java".into(),
+                "--spring.profiles.active=command-a,command-b".into(),
+            ],
+            &["SPRING_PROFILES_ACTIVE=environment".into()],
+            Some(temporary.path()),
+            Some(temporary.path()),
+        );
+        assert_eq!(command.active_profiles, vec!["command-a", "command-b"]);
+
+        let environment = resolve_spring_settings(
+            &["java".into()],
+            &["SPRING_PROFILES_ACTIVE=environment-a, environment-b".into()],
+            Some(temporary.path()),
+            Some(temporary.path()),
+        );
+        assert_eq!(environment.active_profiles, vec!["environment-a", "environment-b"]);
+
+        let file = resolve_spring_settings(
+            &["java".into()],
+            &[],
+            Some(temporary.path()),
+            Some(temporary.path()),
+        );
+        assert_eq!(file.active_profiles, vec!["file-a", "file-b"]);
+    }
+
+    #[test]
+    fn active_profile_environment_placeholder_selects_profile_configuration() {
+        let temporary = tempfile::tempdir().unwrap();
+        fs::write(
+            temporary.path().join("application.properties"),
+            "spring.profiles.active=${APP_PROFILE:dev}\nserver.port=8080\n",
+        )
+        .unwrap();
+        fs::write(
+            temporary.path().join("application-local.properties"),
+            "server.port=49000\n",
+        )
+        .unwrap();
+        fs::write(
+            temporary.path().join("application-dev.properties"),
+            "server.port=48000\n",
+        )
+        .unwrap();
+
+        let settings = resolve_spring_settings(
+            &[],
+            &["APP_PROFILE=local".into()],
+            Some(temporary.path()),
+            Some(temporary.path()),
+        );
+
+        assert_eq!(settings.active_profiles, vec!["local"]);
+        assert_eq!(settings.port, Some(49_000));
+    }
+
+    #[test]
+    fn active_profile_default_placeholder_selects_profile_configuration() {
+        let temporary = tempfile::tempdir().unwrap();
+        fs::write(
+            temporary.path().join("application.properties"),
+            "spring.profiles.active=${APP_PROFILE:dev}\nserver.port=8080\n",
+        )
+        .unwrap();
+        fs::write(
+            temporary.path().join("application-dev.properties"),
+            "server.port=48000\n",
+        )
+        .unwrap();
+
+        let settings = resolve_spring_settings(
+            &[],
+            &[],
+            Some(temporary.path()),
+            Some(temporary.path()),
+        );
+
+        assert_eq!(settings.active_profiles, vec!["dev"]);
+        assert_eq!(settings.port, Some(48_000));
     }
 
     #[test]

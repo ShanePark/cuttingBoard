@@ -509,6 +509,7 @@ mod tests {
                 origin_label: None,
                 can_terminate: false,
                 browser_url: None,
+                active_profiles: vec![],
             }],
             scanned_at: 0,
             scan_duration_ms: 0,

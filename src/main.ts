@@ -223,6 +223,7 @@ function renderServices(force = false): void {
     service.project?.id, service.project?.name, service.project?.root_path,
     service.project?.workspace_name, service.project?.workspace_root_path,
     service.process?.pid, service.process?.name,
+    service.active_profiles,
     operations.has(`stop:${service.id}`)
   ]));
   if (!force && signature === serviceSignature && workspaceElement.dataset.view === "services") {
@@ -305,12 +306,13 @@ function renderServiceTile(service: ServiceSnapshot): string {
   const busy = operations.has(`stop:${service.id}`);
   const uptime = currentUptime(service);
   const pip = busy ? "busy" : uptime === null ? "idle" : service.status === "limited" ? "limited" : "running";
+  const profileBadges = springProfileBadges(service);
   return `
     <article class="service-tile category-${service.category}${busy ? " is-busy" : ""}" data-metrics-id="${h(service.id)}" aria-label="${h(service.display_name)} service">
       <button class="tile-details-button" type="button" data-tile-action data-action="service-details" data-service-id="${h(service.id)}" aria-label="View ${h(service.display_name)} details" title="View details"></button>
       <div class="tile-top">
         <span class="icon-well" aria-hidden="true">${techIcon(service.tech, 44)}<span class="status-pip state-${pip}"></span></span>
-        ${renderTileHeading(serviceTitle(service), techLabel(service.tech), originBadge(service.origin_kind, service.origin_label))}
+        ${renderTileHeading(serviceTitle(service), techLabel(service.tech), `${originBadge(service.origin_kind, service.origin_label)}${profileBadges}`)}
         <span class="details-hint" aria-hidden="true">${uiIcon("details", 14)}</span>
         ${service.can_terminate ? `<button type="button" class="stop-button" data-tile-action data-action="stop-service" data-service-id="${h(service.id)}" aria-label="${busy ? "Stopping" : "Stop"} ${h(service.display_name)}" title="${busy ? "Stopping process" : "Stop process"}" ${busy ? "disabled" : ""}><span class="stop-glyph" aria-hidden="true"></span></button>` : ""}
       </div>
@@ -336,6 +338,15 @@ function renderTileHeading(title: string, label: string, badge: string): string 
 function originBadge(kind: string, label: string | null): string {
   if (!label || kind === "system" || kind === "unknown") return "";
   return `<span class="origin-badge origin-${h(kind)}" title="Started from ${h(label)}" aria-label="Started from ${h(label)}">${uiIcon(originIcon(kind, label), 12)}${h(label)}</span>`;
+}
+
+function springProfileBadges(service: ServiceSnapshot): string {
+  if (service.tech.trim().toLowerCase() !== "spring") return "";
+  return service.active_profiles
+    .map((profile) => profile.trim())
+    .filter(Boolean)
+    .map((profile) => `<span class="profile-badge" title="Active Spring profile: ${h(profile)}" aria-label="Active Spring profile: ${h(profile)}">${h(profile)}</span>`)
+    .join("");
 }
 
 function originIcon(kind: string, label: string): UiIconName {
@@ -885,11 +896,15 @@ function mergeSnapshots(current: ManagedTaskSnapshot[], next: ManagedTaskSnapsho
 
 function showServiceDetails(service: ServiceSnapshot): void {
   const process = service.process;
+  const activeProfiles = service.tech.trim().toLowerCase() === "spring"
+    ? service.active_profiles.map((profile) => profile.trim()).filter(Boolean)
+    : [];
   openModal(service.display_name, `
     <div class="detail-identity"><div class="detail-icon" aria-hidden="true">${techIcon(service.tech, 56)}</div><div><strong>${h(serviceTitle(service))}</strong><span>${h(techLabel(service.tech))} · ${h(service.category)}</span></div></div>
     ${service.warnings.map((warning) => `<div class="detail-warning">${h(warning)}</div>`).join("")}
     <dl class="detail-grid">
       <dt>Status</dt><dd>${h(service.status)}</dd><dt>Origin</dt><dd>${h(service.origin_label ?? service.origin_kind)}</dd>
+      ${activeProfiles.length ? `<dt>Active profiles</dt><dd class="detail-badges">${activeProfiles.map((profile) => `<span class="profile-badge">${h(profile)}</span>`).join("")}</dd>` : ""}
       <dt>Project</dt><dd>${h(service.project?.root_path ?? "—")}</dd><dt>PID</dt><dd>${process?.pid ?? "—"}</dd>
       <dt>Executable</dt><dd>${h(process?.executable ?? "—")}</dd><dt>Working directory</dt><dd>${h(process?.working_directory ?? "—")}</dd>
       <dt>Command</dt><dd class="mono">${h(process?.command ?? "—")}</dd><dt>CPU</dt><dd>${process?.cpu_percent === null || process?.cpu_percent === undefined ? "Calculating" : `${process.cpu_percent.toFixed(1)}%`}</dd>

@@ -55,6 +55,8 @@ pub struct ServiceSnapshot {
     pub origin_label: Option<String>,
     pub can_terminate: bool,
     pub browser_url: Option<String>,
+    #[serde(default)]
+    pub active_profiles: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,5 +213,30 @@ mod tests {
         .unwrap();
 
         assert_eq!(process.launch_command, None);
+    }
+
+    #[test]
+    fn older_service_payloads_default_missing_active_profiles() {
+        let service: ServiceSnapshot = serde_json::from_str(
+            r#"{
+                "id": "service-1",
+                "display_name": "example",
+                "tech": "spring",
+                "category": "api",
+                "relevance": "dev",
+                "endpoints": [],
+                "process": null,
+                "project": null,
+                "status": "healthy",
+                "warnings": [],
+                "origin_kind": "unknown",
+                "origin_label": null,
+                "can_terminate": false,
+                "browser_url": null
+            }"#,
+        )
+        .unwrap();
+
+        assert!(service.active_profiles.is_empty());
     }
 }

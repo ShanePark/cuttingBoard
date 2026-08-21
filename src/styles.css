@@ -310,6 +310,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .origin-badge .ui-icon { flex: 0 0 auto; }
 .origin-agent { background: color-mix(in srgb, var(--violet) 16%, transparent); color: var(--violet); }
 .origin-terminal { background: color-mix(in srgb, var(--text-dim) 20%, transparent); color: var(--text-muted); }
+.profile-badge { height: 19px; display: inline-flex; align-items: center; max-width: 100%; padding: 0 8px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.detail-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
 .details-hint { flex: 0 0 auto; align-self: flex-start; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; color: var(--text-dim); opacity: 0; transition: opacity 130ms ease; }
 .service-tile:hover .details-hint, .service-tile:has(.tile-details-button:focus-visible) .details-hint { opacity: 1; }
