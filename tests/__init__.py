@@ -1,1 +1,0 @@
-"""Cutting Board test suite."""

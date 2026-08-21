@@ -384,7 +384,13 @@ pub fn run() {
             let profiles_path = config_dir.join("launch-profiles.json");
             let logs_dir = config_dir.join("logs");
             let settings = read_settings(&settings_path).unwrap_or_default();
+            let window_icon = app.default_window_icon().cloned();
             if let Some(window) = app.get_webview_window("main") {
+                if let Some(icon) = window_icon {
+                    window.set_icon(icon).map_err(|error| {
+                        format!("Could not set the application window icon: {error}")
+                    })?;
+                }
                 let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
                     settings.window_width as f64,
                     settings.window_height as f64,
@@ -418,7 +424,7 @@ pub fn run() {
                 let state = window.app_handle().state::<AppState>();
                 if let Ok(mut launch) = state.0.launch.lock() {
                     launch.stop_all();
-                }
+                };
             }
         })
         .invoke_handler(tauri::generate_handler![

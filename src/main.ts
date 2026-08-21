@@ -3,6 +3,7 @@ import { open as choosePath } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
+import { techIcon, uiIcon } from "./icons";
 import {
   browserLinkLabel,
   currentUptime,
@@ -30,6 +31,7 @@ import type {
 } from "./types";
 
 type Tab = "services" | "docker" | "launch";
+const SOURCE_URL = "https://github.com/ShanePark/cuttingBoard";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing application root");
@@ -42,10 +44,10 @@ root.innerHTML = `
         <button class="tab" type="button" data-tab="docker">Docker&nbsp;&nbsp;<span id="docker-count">0</span></button>
         <button class="tab" type="button" data-tab="launch">Launch Profiles&nbsp;&nbsp;<span id="launch-count">0</span></button>
       </nav>
-      <button class="gear-button" type="button" data-action="settings" aria-label="Settings" title="Settings">${gearIcon()}</button>
+      <button class="gear-button" type="button" data-action="settings" aria-label="Settings" title="Settings">${uiIcon("settings", 18)}</button>
     </header>
     <main id="workspace" class="workspace" aria-live="polite"></main>
-    <footer class="footer"><span id="scan-status">Finding services</span><span id="app-status"></span></footer>
+    <footer id="status-footer" class="footer" hidden><span id="app-status"></span></footer>
   </div>
   <div id="modal-root"></div>
   <div id="toast-root" aria-live="assertive"></div>
@@ -74,12 +76,15 @@ let uptimeTimer: number | null = null;
 let serviceSignature = "";
 let dockerSignature = "";
 let launchSignature = "";
+let modalFocusReturn: HTMLElement | null = null;
 const operations = new Set<string>();
 
 root.addEventListener("click", (event) => void handleClick(event));
 root.addEventListener("keydown", handleKeyboard);
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && document.querySelector(".modal-backdrop")) closeModal();
+  if (!document.querySelector(".modal-backdrop")) return;
+  if (event.key === "Escape") closeModal();
+  else if (event.key === "Tab") trapModalFocus(event);
 });
 
 void bootstrap();
@@ -191,8 +196,9 @@ function renderHeaderCounts(): void {
 
 function renderFooter(): void {
   if (!workspace) return;
-  byId("scan-status").textContent = `${workspace.endpoint_count} listener${workspace.endpoint_count === 1 ? "" : "s"}  ·  ${workspace.scan_duration_ms} ms`;
-  byId("app-status").textContent = workspace.errors[0] ?? (appInfo?.demo ? "Demonstration mode" : "");
+  const status = workspace.errors[0] ?? (appInfo?.demo ? "Demonstration mode" : "");
+  byId("app-status").textContent = status;
+  byId("status-footer").toggleAttribute("hidden", !status);
 }
 
 function renderServices(force = false): void {
@@ -200,6 +206,9 @@ function renderServices(force = false): void {
   const signature = JSON.stringify(services.map((service) => [
     service.id, service.display_name, service.tech, uniquePorts(service), service.category, service.status,
     service.origin_kind, service.origin_label, service.can_terminate, service.browser_url,
+    service.project?.id, service.project?.name, service.project?.root_path,
+    service.project?.workspace_name, service.project?.workspace_root_path,
+    service.process?.pid, service.process?.name,
     operations.has(`stop:${service.id}`)
   ]));
   if (!force && signature === serviceSignature && workspaceElement.dataset.view === "services") {
@@ -217,16 +226,15 @@ function renderServices(force = false): void {
     return;
   }
   workspaceElement.innerHTML = `<div class="board">${groupServices(services).map((group) => `
-    <section class="service-section" aria-labelledby="group-${h(group.id)}">
+    <section class="service-section" aria-labelledby="group-${h(encodeURIComponent(group.id))}">
       <header class="section-header">
         <span class="section-accent accent-${h(group.accent)}"></span>
-        <h2 id="group-${h(group.id)}">${h(group.name.toUpperCase())}</h2>
+        <h2 id="group-${h(encodeURIComponent(group.id))}">${h(group.name.toUpperCase())}</h2>
         ${group.path ? `<p title="${h(group.path)}">${h(shortenPath(group.path))}</p>` : ""}
       </header>
       <div class="section-rule"></div>
       <div class="tile-grid">${group.services.map(renderServiceTile).join("")}</div>
     </section>`).join("")}</div>`;
-  installImageFallbacks();
   updateLiveUptimes();
 }
 
@@ -237,27 +245,27 @@ function renderServiceTile(service: ServiceSnapshot): string {
   const uptime = formatUptimeCompact(currentUptime(service));
   const origin = ["agent", "ide"].includes(service.origin_kind) && service.origin_label;
   return `
-    <article class="service-tile category-${service.category}${busy ? " is-busy" : ""}"
-      tabindex="0" role="button" data-keyboard-action data-selected-action="details"
-      data-action="service-details" data-service-id="${h(service.id)}" aria-label="${h(service.display_name)} details">
-      <div class="icon-well"><img src="/icons/${h(safeTech(service.tech))}-48.png" data-fallback-icon alt="" draggable="false"></div>
+    <article class="service-tile category-${service.category}${busy ? " is-busy" : ""}" aria-label="${h(service.display_name)} service">
+      <button class="tile-details-button" type="button" data-tile-action data-action="service-details" data-service-id="${h(service.id)}" aria-label="View ${h(service.display_name)} details" title="View details"></button>
+      <div class="icon-well" aria-hidden="true">${techIcon(service.tech, 44)}</div>
       <div class="tile-content">
         <h3 title="${h(service.display_name)}">${h(service.display_name)}</h3>
         <div class="status-line">
           <span class="uptime ${currentUptime(service) !== null && (currentUptime(service) ?? 999) < 300 ? "is-fresh" : ""}" data-uptime-id="${h(service.id)}">
             <span class="status-dot"></span><span data-uptime-text>${busy ? "Stopping…" : uptime ? `Running ${h(uptime)}` : ""}</span>
           </span>
-          ${origin ? `<span class="origin-badge origin-${service.origin_kind}"><span class="origin-dot"></span>${h(service.origin_label ?? "")}</span>` : ""}
+          ${origin ? `<span class="origin-badge origin-${service.origin_kind}" title="Detected launch source: ${h(service.origin_label ?? service.origin_kind)}" aria-label="Detected launch source: ${h(service.origin_label ?? service.origin_kind)}"><span class="origin-dot"></span>${h(service.origin_label ?? "")}</span>` : ""}
         </div>
         <div class="port-row">
-          ${ports.length ? `<span class="category-dot"></span>` : ""}
-          ${labels.map((label) => `<span class="port-chip${label.startsWith("+") ? " port-overflow" : ""}">${h(label)}</span>`).join("")}
+          ${ports.length ? `<span class="port-label">Ports</span>` : ""}
+          ${labels.map((label) => `<span class="port-chip${label.startsWith("+") ? " port-overflow" : ""}" title="${h(portChipDescription(label, ports))}" aria-label="${h(portChipDescription(label, ports))}">${h(label)}</span>`).join("")}
           ${ports.length === 0 ? `<span class="no-port-label">No port information</span>` : ""}
         </div>
-        ${service.browser_url ? `<button tabindex="-1" type="button" class="service-link" data-action="open-service" data-service-id="${h(service.id)}" title="${h(service.browser_url)}">${h(browserLinkLabel(service.browser_url))}</button>` : ""}
+        ${service.browser_url ? `<button type="button" class="service-link" data-tile-action data-action="open-service" data-service-id="${h(service.id)}" aria-label="Open ${h(service.display_name)} in the browser" title="${h(service.browser_url)}">${h(browserLinkLabel(service.browser_url))}</button>` : ""}
+        ${service.process ? `<span class="process-meta" title="Process: ${h(service.process.name)} · PID ${service.process.pid}" aria-label="Process ${h(service.process.name)}, PID ${service.process.pid}">PID ${service.process.pid}</span>` : ""}
       </div>
-      <span class="details-hint">↵ Details</span>
-      ${service.can_terminate ? `<button tabindex="-1" type="button" class="power-button" data-action="stop-service" data-service-id="${h(service.id)}" aria-label="Stop ${h(service.display_name)}" ${busy ? "disabled" : ""}>${powerIcon()}</button>` : ""}
+      <span class="details-hint">${uiIcon("details", 12)} Details</span>
+      ${service.can_terminate ? `<button type="button" class="power-button" data-tile-action data-action="stop-service" data-service-id="${h(service.id)}" aria-label="${busy ? "Stopping" : "Stop"} ${h(service.display_name)}" title="${busy ? "Stopping process" : "Stop process"}" ${busy ? "disabled" : ""}><span class="power-glyph" aria-hidden="true"></span></button>` : ""}
     </article>`;
 }
 
@@ -275,7 +283,6 @@ function renderDocker(force = false): void {
   if (!containerListing.available) {
     if (fallback.length) {
       workspaceElement.innerHTML = `<div class="inline-notice"><strong>Docker could not be queried.</strong><span>${h(containerListing.message ?? "Docker is unavailable.")}</span></div><div class="board"><section class="service-section"><header class="section-header"><span class="section-accent accent-container"></span><h2>CONTAINER LISTENERS</h2></header><div class="section-rule"></div><div class="tile-grid">${fallback.map(renderServiceTile).join("")}</div></section></div>`;
-      installImageFallbacks();
       return;
     }
     workspaceElement.innerHTML = emptyState("Docker is unavailable", containerListing.message ?? "The Docker CLI could not be queried.");
@@ -291,7 +298,6 @@ function renderDocker(force = false): void {
       <header class="section-header"><span class="section-accent accent-container"></span><h2>${h(group.name.toUpperCase())}</h2></header>
       <div class="section-rule"></div><div class="tile-grid">${group.containers.map(renderContainerTile).join("")}</div>
     </section>`).join("")}</div>`;
-  installImageFallbacks();
 }
 
 function groupContainers(containers: ContainerInfo[]): Array<{ name: string; containers: ContainerInfo[] }> {
@@ -313,14 +319,15 @@ function renderContainerTile(container: ContainerInfo): string {
   const running = container.state === "running";
   const stateText = `${running ? "Running" : "Stopped"}${container.status ? ` · ${ellipsis(container.status, 22)}` : ""}`;
   return `
-    <article class="service-tile container-tile ${running ? "is-running" : "is-stopped"}" tabindex="0" role="button"
-      data-keyboard-action data-action="container-details" data-container-id="${h(container.id)}" aria-label="${h(container.name)} details">
-      <div class="icon-well"><img src="/icons/${h(safeTech(imageTech(container.image)))}-48.png" data-fallback-icon alt="" draggable="false"></div>
+    <article class="service-tile container-tile ${running ? "is-running" : "is-stopped"}" aria-label="${h(container.name)} container">
+      <button class="tile-details-button" type="button" data-tile-action data-action="container-details" data-container-id="${h(container.id)}" aria-label="View ${h(container.name)} details" title="View details"></button>
+      <div class="icon-well" aria-hidden="true">${techIcon(imageTech(container.image), 44)}</div>
       <div class="tile-content">
         <h3>${h(container.name)}</h3>
         <div class="status-line"><span class="container-state state-${h(container.state)}"><span class="status-dot"></span>${h(stateText)}</span></div>
-        <div class="port-row">${container.ports.length ? `<span class="category-dot container-category-dot"></span>` : ""}${labels.map((label) => `<span class="port-chip${label.startsWith("+") ? " port-overflow" : ""}">${h(label)}</span>`).join("")}${container.ports.length ? "" : `<span class="no-port-label">No published ports</span>`}</div>
-      </div><span class="details-hint">↵ Details</span>
+        <div class="port-row">${container.ports.length ? `<span class="port-label">Ports</span>` : ""}${labels.map((label) => `<span class="port-chip${label.startsWith("+") ? " port-overflow" : ""}" title="${h(portChipDescription(label, container.ports))}" aria-label="${h(portChipDescription(label, container.ports))}">${h(label)}</span>`).join("")}${container.ports.length ? "" : `<span class="no-port-label">No published ports</span>`}</div>
+        <span class="process-meta" title="Container image: ${h(container.image)}">${h(ellipsis(container.image, 22))}</span>
+      </div><span class="details-hint">${uiIcon("details", 12)} Details</span>
     </article>`;
 }
 
@@ -329,7 +336,7 @@ function renderLaunch(force = false): void {
   if (!force && signature === launchSignature && workspaceElement.dataset.view === "launch") return;
   launchSignature = signature;
   workspaceElement.dataset.view = "launch";
-  const header = `<div class="launch-heading"><div><h1>Launch Profiles</h1><p>Run backend, frontend, and auto-build tasks together.</p></div><button class="primary-button" type="button" data-action="add-profile" ${appInfo?.demo ? "disabled" : ""}>＋ Add</button></div>`;
+  const header = `<div class="launch-heading"><div><h1>Launch Profiles</h1><p>Run backend, frontend, and auto-build tasks together.</p></div><button class="primary-button icon-button-label" type="button" data-action="add-profile" ${appInfo?.demo ? "disabled" : ""}>${uiIcon("plus", 14)} Add</button></div>`;
   if (profiles.length === 0) {
     workspaceElement.innerHTML = `${header}<div class="launch-empty"><h2>No launch profiles yet</h2><p>Add a project and run commands to start and stop them together without an IDE.</p><button class="secondary-button" type="button" data-action="add-profile" ${appInfo?.demo ? "disabled" : ""}>Add First Profile</button></div>`;
     return;
@@ -342,8 +349,8 @@ function renderProfile(profile: LaunchProfile): string {
   const canStop = snapshots.some((snapshot) => snapshot && ["starting", "running", "stopping"].includes(snapshot.state));
   const canStart = profile.tasks.some((task) => !["starting", "running", "stopping", "external"].includes(snapshotFor(profile.id, task.name)?.state ?? "stopped"));
   const primary = canStart
-    ? `<button class="primary-button" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}">▶ ${canStop ? "Start Remaining" : "Start All"}</button>`
-    : canStop ? `<button class="secondary-button warning-action" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}">■ Stop All</button>` : "";
+    ? `<button class="primary-button icon-button-label" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}">${uiIcon("play", 14)} ${canStop ? "Start Remaining" : "Start All"}</button>`
+    : canStop ? `<button class="secondary-button warning-action icon-button-label" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}">${uiIcon("stop", 14)} Stop All</button>` : "";
   return `<section class="profile-card"><div class="profile-content">
     <header class="profile-header"><div class="profile-title-line"><h2>${h(profile.name)}</h2><span class="task-count">${profile.tasks.length} ${profile.tasks.length === 1 ? "Task" : "Tasks"}</span></div><p class="profile-path">${h(middleEllipsis(profile.project_root, 120))}</p></header>
     <div class="profile-actions-row"><div>${primary}</div><div class="profile-secondary-actions"><button class="quiet-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" ${appInfo?.demo || canStop ? "disabled" : ""}>Edit</button><button class="quiet-button danger-button" type="button" data-action="delete-profile" data-profile-id="${h(profile.id)}" ${appInfo?.demo || canStop ? "disabled" : ""}>Delete</button></div></div>
@@ -360,14 +367,19 @@ function renderTask(profile: LaunchProfile, task: LaunchTask): string {
   const meta = snapshot?.message || `${middleEllipsis(task.cwd, 54)}  ·  ${middleEllipsis(task.command, 100)}`;
   return `<article class="task-row state-${state}"><div class="task-copy">
     <h3>${h(middleEllipsis(task.name, 72))}</h3>
-    <div class="task-status-line"><span class="task-state state-${state}">● ${h(stateLabel(state))}</span>${task.expected_port ? `<span class="task-port">localhost:${task.expected_port}</span>` : ""}</div>
+    <div class="task-status-line"><span class="task-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span>${task.expected_port ? `<span class="task-port">localhost:${task.expected_port}</span>` : ""}</div>
     <p class="task-message">${h(meta)}</p>
-    <div class="task-actions-row"><div>${active ? `<button class="quiet-button warning-action" type="button" data-action="stop-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>■ Stop</button>` : !external ? `<button class="quiet-button start-action" type="button" data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>▶ Start</button>` : ""}</div><button class="quiet-button logs-action" type="button" data-action="show-logs" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}">≡ Logs</button></div>
+    <div class="task-actions-row"><div>${active ? `<button class="quiet-button warning-action icon-button-label" type="button" data-action="stop-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>${uiIcon("stop", 13)} Stop</button>` : !external ? `<button class="quiet-button start-action icon-button-label" type="button" data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>${uiIcon("play", 13)} Start</button>` : ""}</div><button class="quiet-button logs-action icon-button-label" type="button" data-action="show-logs" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}">${uiIcon("log", 13)} Logs</button></div>
   </div></article>`;
 }
 
 async function handleClick(event: Event): Promise<void> {
-  const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-action], [data-tab]") : null;
+  const eventElement = event.target instanceof Element ? event.target : null;
+  if (eventElement instanceof HTMLElement && eventElement.matches(".modal-backdrop[data-dismiss-on-backdrop='true']")) {
+    closeModal();
+    return;
+  }
+  const target = eventElement?.closest<HTMLElement>("[data-action], [data-tab]") ?? null;
   if (!target) return;
   event.stopPropagation();
   const tab = target.dataset.tab as Tab | undefined;
@@ -389,6 +401,7 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "settings") showSettings();
     else if (action === "close-modal") closeModal();
     else if (action === "save-settings") await saveSettingsFromModal();
+    else if (action === "open-source") await openUrl(SOURCE_URL);
     else if (action === "add-profile") showProfileEditor(null);
     else if (action === "edit-profile") showProfileEditor(findProfile(required(target.dataset.profileId)));
     else if (action === "save-profile") await saveProfileFromModal(target.dataset.profileId ?? null);
@@ -407,25 +420,16 @@ async function handleClick(event: Event): Promise<void> {
 }
 
 function handleKeyboard(event: KeyboardEvent): void {
-  const card = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("[data-keyboard-action]") : null;
-  if (!card || event.target instanceof HTMLButtonElement) return;
-  const serviceCard = card.classList.contains("service-tile") && !card.classList.contains("container-tile");
-  if (serviceCard && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
-    event.preventDefault();
-    const actions = ["details", card.querySelector("[data-action='open-service']") ? "open" : null, card.querySelector("[data-action='stop-service']:not([disabled])") ? "stop" : null].filter((value): value is string => value !== null);
-    const current = card.dataset.selectedAction ?? "details";
-    const index = Math.max(0, actions.indexOf(current));
-    const step = event.key === "ArrowRight" ? 1 : -1;
-    card.dataset.selectedAction = actions[(index + step + actions.length) % actions.length] ?? "details";
-    return;
-  }
-  if (event.key !== "Enter" && event.key !== " ") return;
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  const current = event.target instanceof HTMLElement ? event.target.closest<HTMLButtonElement>("[data-tile-action]") : null;
+  const card = current?.closest<HTMLElement>(".service-tile");
+  if (!current || !card) return;
+  const actions = [...card.querySelectorAll<HTMLButtonElement>("[data-tile-action]:not([disabled])")];
+  if (actions.length < 2) return;
   event.preventDefault();
-  if (!serviceCard) { card.click(); return; }
-  const selected = card.dataset.selectedAction ?? "details";
-  if (selected === "open") card.querySelector<HTMLButtonElement>("[data-action='open-service']")?.click();
-  else if (selected === "stop") card.querySelector<HTMLButtonElement>("[data-action='stop-service']")?.click();
-  else card.click();
+  const index = Math.max(0, actions.indexOf(current));
+  const step = event.key === "ArrowRight" ? 1 : -1;
+  actions[(index + step + actions.length) % actions.length]?.focus();
 }
 
 async function openService(id: string): Promise<void> {
@@ -489,7 +493,7 @@ function mergeSnapshots(current: ManagedTaskSnapshot[], next: ManagedTaskSnapsho
 function showServiceDetails(service: ServiceSnapshot): void {
   const process = service.process;
   openModal(service.display_name, `
-    <div class="detail-identity"><div class="detail-icon"><img src="/icons/${h(safeTech(service.tech))}-96.png" data-fallback-icon alt=""></div><div><strong>${h(service.display_name)}</strong><span>${h(service.tech)} · ${h(service.category)}</span></div></div>
+    <div class="detail-identity"><div class="detail-icon" aria-hidden="true">${techIcon(service.tech, 56)}</div><div><strong>${h(service.display_name)}</strong><span>${h(service.tech)} · ${h(service.category)}</span></div></div>
     ${service.warnings.map((warning) => `<div class="detail-warning">${h(warning)}</div>`).join("")}
     <dl class="detail-grid">
       <dt>Status</dt><dd>${h(service.status)}</dd><dt>Origin</dt><dd>${h(service.origin_label ?? service.origin_kind)}</dd>
@@ -500,7 +504,6 @@ function showServiceDetails(service: ServiceSnapshot): void {
     </dl>
     <h3 class="detail-heading">Listening endpoints</h3><div class="endpoint-list">${service.endpoints.map((endpoint) => `<div><span class="port-chip">${endpoint.port}</span><code>${h(endpoint.address)} · ${h(endpoint.family)} · ${h(endpoint.scope)}</code></div>`).join("")}</div>
     <div class="modal-actions">${service.browser_url ? `<button class="secondary-button" type="button" data-action="open-service" data-service-id="${h(service.id)}">Open</button>` : ""}<button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
-  installImageFallbacks();
 }
 
 function showContainerDetails(container: ContainerInfo): void {
@@ -508,10 +511,23 @@ function showContainerDetails(container: ContainerInfo): void {
 }
 
 function showSettings(): void {
-  openModal("Settings", `<form id="settings-form" class="form-stack" onsubmit="return false">
-    <label>Theme<select name="theme_mode"><option value="dark" ${settings.theme_mode === "dark" ? "selected" : ""}>Dark</option><option value="light" ${settings.theme_mode === "light" ? "selected" : ""}>Light</option><option value="system" ${settings.theme_mode === "system" ? "selected" : ""}>System</option></select></label>
-    <label>Scan interval (milliseconds)<input name="scan_interval_ms" type="number" min="500" max="60000" step="100" value="${settings.scan_interval_ms}"></label>
-    <p class="form-note">Settings are stored locally. Cutting Board does not collect telemetry or start at login.</p>
+  const intervalChoices = [...new Set([1000, 2000, 5000, 10000, 30000, settings.scan_interval_ms])].sort((a, b) => a - b);
+  openModal("Settings", `<form id="settings-form" class="settings-form" onsubmit="return false">
+    <section class="settings-section" aria-labelledby="appearance-heading">
+      <div class="settings-section-heading"><span class="settings-heading-icon">${uiIcon("theme", 18)}</span><div><h3 id="appearance-heading">Appearance</h3><p>Choose how Cutting Board looks on this device.</p></div></div>
+      <fieldset class="choice-fieldset"><legend class="sr-only">Theme</legend><div class="theme-options">
+        ${themeChoice("light", "Light", "Bright and clear")}${themeChoice("dark", "Dark", "Easy on the eyes")}${themeChoice("system", "System", "Follow your device")}
+      </div></fieldset>
+    </section>
+    <section class="settings-section" aria-labelledby="scanning-heading">
+      <div class="settings-section-heading"><span class="settings-heading-icon">${uiIcon("scan", 18)}</span><div><h3 id="scanning-heading">Scanning</h3><p>How often running local services are refreshed.</p></div></div>
+      <fieldset class="choice-fieldset"><legend class="sr-only">Scan interval</legend><div class="interval-options">
+        ${intervalChoices.map((value) => `<label class="interval-choice"><input type="radio" name="scan_interval_ms" value="${value}" ${settings.scan_interval_ms === value ? "checked" : ""}><span>${h(formatInterval(value))}</span></label>`).join("")}
+      </div></fieldset>
+      <p class="settings-help">Short intervals update quickly but use slightly more CPU. Two seconds is a good default.</p>
+    </section>
+    <button class="source-link" type="button" data-action="open-source" aria-label="View Cutting Board source code on GitHub">${uiIcon("github", 20)}<span><strong>Open source on GitHub</strong><small>github.com/ShanePark/cuttingBoard</small></span>${uiIcon("external", 16)}</button>
+    <p class="form-note settings-privacy">Settings stay on this device. Cutting Board does not collect telemetry or start at login.</p>
     <div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button" type="button" data-action="save-settings">Save</button></div>
   </form>`);
 }
@@ -535,14 +551,14 @@ function showProfileEditor(profile: LaunchProfile | null): void {
   openModal(profile ? "Edit Launch Profile" : "Add Launch Profile", `<form id="profile-form" class="form-stack" onsubmit="return false">
     <label>Profile name<input name="name" required maxlength="80" value="${h(profile?.name ?? "")}"></label>
     <label>Project root<div class="field-with-button"><input id="project-root" name="project_root" required value="${h(profile?.project_root ?? "")}"><button class="secondary-button" type="button" data-action="choose-root">Choose</button></div></label>
-    <div class="task-editor-heading"><strong>Tasks</strong><button class="quiet-button" type="button" data-action="add-task-row">＋ Add task</button></div>
+    <div class="task-editor-heading"><strong>Tasks</strong><button class="quiet-button icon-button-label" type="button" data-action="add-task-row">${uiIcon("plus", 13)} Add task</button></div>
     <div id="task-editors">${tasks.map(renderTaskEditor).join("")}</div>
     <div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button" type="button" data-action="save-profile" ${profile ? `data-profile-id="${h(profile.id)}"` : ""}>Save</button></div>
-  </form>`);
+  </form>`, { dismissOnBackdrop: false });
 }
 
 function renderTaskEditor(task: LaunchTask): string {
-  return `<fieldset class="task-editor"><button class="remove-task" type="button" data-action="remove-task-row" aria-label="Remove task">×</button><label>Name<input data-task-field="name" required value="${h(task.name)}"></label><label>Working directory<input data-task-field="cwd" required value="${h(task.cwd)}"></label><label>Command<input data-task-field="command" required value="${h(task.command)}"></label><label>Expected port (optional)<input data-task-field="expected_port" type="number" min="1" max="65535" value="${task.expected_port ?? ""}"></label></fieldset>`;
+  return `<fieldset class="task-editor"><button class="remove-task" type="button" data-action="remove-task-row" aria-label="Remove task">${uiIcon("close", 15)}</button><label>Name<input data-task-field="name" required value="${h(task.name)}"></label><label>Working directory<input data-task-field="cwd" required value="${h(task.cwd)}"></label><label>Command<input data-task-field="command" required value="${h(task.command)}"></label><label>Expected port (optional)<input data-task-field="expected_port" type="number" min="1" max="65535" value="${task.expected_port ?? ""}"></label></fieldset>`;
 }
 
 function addTaskRow(): void {
@@ -595,12 +611,52 @@ function showLogs(profileId: string, taskName: string): void {
   openModal(`${findProfile(profileId).name} · ${taskName}`, `<pre class="log-view">${h(snapshot?.log_tail || "No output has been captured yet.")}</pre><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
 }
 
-function openModal(title: string, body: string): void {
-  byId("modal-root").innerHTML = `<div class="modal-backdrop" role="presentation"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header class="modal-header"><h2 id="modal-title">${h(title)}</h2><button type="button" class="modal-close" data-action="close-modal" aria-label="Close">×</button></header><div class="modal-body">${body}</div></section></div>`;
+function openModal(title: string, body: string, options: { dismissOnBackdrop?: boolean } = {}): void {
+  const dismissOnBackdrop = options.dismissOnBackdrop ?? true;
+  const activeElement = document.activeElement;
+  modalFocusReturn = activeElement instanceof HTMLElement && activeElement !== document.body ? activeElement : null;
+  byId("modal-root").innerHTML = `<div class="modal-backdrop" data-dismiss-on-backdrop="${dismissOnBackdrop}" role="presentation"><section class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header class="modal-header"><h2 id="modal-title">${h(title)}</h2><button type="button" class="modal-close" data-action="close-modal" aria-label="Close">${uiIcon("close", 18)}</button></header><div class="modal-body">${body}</div></section></div>`;
   document.querySelector<HTMLElement>(".modal button, .modal input, .modal select")?.focus();
+  const appShell = document.querySelector<HTMLElement>(".app-shell");
+  appShell?.setAttribute("inert", "");
+  appShell?.setAttribute("aria-hidden", "true");
 }
 
-function closeModal(): void { byId("modal-root").replaceChildren(); }
+function closeModal(): void {
+  if (!document.querySelector(".modal-backdrop")) return;
+  byId("modal-root").replaceChildren();
+  const appShell = document.querySelector<HTMLElement>(".app-shell");
+  appShell?.removeAttribute("inert");
+  appShell?.removeAttribute("aria-hidden");
+  const focusReturn = modalFocusReturn;
+  modalFocusReturn = null;
+  if (focusReturn?.isConnected) focusReturn.focus();
+}
+
+function trapModalFocus(event: KeyboardEvent): void {
+  const modal = document.querySelector<HTMLElement>(".modal");
+  if (!modal) return;
+  const focusable = [...modal.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), [href], input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )].filter((element) => !element.hasAttribute("hidden") && element.getAttribute("aria-hidden") !== "true");
+  if (focusable.length === 0) {
+    event.preventDefault();
+    modal.focus();
+    return;
+  }
+  const first = focusable[0]!;
+  const last = focusable[focusable.length - 1]!;
+  if (!modal.contains(document.activeElement) || document.activeElement === modal) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
 
 function updateLiveUptimes(): void {
   if (!workspace) return;
@@ -647,15 +703,18 @@ function stateLabel(state: LaunchState): string {
   return ({ stopped: "Stopped", starting: "Starting", running: "Running", stopping: "Stopping", failed: "Failed", external: "Running externally" })[state];
 }
 
-function safeTech(value: string): string {
-  const normalized = value.toLowerCase().replace(/[^a-z0-9-]/g, "");
-  return normalized || "generic";
+function themeChoice(value: ThemeMode, label: string, description: string): string {
+  return `<label class="theme-choice"><input type="radio" name="theme_mode" value="${value}" ${settings.theme_mode === value ? "checked" : ""}><span class="theme-preview theme-preview-${value}" aria-hidden="true"><i></i><i></i><i></i></span><span class="theme-copy"><strong>${label}</strong><small>${description}</small></span><span class="choice-check">${uiIcon("check", 14)}</span></label>`;
 }
 
-function installImageFallbacks(): void {
-  document.querySelectorAll<HTMLImageElement>("[data-fallback-icon]").forEach((image) => {
-    image.addEventListener("error", () => { image.src = "/icons/generic-48.png"; }, { once: true });
-  });
+function formatInterval(milliseconds: number): string {
+  const seconds = milliseconds / 1000;
+  return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} sec`;
+}
+
+function portChipDescription(label: string, ports: number[]): string {
+  if (!label.startsWith("+")) return `Listening port ${label}`;
+  return `${ports.length - 1} additional listening ports: ${ports.slice(1).join(", ")}`;
 }
 
 function loadingState(message: string): string { return `<div class="empty-state"><span class="spinner"></span><p>${h(message)}</p></div>`; }
@@ -675,6 +734,3 @@ function toast(message: string, error = false): void {
 function showFatal(error: unknown): void {
   workspaceElement.innerHTML = `<div class="empty-state"><h2>Cutting Board could not start</h2><p>${h(messageOf(error))}</p></div>`;
 }
-
-function gearIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94a7.5 7.5 0 0 0 .05-.94 7.5 7.5 0 0 0-.05-.94l2.03-1.58-1.92-3.32-2.39.96a7.3 7.3 0 0 0-1.63-.94L14.87 3h-3.84l-.36 3.18c-.58.24-1.12.56-1.63.94l-2.39-.96-1.92 3.32 2.03 1.58a7.5 7.5 0 0 0-.05.94c0 .32.02.63.05.94l-2.03 1.58 1.92 3.32 2.39-.96c.5.39 1.05.7 1.63.94l.36 3.18h3.84l.36-3.18c.58-.24 1.13-.55 1.63-.94l2.39.96 1.92-3.32-2.03-1.58ZM12.95 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>`; }
-function powerIcon(): string { return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M7.05 5.9a8 8 0 1 0 9.9 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`; }

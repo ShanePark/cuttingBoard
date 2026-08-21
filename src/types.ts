@@ -29,6 +29,8 @@ export interface ProjectInfo {
   id: string;
   name: string;
   root_path: string;
+  workspace_root_path: string;
+  workspace_name: string;
   detection_source: string;
 }
 

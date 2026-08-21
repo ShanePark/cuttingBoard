@@ -2,7 +2,7 @@
 
 Cutting Board is a native desktop board for local development services. It discovers TCP listeners owned by the current user, groups them by project, identifies common frameworks and infrastructure, shows Docker containers, and owns optional launch profiles for starting and stopping project commands.
 
-The application is implemented with **Tauri 2**, a strict TypeScript/Vite webview, and a Rust native core. The previous Python/Tkinter runtime has been removed.
+The application is implemented with **Tauri 2**, a strict TypeScript/Vite webview, and a Rust native core.
 
 ![Cutting Board](assets/cutting-board-screenshot.png)
 
@@ -99,10 +99,11 @@ cutting-board --version
 src/                         TypeScript presentation and command client
 src-tauri/src/               Rust scanner, Docker, persistence, launch manager, Tauri commands
 src-tauri/capabilities/      least-privilege Tauri capability declaration
-assets/                      application and technology artwork
+assets/                      application icon source and reference screenshot
+public/icons/                generated UI and unsupported-technology PNG fallbacks
 .github/workflows/ci.yml     Ubuntu and macOS type-check, test, and bundle jobs
 SPEC.md                      normative behavior and design contract
-TEST_REPORT.md               migration verification matrix
+TAURI_MIGRATION.md          Tauri architecture map
 ```
 
 ## Security and privacy

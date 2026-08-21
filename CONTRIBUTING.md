@@ -45,7 +45,7 @@ The pull request CI repeats these checks on Ubuntu and macOS and uploads the gen
 - Keep process, filesystem, Docker, signal, and launch ownership logic in Rust.
 - Keep the TypeScript layer presentation-focused and call native behavior only through typed functions in `src/api.ts`.
 - Add every new Tauri command to the explicit invoke handler and expose only the minimum capability permission required by the webview.
-- Do not add a Python sidecar, Node sidecar, shell daemon, cloud service, telemetry client, account system, or login-startup behavior.
+- Do not add a runtime sidecar, shell daemon, cloud service, telemetry client, account system, or login-startup behavior.
 - Do not write into detected project directories.
 - Persist settings and profiles with an atomic replacement; never partially overwrite the only copy.
 - Treat process command lines and logs as potentially sensitive.
@@ -62,7 +62,7 @@ Scanner changes require fixture-level unit tests for parsing and classification.
 6. duplicate listeners for one PID do not create duplicate cards;
 7. scan failure is visible and non-destructive.
 
-A new technology classifier should map to an existing icon in `assets/icons/` or deliberately use the generic fallback. Add both 48 px and 96 px artwork only when licensing permits it.
+A new technology classifier should map to an ID in `public/icons/manifest.json` or deliberately use the `service` fallback. Devicon-supported technologies use its locally bundled icon font; only unsupported technologies use 192 px Simple Icons PNG fallbacks. Add or change mappings in `scripts/build-icons.mjs` only when the source license permits redistribution, and do not edit generated CSS, PNGs, or manifests by hand. Run `npm run icons:runtime` to regenerate the Devicon CSS subset, fallback PNGs, 64 px UI-mask PNGs, and both manifest copies. The generator verifies pinned source-package versions and checks every generated PNG.
 
 ## Termination changes
 
@@ -91,7 +91,7 @@ The current spatial and semantic system is intentional. In particular:
 - toolbar: 56 px plus one hairline
 - service grid cell: 284 × 136
 - visible service card: 268 × 124, 16 px radius
-- technology well: 56 px, 14 px radius, 48 px artwork
+- technology well: 56 px, 14 px radius, Devicon font glyph or PNG fallback rendered at 44 px
 - action hit targets: at least 36 px where the current design specifies them
 - dark/light colors: exact values in `SPEC.md`
 - no duplicated in-content logo/wordmark

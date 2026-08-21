@@ -4,9 +4,16 @@
   "version": "0.6.0",
   "type": "module",
   "scripts": {
+    "predev": "npm run icons:runtime",
     "dev": "vite",
+    "dev:tauri": "tauri dev",
+    "precheck": "npm run icons:runtime",
+    "prebuild": "npm run icons:runtime",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
+    "icons": "npm run icons:runtime && npm run icons:app",
+    "icons:runtime": "node scripts/build-icons.mjs",
+    "icons:app": "tauri icon assets/app-icon-source.png --output src-tauri/icons",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -16,6 +23,12 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",
+    "@types/node": "^24.13.3",
+    "devicon": "2.17.0",
+    "lucide-static": "1.33.0",
+    "proper-lockfile": "4.1.2",
+    "sharp": "0.35.3",
+    "simple-icons": "16.28.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.0"
   }

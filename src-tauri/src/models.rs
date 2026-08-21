@@ -31,6 +31,10 @@ pub struct ProjectInfo {
     pub name: String,
     pub root_path: String,
     pub detection_source: String,
+    #[serde(default)]
+    pub workspace_root_path: String,
+    #[serde(default)]
+    pub workspace_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

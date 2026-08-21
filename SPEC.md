@@ -1,6 +1,6 @@
-# Cutting Board — Tauri Product Specification
+# Cutting Board — Product Specification
 
-This document is the normative contract for the Tauri implementation of Cutting Board. The migration changes the runtime and implementation language, not the product behavior, information hierarchy, safety model, or visual identity.
+This document is the normative contract for Cutting Board's behavior, information hierarchy, safety model, and visual identity.
 
 ## 1. Product boundary
 
@@ -19,9 +19,9 @@ The application shall use:
 - Tauri 2 for the desktop shell, command boundary, permissions, window lifecycle, and bundles;
 - Rust for socket discovery, process inspection, classification, project attribution, Docker integration, termination, persistence, and managed launch processes;
 - strict TypeScript and Vite for presentation and interaction;
-- the existing `assets/` artwork without visual substitution.
+- a locally bundled Devicon font plus licensed generated PNG fallbacks declared in `public/icons/manifest.json`.
 
-The shipped application shall not require Python, Tk, Tcl, a Python virtual environment, or a Python sidecar.
+The shipped application shall be self-contained and shall not require a separately installed runtime or sidecar process.
 
 The webview may call only registered Tauri commands. Its capability set shall remain limited to Tauri core defaults, local file/folder dialogs, and opening validated URLs with the operating system.
 
@@ -46,7 +46,7 @@ The top toolbar is 56 px high plus a 1 px lower hairline. It contains:
 - one right-aligned, 36 × 36 settings target with a gear glyph;
 - no duplicated application logo or wordmark inside the content area because the native window already carries the application identity.
 
-The bottom status bar is 26 px high. It shows listener count and scan duration. Non-fatal scanner warnings may appear at the right edge.
+Normal operation has no footer, listener statistics, scan-duration label, or reserved space below the workspace. A 26 px auxiliary status footer is shown only when the current workspace reports an error or the application is in demonstration mode; it is otherwise hidden.
 
 ## 4. Visual system
 
@@ -126,7 +126,7 @@ Grid cells are 284 × 136 with 6 px gutters. The visible rounded card inside eac
 
 A card contains:
 
-- a 56 × 56, 14 px-radius technology well containing the existing 48 px artwork;
+- a 56 × 56, 14 px-radius technology well containing a Devicon glyph or PNG fallback rendered at 44 × 44 px;
 - a single-line service name;
 - live uptime in `Running 4m 12s` form with a 6 px status dot;
 - accent treatment for services younger than 300 seconds;
@@ -280,4 +280,4 @@ npm run tauri build
 
 CI uploads generated bundles from `src-tauri/target/release/bundle/`.
 
-Acceptance requires no Python runtime files, Python dependency manifests, Tkinter UI, or legacy Python packaging scripts in the migration branch.
+Acceptance requires a successful Tauri bundle with no obsolete runtime, dependency manifest, UI implementation, or packaging path in the repository.

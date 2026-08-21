@@ -1,6 +1,6 @@
-# Tauri migration map
+# Tauri architecture map
 
-Cutting Board 0.6 replaces the Python/Tkinter runtime with a native Tauri 2 application while preserving the product and interface contract in `SPEC.md`.
+Cutting Board is a native Tauri 2 application. The product and interface contract lives in `SPEC.md`.
 
 | Concern | Tauri implementation |
 |---|---|
@@ -11,7 +11,7 @@ Cutting Board 0.6 replaces the Python/Tkinter runtime with a native Tauri 2 appl
 | Settings and launch-profile persistence | `src-tauri/src/storage.rs` |
 | Owned launch process groups and logs | `src-tauri/src/launch.rs` |
 | Typed native command client | `src/api.ts`, `src/types.ts` |
-| Existing board UI and design tokens | `src/main.ts`, `src/styles.css`, `assets/` |
+| Board UI, design tokens, and licensed runtime artwork | `src/main.ts`, `src/styles.css`, `public/icons/` |
 | Cross-platform verification and bundles | `.github/workflows/ci.yml` |
 
 Required release checks:
@@ -23,4 +23,4 @@ cargo test --manifest-path src-tauri/Cargo.toml --all-targets
 npm run tauri build
 ```
 
-The migration intentionally retains no Python runtime or sidecar dependency. Process, filesystem, Docker, signal, and launch ownership operations remain behind typed Rust commands and an explicit least-privilege Tauri capability declaration.
+The application has no external runtime or sidecar dependency. Process, filesystem, Docker, signal, and launch ownership operations remain behind typed Rust commands and an explicit least-privilege Tauri capability declaration.

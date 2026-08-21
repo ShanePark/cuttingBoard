@@ -70,11 +70,12 @@ export function groupServices(services: ServiceSnapshot[]): Array<{
   const groups = new Map<string, { id: string; name: string; path: string | null; accent: string; services: ServiceSnapshot[] }>();
   for (const service of services) {
     const project = service.project;
-    const id = project?.id ?? "other";
+    const workspacePath = project?.workspace_root_path || null;
+    const id = workspacePath ?? project?.id ?? "other";
     const group = groups.get(id) ?? {
       id,
-      name: project?.name ?? "Other",
-      path: project?.root_path ?? null,
+      name: project?.workspace_name || project?.name || "Other",
+      path: workspacePath ?? project?.root_path ?? null,
       accent: service.category,
       services: []
     };

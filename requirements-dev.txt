@@ -1,4 +1,0 @@
-# The test suite uses only Python's standard library.
-# Optional local quality tools:
-ruff>=0.6,<1
-mypy>=1.11,<2
