@@ -1,1120 +1,283 @@
-# Cutting Board — Specification
+# Cutting Board — Tauri Product Specification
 
-| | |
+This document is the normative contract for the Tauri implementation of Cutting Board. The migration changes the runtime and implementation language, not the product behavior, information hierarchy, safety model, or visual identity.
+
+## 1. Product boundary
+
+Cutting Board is a local, single-user desktop utility. It answers three questions:
+
+1. Which development services are listening now?
+2. Which Docker containers exist and which host ports do they publish?
+3. Which saved project tasks can Cutting Board start and stop as their owner?
+
+It does not provide remote monitoring, cloud sync, authentication, telemetry, automatic login startup, container mutation, or arbitrary system-process administration.
+
+## 2. Runtime architecture
+
+The application shall use:
+
+- Tauri 2 for the desktop shell, command boundary, permissions, window lifecycle, and bundles;
+- Rust for socket discovery, process inspection, classification, project attribution, Docker integration, termination, persistence, and managed launch processes;
+- strict TypeScript and Vite for presentation and interaction;
+- the existing `assets/` artwork without visual substitution.
+
+The shipped application shall not require Python, Tk, Tcl, a Python virtual environment, or a Python sidecar.
+
+The webview may call only registered Tauri commands. Its capability set shall remain limited to Tauri core defaults, local file/folder dialogs, and opening validated URLs with the operating system.
+
+## 3. Main window
+
+### 3.1 Window contract
+
+- title: `Cutting Board`
+- default content size: 1080 × 720
+- minimum content size: 560 × 420
+- resizable: yes
+- initial position: centered unless a saved position exists
+- saved geometry: restored on the next launch
+- closing the window: stop every process group owned by the launch manager, persist geometry, then exit
+
+### 3.2 Toolbar
+
+The top toolbar is 56 px high plus a 1 px lower hairline. It contains:
+
+- a left-aligned segmented tab surface with `Services`, `Docker`, and `Launch Profiles`;
+- a count in every tab label;
+- one right-aligned, 36 × 36 settings target with a gear glyph;
+- no duplicated application logo or wordmark inside the content area because the native window already carries the application identity.
+
+The bottom status bar is 26 px high. It shows listener count and scan duration. Non-fatal scanner warnings may appear at the right edge.
+
+## 4. Visual system
+
+### 4.1 Dark palette
+
+| Token | Value |
 |---|---|
-| Product | Cutting Board |
-| Version | 0.1.0 |
-| Target | Ubuntu Desktop 24.04 LTS and macOS |
-| Stack | Python 3.10+, Tkinter/ttk, psutil |
-| Shape | One desktop process; no daemon, no autostart |
-| Documentation language | English |
-| Interface language | English |
+| canvas | `#0E0E11` |
+| surface | `#1C1C1E` |
+| surface-alt | `#2C2C2E` |
+| surface-hover | `#343438` |
+| hairline | `#38383A` |
+| border | `#48484A` |
+| text | `#F5F5F7` |
+| text-muted | `#C7C7CC` |
+| text-dim | `#9EA0A5` |
+| accent | `#60ADFF` |
+| accent-dim | `#173A5E` |
+| accent-hover | `#88C3FF` |
+| on-accent | `#0E0E11` |
+| violet | `#D38BFF` |
+| danger | `#FF756E` |
+| danger-dim | `#5C2422` |
+| ok | `#30D158` |
+| warning | `#FFD60A` |
 
-This document describes the system as it is implemented. It is a specification
-of current behaviour, not a wish list; planned work is confined to the last
-section and marked as such.
+Category accents are web `#60ADFF`, API `#D38BFF`, database `#85B8FF`, cache `#FF9F5A`, proxy `#30D158`, runtime/other `#9EA0A5`.
 
-## 1. Scope
+### 4.2 Light palette
 
-Cutting Board observes the TCP listeners on the local host, decides which of
-them are development services, and presents them as a tile board grouped by
-project. It also lists Docker containers on a separate tab. The user can open a
-web service in a browser and stop a service they own. An optional registered
-launch profile can start and stop the commands that make up a local project,
-capture bounded output, and run a source watcher alongside a main command.
+| Token | Value |
+|---|---|
+| canvas | `#F2F2F7` |
+| surface | `#FFFFFF` |
+| surface-alt | `#E9E9EE` |
+| surface-hover | `#E5E5EA` |
+| hairline | `#D1D1D6` |
+| border | `#C7C7CC` |
+| text | `#1C1C1E` |
+| text-muted | `#3A3A3C` |
+| text-dim | `#636366` |
+| accent | `#005EB8` |
+| accent-dim | `#D9ECFF` |
+| accent-hover | `#0053A6` |
+| on-accent | `#FFFFFF` |
+| violet | `#783399` |
+| danger | `#C81D25` |
+| danger-dim | `#FCE8E7` |
+| ok | `#1B6F30` |
+| warning | `#8A5100` |
 
-Discovery is unconditional and requires no cooperation: no registration
-protocol, no SDK and no wrapper script. Registering a launch profile is an
-independent opt-in convenience and never changes which listeners discovery can
-see. The scanner and every process group started by Cutting Board have exactly
-the window's lifetime.
+Category accents are web `#005EB8`, API `#783399`, database `#1D4ED8`, cache `#9A350E`, proxy `#1B6F30`, runtime `#475569`, other `#636366`.
 
-### Non-goals
+`system` theme follows the operating-system color scheme. Failure to determine a native scheme shall use the dark palette.
 
-Managing systemd units or containers. Observing remote hosts. UDP discovery.
-Finding unregistered workers that open no port. Capturing output from processes
-Cutting Board did not start. Adopting or stopping an externally started process
-through launch controls. Health checking. Persisting logs, a service database or
-a termination history. Accounts, cloud sync or telemetry.
+### 4.3 Typography
 
-## 2. Domain model
+Preferred proportional families, in order, are SF Pro Text, Apple SD Gothic Neo, Helvetica Neue, Inter, Ubuntu, Noto Sans CJK KR, Noto Sans, and the platform sans-serif. Preferred monospaced families are SF Mono, Menlo, JetBrains Mono, Ubuntu Mono, Noto Sans Mono, and the platform monospace.
 
-All snapshot types are frozen, slotted dataclasses in
-`src/cutting_board/models.py`. The scan thread publishes only finished,
-immutable snapshots; the UI thread never mutates them.
+The interface uses compact 10–12 px metadata and labels, 12 px section/card titles, and larger text only in modal identity or empty-state headings.
+
+## 5. Service board
+
+### 5.1 Section layout
+
+Services are grouped by detected project. Project groups sort alphabetically, then the unassigned `Other` group. A section contains:
+
+- a 3 × 13 accent bar;
+- uppercase project name;
+- shortened monospaced path on the same line when available;
+- a 1 px hairline 7 px below the heading;
+- a responsive fixed-cell grid.
+
+Grid cells are 284 × 136 with 6 px gutters. The visible rounded card inside each cell is 268 × 124 with a 16 px radius.
+
+### 5.2 Service card
+
+A card contains:
+
+- a 56 × 56, 14 px-radius technology well containing the existing 48 px artwork;
+- a single-line service name;
+- live uptime in `Running 4m 12s` form with a 6 px status dot;
+- accent treatment for services younger than 300 seconds;
+- optional `Agent` or IDE origin badge;
+- at most two compact port chips; more than two ports become the first port plus `+N`;
+- `No port information` when no endpoint can be represented;
+- a compact browser destination without the scheme when a safe URL exists;
+- a circular 30 px visible stop control inside a 36 px pointer target when termination is allowed;
+- a hidden `↵ Details` hint that appears for keyboard selection.
+
+Hover changes the card to `surface-hover` with a `border` outline. Keyboard focus uses `accent`. The card opens details. The link opens the browser. The power control asks for confirmation and then invokes guarded termination.
+
+Left and right arrow keys cycle enabled card actions. Enter and Space invoke the selected action. Pointer controls shall not require keyboard focus to be usable.
+
+### 5.3 Details
+
+The service detail view shows identity, technology/category, status, launcher origin, project, PID, executable, working directory, redacted command line, CPU, memory, uptime, warnings, and every listening endpoint. The view shall never expose a command-line secret that the scanner recognized as a password, token, secret, API key, authorization value, or credential.
+
+## 6. Discovery and classification
+
+### 6.1 Listener source
+
+On macOS and Linux, the primary source is:
 
 ```text
-WorkspaceSnapshot
-├─ scanned_at            epoch seconds
-├─ scan_duration_ms
-├─ current_username, current_uid
-├─ errors[]              scan-level warnings, de-duplicated
-└─ services[]  ServiceSnapshot
-   ├─ id                 "process:<pid>:<create_time_ms>" or "unknown:<key>"
-   ├─ display_name       from the classifier
-   ├─ category           web | api | database | cache | proxy | runtime | other
-   ├─ tech               artwork id for the brand mark
-   ├─ relevance          dev | container | noise
-   ├─ ownership          current_user | other_user | unknown
-   ├─ can_terminate      bool
-   ├─ status             healthy | limited | unknown_process
-   ├─ warnings[]
-   ├─ origin_id          launcher slug, "" when nothing was found
-   ├─ origin_label       launcher name shown on the badge
-   ├─ origin_kind        agent | ide | terminal | system | unknown
-   ├─ project?  ProjectInfo(id, name, root_path, detection_source,
-   │                        package_name, package_path)
-   ├─ process?  ProcessInfo(pid, create_time, ppid, name, executable,
-   │                        command, command_display, cwd, username, uid,
-   │                        uptime_seconds, cpu_percent, memory_bytes)
-   └─ endpoints[] Endpoint(family, address, port, scope, protocol="TCP")
+lsof -nP -iTCP -sTCP:LISTEN -FpcuPn
 ```
 
-`EndpointScope` is `loopback`, `wildcard` (`0.0.0.0`, `::`), `interface`, or
-`unknown` when the address does not parse.
+Linux may fall back to `ss -H -ltnp`. A listener record contains PID, UID when available, process name, address, family, port, TCP protocol, and a scope of `loopback`, `wildcard`, or `lan`.
 
-Derived members that the rest of the system relies on:
+The scanner aggregates every TCP listener belonging to the same PID into one service and deduplicates repeated IPv4/IPv6 representations.
 
-- `ServiceSnapshot.unique_ports` — ports with the IPv4/IPv6 duplicate of a
-  dual-stack listener removed. This is what the tiles show.
-- `ServiceSnapshot.lowest_port` — the within-group sort key; `65536` when a
-  service somehow has no endpoint.
-- `ServiceSnapshot.searchable_text` — a case-folded concatenation of name,
-  category, ports, addresses, project and process fields.
-- `ServiceSnapshot.browser_url()` — see §7.
-- `WorkspaceSnapshot.to_dict()` — a JSON-safe projection that converts enums to
-  their values and **removes the raw `command` tuple** from every process, so an
-  exported snapshot cannot carry unredacted secrets.
+### 6.2 Process join
 
-`TerminationResult(status, message, pid, force)` reports an attempt; `success`
-is true for `terminated` and `already_exited`.
+The scanner joins listeners to live process metadata from Rust. It may expose only redacted command text. A process model includes PID, parent PID, name, executable, working directory, creation time, live uptime, CPU, memory, and UID when available.
 
-### 2.1 Registered launch model
+Listeners owned by another user are not visible. Known operating-system daemons and desktop infrastructure are classified as noise. Docker proxy/plumbing processes are classified as container infrastructure and are excluded from the Services tab.
 
-`src/cutting_board/launch_models.py` contains the immutable launch contract:
+### 6.3 Project attribution
+
+Starting from the process working directory and valid absolute command paths, scan toward the filesystem root for the first project marker:
+
+- `.git`
+- `package.json`
+- `pyproject.toml`
+- `Cargo.toml`
+- `go.mod`
+- `pom.xml`
+- `build.gradle` / `build.gradle.kts`
+- `docker-compose.yml` / `compose.yml`
+
+When possible, derive the project name from the marker's own metadata. Otherwise use the directory name. Project identity is a stable hash of the canonical root path.
+
+### 6.4 Technology and category
+
+At minimum, recognize Spring Boot, Next.js, Vite, Nuxt, Angular, Django, FastAPI, Flask, Rails, PostgreSQL, MySQL/MariaDB, MongoDB, Redis, Memcached, Elasticsearch, RabbitMQ, nginx, Caddy, Node.js, Deno, Bun, Python, Java, .NET, Rust, Go, PHP, Ruby, and Docker.
+
+Categories are `web`, `api`, `database`, `cache`, `proxy`, `runtime`, and `other`. Unknown user-owned processes may be considered development services when they belong to a detected project or listen on a common development/high ephemeral port.
+
+### 6.5 Browser destination
+
+Only web, API, proxy, and suitable runtime services receive a browser URL. Loopback is preferred, wildcard addresses become `localhost`, IPv6 literals use brackets, and ports 443/8443 or explicit HTTPS arguments use `https`. Spring context-path arguments are appended when present.
+
+### 6.6 Origin
+
+Inspect the process ancestry for known agents, IDEs, and terminals. Supported labels include Agent/Claude Code/Aider, VS Code, Cursor, IntelliJ IDEA, PyCharm, WebStorm, Android Studio, Zed, Terminal, iTerm2, WezTerm, Alacritty, Kitty, Ghostty, and Konsole. Unknown ancestry remains visually quiet.
+
+## 7. Termination safety
+
+A stop action is available only for a current-user development process with a live process record. At action time the Rust core shall:
+
+1. look up the immutable identity captured by the last scan;
+2. reject PID 0/1 and Cutting Board's own PID;
+3. verify current-user ownership again;
+4. reload process metadata;
+5. verify the process creation time still equals the scanned creation time;
+6. send `SIGTERM` to that PID;
+7. wait approximately two seconds;
+8. send `SIGKILL` only if the validated process remains alive.
+
+A changed/reused PID, missing identity, ownership mismatch, or demonstration mode must produce an error without sending a signal.
+
+## 8. Docker tab
+
+The Docker tab is read-only. It invokes `docker ps -a` and shows container ID, name, image, state, status, published host ports, Compose project, and Compose service. Containers group by Compose project; standalone containers appear last. Running containers precede stopped containers.
+
+Cards use the same geometry as service cards. Stopped cards are visually muted. Clicking or pressing Enter/Space opens container details. Cutting Board does not start, stop, remove, or exec into containers.
+
+If Docker cannot be queried, show the error and, when available, show container listener processes from the service scanner as a fallback.
+
+## 9. Launch Profiles
+
+### 9.1 Persistence
+
+A profile contains:
+
+- stable ID;
+- display name, maximum 80 characters;
+- absolute project root;
+- one or more tasks.
+
+A task contains a unique name, working directory (absolute or relative to the project root), shell command, and optional expected TCP port. Profiles are written atomically as local JSON.
+
+### 9.2 Ownership
+
+Starting a task shall:
+
+1. validate profile/task existence and task directory;
+2. reject demonstration mode;
+3. reject an expected port already served by an external process attributed to the same project;
+4. start `/bin/sh -lc <command>` on Unix in a new session/process group;
+5. set `CUTTING_BOARD_MANAGED=1`;
+6. redirect stdout/stderr to a local append-only task log;
+7. record PID, start time, state, and ownership in memory.
+
+Only owned process groups may be stopped. Stopping sends `SIGTERM` to the group, waits, then uses `SIGKILL` if necessary. Closing Cutting Board stops all active owned groups. Externally detected tasks show `Running externally` and expose neither a stop nor an ownership claim.
+
+### 9.3 Presentation
+
+The tab contains a header, explanatory copy, and `＋ Add`. Each profile card contains name, project path, task count, one primary group action, Edit/Delete when no task is active, and task rows.
+
+Task states are `Stopped`, `Starting`, `Running`, `Stopping`, `Failed`, and `Running externally`, with dim, warning, green, danger, or violet semantic colors. Every task provides Logs; lifecycle controls appear only when valid.
+
+## 10. Settings and persistence
+
+Settings contain theme mode, scan interval (500–60,000 ms), and window geometry. Invalid or old values normalize safely. Writes use a temporary file, `fsync`, and atomic replacement. Corrupt files produce a user-visible error rather than silent data loss.
+
+Application data belongs in the platform application-configuration directory. Cutting Board shall not write project files.
+
+## 11. CLI
+
+The native executable supports:
+
+- `--demo`
+- `--auto-close-seconds N`
+- `--help` / `-h`
+- `--version` / `-V`
+
+Unknown options exit with status 2. Demonstration mode returns deterministic services, containers, and profiles and disables every mutation.
+
+## 12. Build and verification
+
+The repository shall pass on Ubuntu 24.04 and current macOS runners:
 
 ```text
-LaunchProfile
-├─ id                    stable UUID-shaped string generated by the UI
-├─ name                  user-facing configuration name
-├─ project_root          absolute project directory
-└─ tasks[]  LaunchTask
-   ├─ name               unique within the profile, case-insensitively
-   ├─ cwd                relative to project_root or an absolute path inside it
-   ├─ command            main shell command
-   ├─ expected_port?     1–65535; optional external-listener hint
-   └─ watch_command?     optional auto-build/source-watch shell command
-
-ManagedTaskSnapshot
-├─ profile_id, task_name
-├─ state                 stopped | starting | running | stopping | failed
-├─ main_pid?, watch_pid?
-├─ expected_port?
-├─ logs[]                bounded in-memory lines
-└─ message?              English runtime status
+npm run check
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+npm run tauri build
 ```
 
-A profile must have at least one task. `LaunchProfile.task_cwd()` resolves the
-working directory and rejects traversal outside the project root. The optional
-port is a discovery correlation hint, not a health check and not proof that a
-managed command opened the listener.
+CI uploads generated bundles from `src-tauri/target/release/bundle/`.
 
-## 3. Scanner pipeline
-
-`LinuxServiceScanner.scan()` and `MacOSServiceScanner.scan()` produce one
-`WorkspaceSnapshot` per call. The macOS implementation in
-`src/cutting_board/scanner/macos.py` reuses the shared enrichment pipeline from
-the Linux scanner and replaces listener discovery and origin readers. Every OS
-boundary is wrapped: a failure becomes a snapshot warning, never an exception
-that reaches the UI.
-
-### 3.1 Listener discovery
-
-On Linux:
-
-1. `psutil.net_connections(kind="tcp")` is called once. On `AccessDenied` the
-   scanner records a warning and falls back entirely to the per-process walk.
-2. Only rows whose status is `LISTEN` with a usable local address are kept.
-3. Linux can return a listener row while withholding its PID. The ports of such
-   rows are collected as *unresolved*.
-4. If there are no unresolved ports, the system table is used as is.
-
-#### Skipping the per-process walk
-
-Walking every process is by far the most expensive part of a sweep, and it can
-only ever resolve a socket the current user owns. `/proc/net/tcp` and
-`/proc/net/tcp6` publish the owning UID of every socket even when the process
-behind it is unreadable, so `_listener_uids()` maps each listening port (state
-`0A`) to its owner UID and the walk is skipped when **every** unresolved port is
-positively known to belong to another UID.
-
-A port absent from that table is treated as unknown, not as foreign, so the walk
-still runs rather than silently dropping an owner. This is the safety direction:
-the optimisation may cost time, never visibility.
-
-#### The per-process walk
-
-`_read_connections_per_process()` iterates `psutil.process_iter()` **with no
-`attrs` argument**. Passing a falsy `attrs=[]` makes `psutil.as_dict()` collect
-everything, including `memory_maps()` for every process, which turns a
-sub-second sweep into several seconds. Only `uids()` is needed, and processes
-belonging to other users are skipped immediately.
-
-Rows the walk produces carry the owning PID; where psutil omits it, the row is
-rebuilt as a `SimpleNamespace` carrying `process.pid`.
-
-#### Merging
-
-Each pidless system row is replaced by the owning row of the same
-`(family, address, port)` where one was found. Merged rows are de-duplicated by
-`(family, address, port, pid)`.
-
-#### macOS listener discovery
-
-`MacOSServiceScanner` runs `/usr/sbin/lsof -nP -a -iTCP -sTCP:LISTEN -Fptn` and
-parses its machine-readable process, socket-family and endpoint fields into the
-same connection-row shape used by the shared pipeline. Wildcard and localhost
-addresses are normalised to concrete IPv4 or IPv6 forms. An `lsof` exit status
-of `1` with no output means no matching listener; other failures become snapshot
-warnings.
-
-### 3.2 Grouping and identity
-
-Endpoints are grouped by PID. A listener with no PID becomes its own group keyed
-`endpoint:<protocol>:<family>:<address>:<port>`.
-
-A service identity is `(pid, create_time_ms)`, rendered as
-`process:<pid>:<create_time_ms>`. A PID alone is never a durable identifier
-because the kernel recycles PIDs; the creation time makes the identity stable
-and is re-checked before any signal is sent.
-
-`psutil.Process` handles are cached under that key across scans, and the cache
-is pruned each sweep to the keys still present. CPU percentage is a delta
-measurement, so the first reading for a process is discarded and reported as
-`None`; the UI renders that as "being calculated".
-
-### 3.3 Process enrichment
-
-Where readable: PID, PPID, creation time, name, executable, full argv, working
-directory, username, effective UID, uptime, CPU percentage and resident memory.
-
-Each field is read through a guard that substitutes a default on
-`NoSuchProcess`, `AccessDenied`, `ZombieProcess`, `OSError` or `ValueError`. A
-service is never dropped because one field was unreadable; missing command,
-working directory or executable is recorded as a warning and the status becomes
-`limited` instead of `healthy`.
-
-A listener whose owning process cannot be opened at all becomes an "unidentified
-listener" service: `ownership = unknown`, `status = unknown_process`,
-`can_terminate = false`, `relevance = noise`. It carries its ports so the
-`--snapshot --all` listing can still show the occupied port.
-
-Wildcard endpoints add a warning that the service is reachable on every network
-interface.
-
-### 3.4 Classification
-
-`src/cutting_board/scanner/classifier.py` answers "what is this?" and returns a
-`Classification(name, category, tech, specific)`. `specific` records whether a
-rule actually recognised the program; a false value means the name is only a
-runtime or a bare process name, which relevance treats as insufficient evidence.
-
-Three rule tiers are tried in order, against progressively looser evidence:
-
-| Tier | Matched against | Contains |
-|---|---|---|
-| `_DAEMON_RULES` | process name and executable basename only | PostgreSQL, MariaDB, MySQL, MongoDB, Redis, Memcached, Docker port proxy, container runtimes, Nginx, Caddy, Traefik, Ollama, ADB, SSH |
-| `_ARGV_RULES` | argv, with dependency values excluded | Vite, Next.js, Nuxt, Astro, Remix, Webpack, React, Storybook, Angular, SvelteKit, Uvicorn, Gunicorn, ASGI servers, Flask, Django, Jupyter, Rails, Laravel, Cargo, Deno, Bun |
-| `_FRAMEWORK_RULES` | argv including dependency values | Spring Boot, Quarkus, Micronaut, Gradle daemon, Tomcat, Elasticsearch, Solr, Kafka |
-
-The tiering exists because evidence quality differs. A daemon *is* the program
-named by its executable. An argv token is weaker. A classpath entry is weakest
-of all: it names a dependency, not the running program. The value following
-`-cp`, `-classpath`, `--class-path`, `--module-path` or `-p` is therefore
-withheld from the first two tiers, so a JDBC driver on a Spring Boot classpath
-cannot make the service look like PostgreSQL.
-
-Two further rules keep matching honest:
-
-- **Word boundaries.** Needles match as `(?<![a-z0-9])needle(?![a-z0-9])`.
-  Substring matching would read `postgresql-42.7.4.jar` as PostgreSQL and a
-  directory named `invite-app` as Vite.
-- **Term normalisation.** Path-like arguments are split on `:` when they also
-  contain `/`, reduced to their basename, stripped of a `.jar` suffix and of a
-  trailing version (`-1.2.3`).
-
-Fallbacks, in order: a `-jar <file>` argument yields the jar's name as an `api`
-service with the `java` mark; otherwise the runtime name maps to a mark
-(`node`, `python`, `java`, `go`, `ruby`, `php`, `dotnet`, `deno`, `bun`), the
-category becomes `other` and `specific` is false. A monorepo package name that
-differs from the project name is prefixed to the label as `package · label`.
-
-`classify_image(image)` reuses all three tiers for the Docker tab. Image
-references name their contents far more honestly than a command line does, so
-every tier is fair game. The reference is reduced to its repository path and
-last segment; digest, tag and registry host are discarded because they carry no
-product identity and only invite false matches. An unrecognised image keeps its
-name and the `docker` mark.
-
-### 3.5 Relevance
-
-`src/cutting_board/scanner/relevance.py` decides whether a listener belongs on
-the board at all, returning `Relevance.DEV`, `CONTAINER` or `NOISE`. The rules,
-evaluated in order:
-
-1. `ownership is not CURRENT_USER` → `NOISE`.
-2. `tech` is a container technology, or a candidate name is a container process
-   (`docker-proxy`, `dockerd`, `docker`, `containerd`, `containerd-shim`,
-   `podman`, `conmon`, `rootlesskit`, `slirp4netns`, `k3s`, `kubelet`,
-   `minikube`) → `CONTAINER`.
-3. A candidate name is a known desktop application → `NOISE`.
-4. The argv identifies a build-tool daemon → `NOISE`.
-5. `specific` (the classifier recognised a real framework or daemon) → `DEV`.
-6. The executable lives under a distribution prefix (`/usr/lib`, `/usr/libexec`,
-   `/usr/share`, `/usr/sbin`, `/opt`, `/snap`, `/var/lib/flatpak`,
-   `/var/lib/snapd`) → `NOISE`.
-7. Otherwise `DEV` if a project was detected, `NOISE` if not.
-
-Candidate names cover interpreted scripts: the process name, the executable
-basename, and the basenames of `command[1:3]`. `/usr/bin/python3
-/usr/bin/ulauncher` is ulauncher, not Python.
-
-Rule 4 exists because a build tool's daemon opens a TCP port for its own
-client protocol and is not a service anybody visits. A Gradle daemon is
-recognised by the classifier, so it would otherwise ride rule 5 straight onto
-the board and sit there for hours after the build finished.
-
-The match is deliberately narrow, on evidence that only a daemon carries:
-
-- an exact argv token from `BUILD_DAEMON_MAIN_CLASSES` —
-  `org.gradle.launcher.daemon.bootstrap.GradleDaemon`,
-  `org.gradle.process.internal.worker.GradleWorkerMain`,
-  `org.jetbrains.kotlin.daemon.KotlinCompileDaemon`,
-  `org.apache.maven.cli.DaemonMavenCli`, `org.mvndaemon.mvnd.daemon.Server`, or
-  either Nailgun `NGServer`;
-- a classpath entry whose basename starts with `gradle-daemon-main` or
-  `gradle-worker` and ends in `.jar`, tested per entry after splitting the
-  token on `:` so that one long application classpath is not read as a blob;
-- the candidate name `mvnd`.
-
-Matching the bare word `gradle` would be wrong: `./gradlew bootRun` forks the
-application into its own JVM whose classpath is full of Gradle cache paths, and
-that JVM is exactly what the board exists to show.
-
-sbt is deliberately absent. Unlike Gradle, `sbt run` commonly serves the
-application from the sbt process itself, so treating `sbt-launch.jar` as a
-daemon marker would hide a running service. Language servers are absent too:
-they speak stdio rather than TCP, and their launchers (`org.eclipse.equinox.
-launcher`, coursier) are shared with the editors themselves.
-
-The desktop-application list is maintained in `DESKTOP_APPS` and covers
-launchers, sync clients, chat clients, browsers, remote-desktop tools, media
-players, password managers and IDE toolboxes. Rule 6 already hides most of them;
-the explicit list also catches the case where such an application happens to be
-started from inside a repository.
-
-### 3.6 Project detection
-
-`src/cutting_board/scanner/project.py` resolves a process working directory to a
-`ProjectInfo`.
-
-- The directory and its ancestors are walked upwards.
-- A `.git` root wins. Failing that, the nearest ancestor containing a supported
-  marker becomes the root, and `detection_source` records which marker it was.
-- Markers: `.git`, `pnpm-workspace.yaml`, `package.json`, `pom.xml`,
-  `build.gradle`, `build.gradle.kts`, `settings.gradle`, `settings.gradle.kts`,
-  `Cargo.toml`, `pyproject.toml`, `go.mod`, `docker-compose.yml`,
-  `docker-compose.yaml`, `compose.yml`, `compose.yaml`
-  (`constants.PROJECT_MARKERS`).
-- The project name is the root `package.json` `name`, else the root directory
-  name.
-- The nearest `package.json` is retained separately as `package_name` and
-  `package_path`, so a monorepo service can be named after its own package.
-- The project id is `project:` plus the first 16 hex characters of the SHA-1 of
-  the absolute root path, which keeps grouping stable across runs.
-
-**Excluded roots.** The walk stops at `/`, `/tmp`, `/var/tmp`, `/usr`, `/opt`,
-`/etc` and the user's home directory, and none of them can become a project
-root. A dotfiles repository in `$HOME` is common, and without this rule every
-desktop application started from the home directory would be filed under a
-project named after the user. `/tmp` behaves the same way as soon as any tool
-leaves a marker there.
-
-**Caching.** Resolutions are kept in an LRU cache of 512 entries. A *miss* is
-deliberately not cached: an agent may create a project marker after a process
-has already started, and the next scan should pick it up.
-
-### 3.7 Command redaction
-
-`redact_command()` in `linux.py` renders argv into `command_display`:
-
-- A value following a flag in `constants.SENSITIVE_FLAGS` (`--token`,
-  `--access-token`, `--auth-token`, `--api-key`, `--apikey`, `--password`,
-  `--passwd`, `--secret`, `--client-secret`, `--database-url`) is replaced with
-  `••••`.
-- In a `KEY=VALUE` token, the value is replaced when the normalised key is a
-  sensitive flag or contains `token`, `password`, `secret` or `api-key`; and
-  additionally, for upper-case keys, when it contains `credential`, `auth` or
-  `database-url`.
-- The result is `shlex.join`ed and truncated at 800 characters.
-
-The raw `command` tuple stays in memory for classification only. It is never
-displayed and is stripped from `to_dict()`.
-
-### 3.8 Launcher attribution
-
-`src/cutting_board/scanner/origin.py` contains the shared rules that answer "who
-started this?" for every service that is not noise.
-`detect_origin(pid, create_time=...)` returns an
-`Origin(kind, id, label, signal)`, which the scanner copies onto the snapshot as
-`origin_kind`, `origin_id` and `origin_label`. Linux supplies direct `/proc`
-readers; `src/cutting_board/scanner/macos_origin.py` supplies the same process
-entry and environment shapes through psutil.
-
-Kinds, in the order that decides a conflict:
-
-| Rank | Kind | Emitted origins |
-|---|---|---|
-| 0 | `agent` | Claude, Codex, Cursor, Windsurf, Copilot, Aider, Gemini |
-| 1 | `ide` | VS Code, JetBrains |
-| 2 | `terminal` | Terminal |
-| 3 | `system` | System |
-| 4 | `unknown` | `UNKNOWN_ORIGIN` |
-
-Two independent signals feed the answer:
-
-- **Ancestry** walks `/proc/<pid>/stat` field 4 up to `_ANCESTRY_LIMIT = 12`
-  generations, matching each ancestor's comm and argv against the launcher
-  table. Because the kernel truncates comm at 15 characters, every name is
-  matched in both its full and its truncated spelling. Reaching the top of the
-  tree without a match yields `SYSTEM`, which is a real answer rather than a
-  failure.
-- **Environment** reads `/proc/<pid>/environ` and looks for marker *names* — the
-  values are never compared, except for the handful of variables that several
-  launchers share. `ANTHROPIC_*` and `OPENAI_*` are deliberately excluded: a
-  user can export those globally, which would badge every service on the board.
-
-On macOS, the same ancestry and environment decisions use psutil's process name,
-parent PID, creation time, argv and environment readers because `/proc` is not
-available. Permission failures and processes that disappear during a scan
-degrade to an unknown origin.
-
-Ancestry wins outright when it names an agent. Otherwise the more specific of
-the two answers wins, with ties going to ancestry. This is what makes a
-detached server attributable: `./gradlew bootRun` started by an agent and then
-daemonised reparents to init, so ancestry can only say `system`, while the
-environment it inherited still names the agent.
-
-On Linux, both signals read `/proc` directly rather than through psutil, which
-measured 6.6× faster on the same tree. Two 512-entry caches are kept: resolved
-results keyed by `(pid, create_time_ms)` — or by `(pid, start_ticks)` when the
-caller has no create time — and per-ancestor verdicts keyed by
-`(pid, start_ticks)`, so a fruitless chain is walked once and not again for every
-sibling. `UNKNOWN` doubles as the "already walked, found nothing" note. Both
-keys carry a start time, so a recycled PID misses rather than inheriting a stale
-answer.
-
-Reads are capped at 512 bytes of `stat`, 8 KB of `cmdline` and 64 KB of
-`environ`, so a process with a pathological argv or environment cannot stall a
-sweep. Nothing raises: a hidden or vanished `/proc` entry degrades to
-`UNKNOWN_ORIGIN`. Measured cost for 40 processes is 3.8–4.6 ms cold and
-0.021 ms warm.
-
-Attribution runs only for services that reach the board — noise is discarded
-first — because it is the most expensive per-process step in the pipeline.
-
-## 4. Docker
-
-`src/cutting_board/scanner/docker.py` wraps the Docker CLI. It is a separate
-source of truth from the port scanner and feeds its own tab.
-
-```
-docker ps --all --no-trunc --format '{{json .}}'
-```
-
-JSON-per-line is requested so neither field order nor column width can affect
-the parse. `--no-trunc` keeps names and labels intact; the container id is
-shortened locally to 12 characters instead.
-
-**Totality.** `list_containers()` never raises and never blocks longer than its
-timeout (2 seconds by default). It runs on a worker thread on machines that may
-have no Docker binary, no running daemon, or no permission on the socket, and a
-hung CLI would leak the thread. Failures are mapped to a `ContainerListing`
-with `available=False` and an English message:
-
-| Condition | Reported as |
-|---|---|
-| `FileNotFoundError` | Docker CLI not found |
-| `subprocess.TimeoutExpired` | Docker did not answer in time |
-| `OSError` | the CLI could not be launched, with the error |
-| non-zero exit, stderr mentions permission denied | permission problem |
-| non-zero exit, stderr mentions the daemon | daemon unreachable |
-| any other non-zero exit | generic failure, with the first stderr line |
-| zero exit, no containers | `available=True` with a "no containers" message |
-
-The permission case is tested before the daemon case, because a permission error
-also mentions connecting to the daemon while the daemon is in fact running. The
-stderr hint is the first non-empty line, trimmed to 160 characters.
-
-`available` exists precisely because an empty container tuple is ambiguous on
-its own: no Docker, no daemon, no permission and no containers all look alike.
-`docker_available()` reuses what the last listing learned through a module-level
-cache and only shells out when nothing has asked yet.
-
-**Parsing.** Each line is parsed independently, and a broken line costs that one
-container rather than the whole listing. Per container:
-
-- `Names` may hold several comma-separated names; the first is used.
-- `State` is lower-cased. Docker only added `.State` to the `ps` format in
-  20.10, so when it is missing the state is recovered from the human `Status`
-  string (`Up …` → running, `(paused)` → paused, otherwise the first word if it
-  is a known state).
-- `Labels` is Docker's unescaped `key=value,key=value` blob. Fragments without
-  `=` are dropped rather than guessed at. The compose labels that matter
-  (`com.docker.compose.project`, `com.docker.compose.service`) never contain
-  commas.
-- `Ports` yields host ports from the left of each `->`; the address is dropped
-  whether it is `0.0.0.0`, `:::` or `[::]:`. An entry without `->` is merely
-  exposed by the image, is unreachable from the host, and is ignored. A
-  published range is expanded, capped at 64 ports so a pathological range cannot
-  flood the tile. The result is a sorted set, collapsing the dual-stack
-  duplicate.
-- `CreatedAt` is kept exactly as Docker printed it; its trailing zone name is
-  not portable to parse, and `Status` already carries the uptime.
-
-## 5. Presentation layer
-
-`src/cutting_board/presentation.py` is pure and UI-free.
-
-- `visible_services(snapshot, show_containers=False, query="")` drops everything
-  whose relevance is `noise`, drops `container` unless asked for, and applies an
-  optional case-folded substring filter against `searchable_text`. The GUI never
-  passes `query` — there is no search box — but the parameter is retained and
-  exercised by the tests.
-- `container_services(snapshot)` returns the `container`-relevance listeners
-  sorted by port. This is the Docker tab's fallback when the CLI is unreachable.
-- `container_count(snapshot)` backs the tab badge before a listing arrives.
-- `group_services(services)` buckets services into a `ServiceGroup` per project,
-  a catch-all group, and a container group. Groups sort projects first, then the
-  catch-all, then containers, each alphabetically; services inside a group sort
-  by lowest port then name.
-- Formatters: `format_bytes`, `format_duration`, `format_uptime_compact`,
-  `format_cpu`, `endpoint_label`. `FRESH_UPTIME_SECONDS = 300` marks the window
-  during which a tile tints its uptime.
-
-## 6. User interface
-
-### 6.1 Theme
-
-`src/cutting_board/ui/theme.py` holds the whole palette and the grid metrics. A
-near-black canvas with a single cyan accent; colour is reserved for brand marks
-and for state, so the eye lands on the services.
-
-| Token | Value | |
-|---|---|---|
-| `CANVAS` | `#0B0E14` | page background |
-| `SURFACE` / `SURFACE_ALT` / `SURFACE_HOVER` | `#111721` / `#182231` / `#1D2A3B` | card, chip and hover fills |
-| `HAIRLINE` / `BORDER` | `#273244` / `#3A485D` | rules and outlines |
-| `TEXT` / `TEXT_MUTED` / `TEXT_DIM` | `#E6EDF3` / `#A8B3C1` / `#8995A5` | readable type ramp |
-| `ACCENT` / `ACCENT_DIM` | `#22D3EE` / `#0E7490` | active tab, fresh uptime, hover |
-| `VIOLET` | `#A78BFA` | container sections |
-| `DANGER` / `OK` / `WARNING` | `#FB7185` / `#34D399` / `#FBBF24` | state |
-
-`CATEGORY_COLORS` tints the port chips per service category. Card geometry:
-`TILE_WIDTH = 268`, `TILE_HEIGHT = 92`, `TILE_PAD = 8`, so `TILE_SPAN = 284`,
-with a `GRID_GUTTER` of 6. The wider, shorter shape replaces the old logo-first
-tile with a horizontal information hierarchy and visible actions.
-
-The table above is the backward-compatible dark palette. `Palette` also defines
-a complete high-contrast light set. The saved theme modes are `dark`, `light`
-and `system`, shown as **Dark**, **Light** and **System**. Missing or invalid
-preferences resolve to dark. System mode reads the global macOS appearance on a
-best-effort, one-second-bounded path; an unsupported platform, failed command or
-unknown result falls back to dark. Applying a mode replaces every semantic token
-as one set before widgets are constructed, so a light surface cannot retain a
-dark-palette foreground.
-
-Fonts are resolved at start-up from what is installed. On macOS, SF Pro Text,
-Apple SD Gothic Neo and Helvetica Neue lead the text candidates, while SF Mono
-and Menlo lead the monospace candidates; the previous Inter/Ubuntu/Noto/DejaVu
-fallbacks remain for Linux. Core text ranges from 10 to 14 points. The dimmest
-copy colour remains legible against both the canvas and alternate surface; lower
-contrast is reserved for decoration. `rounded_rect()` draws a rounded rectangle
-as a smoothed polygon, because Tk has no rounded primitive.
-
-### 6.2 Window and tabs
-
-`CuttingBoardWindow` opens at the saved geometry (default `1280x820`) with a
-minimum of 560×420. The header holds three keyboard-operable tabs — **Services**,
-**Docker** and **Launch Profiles** — each with a live count and an accent
-underline for the active one, plus a visible **Settings** button at the right
-edge. The footer shows the last scan duration and listener count in English. The
-title bar carries the name and icon, so the header does not repeat them, and the
-version lives in the settings dialog.
-
-Switching tabs resets the listener/container scroll position and, for Docker,
-forces a container refresh. The launch tab uses its own scrollable profile panel.
-
-### 6.3 Board rendering
-
-Every render path — services, Docker, the empty and loading states, the
-Docker-unavailable fallback — goes through one gate, `_draw_body(signature,
-build)`. It compares a **render signature** and the resolved column count
-against the last build. On a match it refreshes the live values on the existing
-tiles and returns without touching a widget; otherwise it tears the scroll body
-down, runs the build callback and records the new signature.
-
-This matters because a scan lands every two seconds and the Docker tab refreshes
-on its own clock. Rebuilding a board that has not changed destroys and re-creates
-every canvas twice a minute, which the user sees as a flicker, and it throws away
-the scroll position with it.
-
-The signature is everything a tile paints: per service, `id`, display name,
-tech, unique ports, category, status, whether there are warnings, the origin
-badge, `can_terminate` and the busy flag; per group, the name, path and accent.
-Uptime, CPU and memory are deliberately excluded — they change on every scan,
-and only uptime is drawn, in place. `ServiceTile.adopt()` swaps in the current
-snapshot and repaints the uptime dot and text through `coords` and
-`itemconfigure` on the item ids kept from the first draw. Swapping the tile's
-service reference is enough to keep clicks honest, because the click, enter and
-motion handlers read `self.service` at event time rather than closing over it.
-A stale reference here would open a detail dialog on two-second-old numbers.
-
-Column count is derived from the canvas width, and a `<Configure>` that changes
-it forces a rebuild.
-
-Each section is a `SectionHeader` (accent bar, title, shortened
-path) followed by a grid of tiles. There is no per-section count: the tab
-carries the only number the board needs.
-
-A `ServiceTile` is a focusable `tk.Canvas` drawing a rounded card, the brand mark
-at 48 px, the elided display name, up to two labelled port chips plus an overflow
-chip, and the uptime line. Uptime below `FRESH_UPTIME_SECONDS` is drawn in the
-accent colour with a matching dot; older services recede to `TEXT_DIM`. A busy
-tile shows `Stopping…` instead.
-
-When §3.8 attributed the service to an agent or an IDE, a small outlined badge
-carrying the launcher name sits in the metadata row, violet for an agent and cyan
-for an IDE (`ORIGIN_COLOURS`). Terminal and system origins are
-known but never badged: they are the ordinary case and would put a label on
-almost every tile. The badge stays in the metadata row so it does not compete
-with the visible action buttons.
-
-The **Details**, optional **Open**, and permitted **Stop** actions are always visible;
-termination no longer depends on discovering a hover-only glyph. Hover changes
-the surface and button fill. Keyboard focus draws an accent outline, Left/Right
-moves through enabled actions, and Enter or Space activates the selected action.
-Ctrl-click still opens the browser URL as a shortcut; clicking elsewhere opens
-the detail dialog.
-
-A `ContainerTile` uses the same compact focusable card and exposes a visible
-**Details** action, but never a stop action — stopping a container is an operation on
-shared infrastructure. It shows a state dot, the name, published-port chips and
-the Docker status line, with stopped containers muted so they do not compete with
-running ones.
-
-### 6.4 Scrolling
-
-Tk delivers a mouse event only to the widget under the pointer and, unlike a
-browser, never bubbles it to parents. Binding the wheel per tile would leave
-every header, label and gap between tiles dead, and the board discards and
-rebuilds its children on every scan, so such bindings would need renewing
-forever.
-
-`ScrollArea` therefore binds `<MouseWheel>`, `<Button-4>` and `<Button-5>` once
-on the **toplevel**, and `_owns()` filters by Tk path-name prefix to decide
-whether the event happened inside the area. Nothing needs rebinding when tiles
-are rebuilt. The bindings are released on `<Destroy>`, because the toplevel
-outlives the frame.
-
-Horizontal wheel events (`Button-6`/`Button-7`) are deliberately left alone: the
-area scrolls only vertically, and claiming them would turn a sideways trackpad
-flick into unexpected vertical movement. One notch travels 54 px. Scrolling is
-clamped so a fast flick cannot run past the first or last tile, and is ignored
-entirely when everything already fits — the same test that hides the scrollbar.
-
-### 6.5 Dialogs
-
-All dialogs are themed `tk.Toplevel`s. The platform message box is not used: it
-is drawn in its own grey palette, which is jarring against the board.
-
-- `ServiceDetailDialog` — brand mark, name, category and project, then
-  ENDPOINTS (protocol, family, address, port, scope), PROCESS (PID, PPID, name,
-  user, launcher when one was found, uptime, CPU, memory, working directory,
-  executable), COMMAND (the
-  redacted command line in a read-only text box) and NOTES (warnings). Actions:
-  open in browser, stop, close.
-- `ContainerDetailDialog` — image, id, status, creation time, compose service,
-  and the published ports.
-- `ConfirmDialog` / `ask_confirmation()` — a modal yes/no carrying the brand mark
-  of the service being acted on. Enter confirms, Escape cancels.
-- `SettingsDialog` — Information (version, Python, platform, settings file path
-  with the home directory folded back to `~`) and Settings. The scan interval is
-  offered
-  as 1/2/5/10-second chips; choosing one writes the settings file and calls
-  `ScanController.set_interval()`, which clamps the value and wakes the parked
-  worker immediately. Theme chips offer **System**, **Dark** and
-  **Light**. Choosing one closes the dialog, persists the preference and rebuilds
-  the widget tree against the new palette while retaining the selected tab,
-  scanner, launch controller, executor and managed processes. The existing event
-  pump remains scheduled; rebuilding does not create a second poll loop.
-- `LaunchProfileDialog` — configuration name and project directory, followed by
-  one or more task editors for name, working directory, command, optional
-  expected port and optional auto-build/watch command. It normalises whitespace,
-  checks port bounds and rejects duplicate task names or a working directory
-  outside the project before saving.
-- `LaunchLogDialog` — the bounded main/watcher output currently held for one
-  managed task. Opening the dialog does not create a second log sink and closing
-  it does not affect the process.
-
-Service, container, settings and confirmation dialogs take an application grab,
-are centred on the parent, and close on Escape or a click outside themselves.
-Because the grab redirects outside presses to the dialog,
-`dismiss_on_outside_click()` compares the pointer's root coordinates against the
-dialog's own rectangle rather than trusting the widget named by the event. For a
-confirmation, an outside click is always a refusal. The larger launch editor is
-modal and closes on Escape or its explicit controls; the read-only log window is
-non-modal so it does not block the board.
-
-Action results appear as a transient toast at the bottom of the window for 4.2
-seconds, accented cyan or red.
-
-### 6.6 Launch profiles
-
-`LaunchProfilesPanel` backs the **Launch Profiles** tab. It renders one profile
-card per stored configuration, with profile-level start, stop, edit and delete
-controls.
-Nested task rows expose individual start/stop and log actions plus state labels:
-`Stopped`, `Starting`, `Running`, `Stopping`, `Failed` or `Running externally`. Editing and
-deletion are disabled while the profile owns a live process.
-
-`CuttingBoardWindow._expected_listener_is_external()` correlates an optional
-expected port with the scanner snapshot and requires the detected project's
-resolved root to equal the profile root. A match disables both start and stop for
-that task: starting would duplicate an already-running service, while stopping it
-would violate process ownership. Profile-level actions operate only on task rows
-that are safe for the requested action.
-
-The launch panel is driven by immutable `LaunchProfileView` and `LaunchTaskView`
-objects. The controller remains the source of truth for managed process state;
-scanner correlation supplies only the external presentation.
-
-### 6.7 Window icon
-
-Tk 8.6 fills in only the legacy WM_HINTS icon pixmap on X11, which modern
-desktops ignore, so `wm iconphoto` leaves a generic placeholder.
-`src/cutting_board/ui/window_icon.py` writes `_NET_WM_ICON` directly through
-ctypes and Xlib.
-
-The property is published on `<Map>` plus a 150 ms delay, once the window
-manager has had a chance to reparent the window. Tk nests its toplevel inside a
-wrapper, and the window manager reparents that wrapper into a decoration frame,
-so the window the desktop actually reads from is somewhere in the middle of the
-chain; the property is written to every window from the Tk toplevel up to the
-screen root, bounded at 8 hops. The copies that land on windows nobody reads are
-inert.
-
-`_NET_WM_ICON` is format 32, meaning an array of C longs, so the packed 32-bit
-ARGB values are widened to `c_ulong` before being handed over. The whole path is
-best effort: no X11, no library, no artwork or an unexpected layout leaves the
-window exactly as Tk left it. GNOME does not draw application icons in title
-bars, so the visible effect is in the task switcher and the dock.
-
-## 7. Opening a browser
-
-`ServiceSnapshot.browser_url()` returns a URL only when the service is
-categorised `web`, `api` or `proxy`, **or** listens on a well-known development
-port (80, 443, 3000, 3001, 3100, 4000, 4200, 5000, 5173, 5174, 8000, 8001, 8080,
-8081, 8443, 8888, 9000, 9443). A loopback or wildcard endpoint is preferred. The
-scheme is `https` for 443, 8443 and 9443 and `http` otherwise, and the host is
-always `localhost` even for a wildcard bind. Databases, caches and other
-plainly non-HTTP services get no button, so an arbitrary TCP protocol is not
-mistaken for HTTP.
-
-`services/browser.py` refuses anything that is not `http://` or `https://`.
-
-## 8. Termination
-
-Discovered-service termination and registered-task termination are separate
-ownership domains. `ProcessTerminator` handles a listener selected by the user;
-`ManagedProcessRunner` handles only processes it created and recorded.
-
-`services/termination.py` owns discovered-service signalling. Before every
-signal — including the forced one — it re-validates:
-
-1. The PID is not 1, not Cutting Board's own PID, and greater than 1.
-2. The process still exists.
-3. Its creation time is within 0.5 s of the value recorded during the scan,
-   otherwise the PID has been recycled and nothing is sent.
-4. Its effective UID equals the current user's.
-
-It then sends `SIGTERM` (or `SIGKILL` when `force`) and waits, by default 1.5
-seconds. Outcomes are distinct statuses: `terminated`, `already_exited`,
-`still_running`, `pid_reused`, `permission_denied`, `protected`, `error`.
-
-The UI asks for confirmation before the first signal. `still_running` after a
-`SIGTERM` triggers a second, separate confirmation offering `SIGKILL`; force is
-never automatic. A successful attempt immediately requests a fresh scan. In
-`--demo` mode `DemoProcessTerminator` returns `protected` without touching any
-real PID.
-
-### 8.1 Managed launch runtime
-
-`services/managed_processes.py` starts a task's main command and optional watcher
-as separate sessions with:
-
-```text
-<selected shell> -lc <saved command>
-cwd=<resolved task directory>
-start_new_session=True
-stdout=PIPE, stderr=STDOUT, stdin=DEVNULL
-```
-
-The command is passed as an argument with `shell=False`. On macOS, an executable
-`/bin/zsh` is preferred for stable Finder-launched behaviour. Elsewhere, the
-current account's passwd login shell is used only when it is absolute,
-executable, and not `false` or `nologin`; `/bin/sh` is the fallback. Linux has no
-zsh dependency. No environment is copied into the stored profile. At start-up,
-the runner records PID, process-group id, creation time and effective UID, and
-accepts the process only when it is the leader of a new group owned by the
-current user. A failed ownership check immediately cleans up the unverified
-child.
-
-One daemon reader thread per child prefixes output as `Run` or `Auto-build` and
-appends it to a 500-line deque. One monitor thread waits for exit and publishes a
-`LaunchEvent`. Output is transient: there is no log file or history store.
-
-Stopping a task sends `SIGTERM` to each verified main/watcher process group,
-waits up to two seconds, then sends `SIGKILL` to groups that still have safe live
-members. Before signalling, the runner rechecks the recorded PID's creation time,
-UID and group; before escalation it also rejects a group containing a foreign or
-older process. It never adopts a process merely because its project and port
-match a profile.
-
-Closing the window calls `LaunchController.close()` before closing the scanner.
-An interactive close with owned work first presents the warning
-`All processes started by Cutting Board will be stopped.` and can be cancelled.
-SIGTERM, SIGINT and smoke-test auto-close skip the modal but perform the same
-managed-group cleanup.
-
-## 9. Concurrency and lifecycle
-
-| Thread | Role |
-|---|---|
-| Tk main thread | every widget operation, without exception |
-| `cutting-board-scanner` | one daemon thread running `scan()` on an interval |
-| `cutting-board-action` pool | two workers, for termination and `docker ps` |
-| `cutting-board-<profile>-<task>-<role>-log` | one output reader per managed child |
-| `cutting-board-<profile>-<task>-<role>-wait` | one exit monitor per managed child |
-
-`ScanController` owns the scan thread. Its event queue has `maxsize=4` and is
-latest-wins: when full, the oldest event is dropped so a slow UI never sees stale
-data before fresh data. `refresh()` sets a wake event; `close()` sets stop, wakes
-the thread and joins it for up to 3 seconds. An unexpected scanner exception
-becomes a `ScanEvent(error=…)` rather than a dead thread.
-
-The UI pumps every 120 ms (`POLL_INTERVAL_MS`), draining scan events, launch
-events, termination results and container listings. The pump runs even in
-`--demo` mode, where there is no scanner, because Docker and the injected
-`DemoLaunchController` feed the same UI paths without touching real processes.
-
-Container refresh runs on its own clock: at most every 6 seconds while the Docker
-tab is open, every 45 seconds while it is not, and never more than one request in
-flight. Switching to the tab forces one immediately. A re-render happens only
-when the listing actually changed.
-
-Closing the window saves the geometry, stops every owned launch group, closes the
-scan controller, shuts the executor down without waiting, and destroys the root.
-No Cutting Board process, managed process group or thread survives the window.
-
-## 10. Configuration files
-
-### 10.1 UI settings
-
-`${XDG_CONFIG_HOME:-~/.config}/cutting-board/settings.json`, written by
-`services/settings.py`.
-
-| Field | Meaning |
-|---|---|
-| `window_geometry` | Tk geometry string; rejected and reset to `1280x820` if malformed or smaller than 900×600 |
-| `scan_interval_seconds` | clamped to 0.75–30, default 2.0; changed from the settings dialog |
-| `show_system_services` | retained for file compatibility; the current UI has no such control |
-| `collapsed_project_ids` | retained for file compatibility; sections no longer collapse |
-| `theme_mode` | `dark`, `light` or `system`; missing/invalid values preserve the `dark` default |
-
-Saving writes a temporary file in the same directory and `os.replace()`s it into
-position, so a crash mid-write cannot corrupt the file. An unreadable, corrupt or
-unwritable settings file degrades to defaults and never crashes the application.
-No process, port, log or termination history is stored here.
-
-### 10.2 Launch profiles
-
-`${XDG_CONFIG_HOME:-~/.config}/cutting-board/launch_profiles.json`, written by
-`services/launch_profiles.py`, is a separate versioned JSON document. It contains
-the fields from §2.1, including the commands the user explicitly entered. Parent
-directories are created for the current user, the temporary file and final file
-are set to mode `0600`, and replacement is atomic after flush and `fsync`.
-
-The store validates the document version, field types, profile ids, task names,
-project-contained working directories and optional port bounds. A missing file
-means no registered profiles. An unreadable, corrupt or invalid file is reported
-as a launch-profile error rather than partially loading ambiguous commands.
-
-The application never serialises the current environment into this file. A user
-who needs a particular runtime must enter an explicit path or an environment
-assignment such as `JAVA_HOME=...` in the command, and must avoid putting secrets
-in a saved command.
-
-## 11. Command-line interface
-
-`build_parser()` in `src/cutting_board/app.py`:
-
-| Flag | Effect |
-|---|---|
-| `--version` | print `Cutting Board 0.1.0` and exit |
-| `--snapshot` | scan once and print, without opening the GUI |
-| `--json` | with `--snapshot`, emit JSON |
-| `--containers` | with `--snapshot`, include container plumbing |
-| `--all` | with `--snapshot`, include every listener, noise included |
-| `--demo` | open the GUI on deterministic demonstration data |
-| `--scan-interval SECONDS` | override the saved interval for this run |
-| `--auto-close SECONDS` | hidden; used by the GUI smoke test |
-| `--settings-file PATH` | hidden; used by tests to avoid the real config |
-| `--launch-profiles-file PATH` | hidden; isolates registered commands in tests |
-
-Exit codes: `0` success; `1` the snapshot carried warnings; `2` the platform is
-not supported; `3` Tkinter is not installed; `4` no display could be opened.
-
-The plain listing prints project, service, tech, PID, ports and the redacted
-command. The JSON listing is `to_dict()` filtered to the same service ids.
-
-`--demo` is fully self-contained. `demo_snapshot()` supplies the services,
-`DemoProcessTerminator` refuses to signal anything, `demo_containers()` supplies
-a fixed container listing, and `DemoLaunchController` supplies a backend plus
-frontend profile without creating a process or writing the real profile file.
-The demo never queries a real Docker daemon and works on a machine with no Docker
-at all.
-
-`tk.Tk(className="CuttingBoard")` is constructed with its class name up front:
-that becomes `WM_CLASS`, which is how the desktop shell ties the window to the
-`.desktop` entry and therefore to the application icon.
-
-Assets are located by `find_assets_dir()`, which checks
-`$CUTTING_BOARD_ASSETS`, then `/usr/share/cutting-board/assets`, then the
-repository's own `assets/`.
-
-## 12. Assets
-
-Artwork is committed as plain PNGs so the application needs no imaging library
-at runtime. Two build-time scripts regenerate it.
-
-`scripts/build-assets.py` requires network access, Pillow, pycairo and PyGObject
-with librsvg. It:
-
-1. downloads 59 Simple Icons marks from a fixed CDN;
-2. rasterises each with librsvg into a Cairo ARGB32 surface, converting the
-   premultiplied BGRA result through Pillow's `BGRa` raw mode;
-3. tints the alpha mask with a colour chosen for legibility on `#0B0E14` rather
-   than the raw brand hex, so near-black brand colours become a light neutral;
-4. draws two further marks locally — `service` (a stacked-server glyph) and
-   `ssh` (a terminal with a prompt) — since neither an unidentified server nor a
-   forwarded port has a brand to borrow;
-5. renders the three tile states at 3× and downsamples them, including the
-   gaussian hover glow and the top-edge sheen;
-6. renders the two IEC 5009 power glyphs at 8×;
-7. packs the application icon into `assets/window-icon.argb`.
-
-Output: `assets/icons/<tech>-{48,96}.png` for 61 marks, `assets/ui/tile-{idle,
-hover,armed}.png`, `assets/ui/power-{idle,hot}.png`, `assets/window-icon.argb`.
-
-The window-icon blob is the exact `_NET_WM_ICON` payload: for each of sizes 32,
-48, 64 and 128, a little-endian `width` and `height` followed by the ARGB pixels
-as little-endian uint32. Laying the pixels out at build time avoids either a
-Pillow runtime dependency or a hand-rolled PNG decoder. 256 is left out to keep
-the blob small.
-
-`scripts/build-app-icon.py` requires only Pillow and re-renders the application
-icon sizes from `assets/app-icon-source.png`, cutting the opaque field outside
-the slab to transparency because desktop shells expect the slab alone.
-
-`IconStore` loads PNGs lazily and caches them, including negative results.
-Tk collects an image as soon as the last Python reference disappears, so every
-image handed out is retained for the store's lifetime. A missing brand mark falls
-back to the generic `service` glyph.
-
-Simple Icons is CC0 1.0. Each mark remains the trademark of the project it
-represents and is used only to identify that technology.
-
-## 13. Packaging
-
-`scripts/build-deb.sh` produces `dist/cutting-board_<version>_all.deb` with
-`dpkg-deb --root-owner-group`, taking the version from
-`cutting_board.__version__`.
-
-```text
-Package: cutting-board          Architecture: all
-Depends: python3 (>= 3.10), python3-tk, python3-psutil
-Recommends: xdg-utils
-```
-
-```text
-/usr/bin/cutting-board                          shell wrapper setting PYTHONPATH
-/usr/lib/cutting-board/cutting_board/*          the package
-/usr/share/applications/cutting-board.desktop   StartupWMClass=CuttingBoard
-/usr/share/cutting-board/assets/*               runtime artwork
-/usr/share/icons/hicolor/*/apps/cutting-board.png
-/usr/share/doc/cutting-board/*                  README, SPEC, CONTRIBUTING,
-                                                CHANGELOG, LICENSE, TEST_REPORT
-```
-
-Byte-compiled files are stripped, the setgid bit is cleared from every directory
-and directory modes are normalised to 0755, so a developer's setgid checkout
-cannot leak into the package.
-
-The local macOS `.app`/ZIP builder and personal Homebrew Cask template are
-described in [`packaging/macos/README.md`](packaging/macos/README.md). The
-resulting artifacts are unsigned and not notarized.
-
-## 14. Verification
-
-`scripts/verify.sh` is the release gate and runs seven stages:
-
-1. compile every module in `src/` and `tests/`, then re-parse them with
-   `ast.parse(feature_version=(3, 10))` to prove 3.10 syntax compatibility;
-2. run the whole test suite with `-W error::ResourceWarning`;
-3. run `--snapshot --json` against the live host and validate the schema;
-4. run the GUI twice on a throwaway display — once with `--demo`, once against
-   the real scanner — each with `--auto-close 1`;
-5. build the `.deb` and assert its contents and permissions;
-6. extract the `.deb` and run both `--version` and one more GUI pass using only
-   the packaged code and assets;
-7. source hygiene: no `.pyc`/`.pyo` in the tree, and no unfinished-work markers
-   in `src/`, `tests/`, `README.md` or `SPEC.md`.
-
-Stage 7 greps for the literal marker words, so those words must not appear in
-the two documents even as prose. Anything unimplemented is described in words
-instead.
-
-The GUI stages prefer `xvfb-run`. Where it is not installed they fall back to an
-already-reachable `$DISPLAY`, verified with `xdpyinfo`, so the suite still runs
-on a machine that only has a real or headless compositor. When neither is
-available the script stops with an error at that point, because a gate that
-silently skips its GUI stages would report a pass it did not earn.
-
-The test suite itself is standard-library `unittest`:
-
-```bash
-PYTHONPATH=src python3 -m unittest discover -s tests
-```
-
-Coverage is described in `TEST_REPORT.md`. The live integration test opens a real
-loopback listener inside a temporary Git checkout and verifies discovery, PID
-attribution, project inference and a real `SIGTERM`. The same gate runs on an
-`ubuntu-24.04` GitHub Actions runner, which uploads the `.deb` as an artifact.
-
-Launch coverage is split by boundary: `test_launch_profiles.py` covers atomic
-mode-`0600` persistence and validation; `test_launch_controller.py` covers profile
-CRUD and active-profile guards; `test_launch_managed_processes.py` covers start,
-bounded output, process-group ownership, escalation and close cleanup;
-`test_launch_ui.py` covers profile-editor validation and English/external state
-presentation; and `test_launch_app_integration.py` covers isolated composition,
-external-listener protection and interactive versus non-interactive shutdown.
-Tests never signal a process group they did not create.
-
-`test_ui_theme.py` checks the text scale, contrast in both semantic palettes,
-theme-mode resolution and card behaviour without relying on pixel screenshots.
-Settings tests keep the missing/invalid mode fallback at `dark`; GUI integration
-checks that switching mode rebuilds the presentation without closing the launch
-controller.
-
-On macOS, `scripts/verify-macos.sh` checks the Python and Tk runtime, runs the
-unit and platform integration tests, validates a live JSON snapshot, and opens
-both demo and live native Tk windows. It does not build the Debian package.
-
-## 15. Performance
-
-| Property | Target | Observed |
-|---|---|---|
-| Default scan interval | 2 s | — |
-| Sweep duration | well under the interval | 78–98 ms on the reference host, 35 listeners |
-| Docker refresh | 6 s active / 45 s idle | — |
-| UI responsiveness | scrolling and interaction never blocked by a scan | scans run off the main thread |
-| Shutdown | scanner joined within 3 s | — |
-
-Two changes account for the current sweep cost. `psutil.process_iter()` is no
-longer called with a falsy `attrs=[]`, which had silently caused `memory_maps()`
-to be read for every process; and the per-process walk is skipped entirely when
-`/proc/net/tcp{,6}` proves every unresolved listener belongs to another UID.
-Before both, a sweep took roughly 9,900–17,500 ms.
-
-Performance is never a justification for hiding a real listener.
-
-## 16. Security and privacy
-
-- Runs as a normal user; `sudo` is neither required nor recommended.
-- Never signals a process owned by another UID, and never displays one.
-- Protects PID 1 and Cutting Board's own PID.
-- Re-validates creation time and UID immediately before every signal.
-- `SIGKILL` for a discovered listener requires a separate, explicit confirmation
-  after a `SIGTERM` timeout. A managed group may escalate automatically because
-  the app created and continuously verifies that ownership boundary.
-- Masks common secrets in displayed commands and removes the raw argv from
-  exported JSON.
-- Makes no network requests; there is no telemetry, no account and no cloud
-  storage.
-- Keeps snapshots and bounded managed output in memory only. The settings file
-  records no process history; the mode-`0600` launch-profile file contains only
-  commands and paths explicitly entered by the user.
-- Never copies inherited environment variables or their values into a launch
-  profile. Saved commands are not redacted, so secrets must not be entered there.
-- Executes no shell command to stop a service — signals go through psutil.
-- Detects a matching external listener by project and expected port but never
-  adopts or stops it through the launch controls.
-- Reads launcher ancestry and environment markers directly from `/proc` on
-  Linux and through psutil on macOS. No environment value is stored on a
-  snapshot, shown in the interface or written to exported JSON. Linux
-  environment reads are capped at 64 KB.
-
-The application spawns `docker ps` with a fixed argument list and timeout. On
-macOS it also spawns `/usr/sbin/lsof` with a fixed argument list to discover TCP
-listeners. Registered launch commands are user data and are executed through the
-resolved login-capable shell's `-lc` interface only when the user starts the
-corresponding task.
-
-## 17. Known limitations
-
-- Linux and macOS are supported. Other platforms are rejected before scanning.
-- macOS listener discovery requires the system `/usr/sbin/lsof` command.
-- TCP `LISTEN` only; UDP services and portless workers are invisible.
-- The host network namespace only. Ports that exist solely inside a container
-  network are not visible to the port scanner; the Docker tab covers published
-  ports instead.
-- Under normal privileges the PID behind another user's socket may be hidden.
-  Such listeners are classified as noise and do not reach the board.
-- Stopping a discovered listener affects only that process; a parent shell or
-  package-manager process may survive. Managed tasks instead stop only the main
-  and watcher process groups Cutting Board created.
-- Expected-port correlation is not a health check. A profile cannot capture logs
-  from, restart or stop a task that is already running externally.
-- Vite performs its own source watching. A Spring Boot task needs an explicit
-  continuous compiler such as `./gradlew classes --continuous` plus DevTools for
-  source changes; build-logic and dependency changes require a backend restart.
-- System theme mode resolves the macOS appearance when a palette is applied; it
-  does not subscribe to later OS appearance-change notifications.
-- A service whose launcher is unusual, or which exposes no working directory,
-  lands in the catch-all group rather than under a project.
-- Docker's `.Labels` output is unescaped, so a label value containing a comma
-  cannot be recovered. The compose labels used here never contain one.
-
-## 18. Planned work
-
-Not implemented, and not to be read as current behaviour:
-
-- Discovery of development workers that open no port.
-- Process-tree display and optional tree termination.
-- User-defined aliases and persistent hide rules.
-- Local HTTP health checks.
-- A record of recently stopped services.
-
-Any of these must remain optional and must not introduce a requirement for a
-service to register itself with Cutting Board.
+Acceptance requires no Python runtime files, Python dependency manifests, Tkinter UI, or legacy Python packaging scripts in the migration branch.
