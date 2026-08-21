@@ -28,6 +28,7 @@ from cutting_board.scanner.classifier import classify_service
 from cutting_board.scanner.origin import UNKNOWN_ORIGIN, Origin, detect_origin
 from cutting_board.scanner.project import ProjectResolver
 from cutting_board.scanner.relevance import Relevance, relevance_of
+from cutting_board.scanner.spring_boot import resolve_spring_boot_browser_url
 
 T = TypeVar("T")
 
@@ -311,6 +312,17 @@ class LinuxServiceScanner:
             package_name=package_name,
             project_name=project_name,
         )
+        browser_url_hint = None
+        if classification.tech == "spring":
+            environment_getter = getattr(cached_process, "environ", None)
+            environment = self._safe(environment_getter, {}) if callable(environment_getter) else {}
+            browser_url_hint = resolve_spring_boot_browser_url(
+                command=command,
+                environment=environment,
+                cwd=cwd,
+                project_root=project.root_path if project else None,
+                endpoints=endpoints,
+            )
         relevance = relevance_of(
             ownership=ownership,
             process_name=name,
@@ -361,6 +373,7 @@ class LinuxServiceScanner:
                 origin_id=origin.id,
                 origin_label=origin.label,
                 origin_kind=origin.kind.value,
+                browser_url_hint=browser_url_hint,
             ),
             process_key,
         )

@@ -102,6 +102,8 @@ class ServiceSnapshot:
     """The short name shown on the tile badge; empty when nothing was found."""
     origin_kind: str = "unknown"
     """Category of the launcher: agent, ide, terminal, system or unknown."""
+    browser_url_hint: str | None = None
+    """Locally-derived URL when a framework needs more than a port guess."""
 
     @property
     def is_system(self) -> bool:
@@ -139,6 +141,8 @@ class ServiceSnapshot:
         return " ".join(values).casefold()
 
     def browser_url(self) -> str | None:
+        if self.browser_url_hint:
+            return self.browser_url_hint
         web_ports = {
             80, 443, 3000, 3001, 3100, 4000, 4200, 5000, 5173,
             5174, 8000, 8001, 8080, 8081, 8443, 8888, 9000, 9443,
