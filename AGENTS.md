@@ -31,6 +31,11 @@
 - Distinguish failures caused by the current change from pre-existing failures.
 - Report what changed, the checks run and their results, unverified areas, and remaining risks or assumptions.
 
+## macOS Development
+
+- At the end of each development session on macOS, run a fresh application build and restart the app from that build. Prefer `npm run tauri build -- --bundles app` for the local restart workflow; use `npm run tauri build` (or the equivalent `make build` target) when all distributables are required.
+- Treat `~/Applications/Cutting Board.app` as the stable installed app path used by the Dock. After a successful build, sync the fresh bundle from `src-tauri/target/release/bundle/macos/Cutting Board.app` to that stable path, quit any running `Cutting Board` instance, launch the stable path with `open -n`, and verify that the new instance is running. Never leave the Dock pointing at a transient build-directory copy or leave an older app instance running after the restart.
+
 ## Git
 
 - Do not perform version-control operations that change local or remote repository state unless explicitly requested.
