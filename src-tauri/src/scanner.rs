@@ -173,14 +173,15 @@ pub fn scan_workspace(
 
         let start_time = process.map(|item| item.start_time()).unwrap_or(0);
         let id = service_id(pid, start_time, &ports);
-        let command = redact_command(&args, &process_name);
+        let launch_command = redact_command_full(&args, &process_name);
         let process_info = process.map(|item| ProcessInfo {
             pid,
             parent_pid: item.parent().map(|value| value.as_u32()),
             name: process_name.clone(),
             executable: executable.clone(),
             working_directory: cwd.as_ref().map(|path| path.to_string_lossy().into_owned()),
-            command,
+            command: truncate_command(&launch_command),
+            launch_command: Some(launch_command),
             create_time: item.start_time(),
             uptime_seconds: item.run_time(),
             cpu_percent: Some(item.cpu_usage()),
@@ -1235,7 +1236,7 @@ fn spring_context_path(args: &[String]) -> Option<String> {
     None
 }
 
-fn redact_command(args: &[String], fallback: &str) -> String {
+fn redact_command_full(args: &[String], fallback: &str) -> String {
     if args.is_empty() {
         return fallback.to_string();
     }
@@ -1247,11 +1248,7 @@ fn redact_command(args: &[String], fallback: &str) -> String {
             redact_next = false;
             continue;
         }
-        let lower = argument.to_lowercase();
-        let secret = ["password", "passwd", "secret", "token", "api-key", "apikey", "authorization", "credential"]
-            .iter()
-            .any(|needle| lower.contains(needle));
-        if secret {
+        if is_sensitive_option(argument) {
             if let Some((left, _)) = argument.split_once('=') {
                 result.push(format!("{left}=•••"));
             } else {
@@ -1264,12 +1261,38 @@ fn redact_command(args: &[String], fallback: &str) -> String {
             result.push(argument.clone());
         }
     }
-    let joined = result.join(" ");
-    if joined.chars().count() > 600 {
-        format!("{}…", joined.chars().take(599).collect::<String>())
+    result.join(" ")
+}
+
+fn truncate_command(value: &str) -> String {
+    if value.chars().count() > 600 {
+        format!("{}…", value.chars().take(599).collect::<String>())
     } else {
-        joined
+        value.to_string()
     }
+}
+
+fn is_sensitive_option(argument: &str) -> bool {
+    if !argument.starts_with('-') {
+        return false;
+    }
+    let option = argument
+        .trim_start_matches('-')
+        .split(['=', ':'])
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    let parts = option
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    parts.iter().any(|part| {
+        matches!(
+            *part,
+            "password" | "passwd" | "secret" | "token" | "authorization" | "credential"
+        )
+    }) || parts.windows(2).any(|pair| pair == ["api", "key"])
+        || option.replace(['-', '_'], "").contains("apikey")
 }
 
 fn redact_url(value: &str) -> String {
@@ -1294,7 +1317,7 @@ pub fn demo_snapshot() -> WorkspaceSnapshot {
     let service = |id: &str, name: &str, tech: &str, category: &str, port: u16, path: &str, age: u64, origin_kind: &str, origin: &str| ServiceSnapshot {
         id: id.into(), display_name: name.into(), tech: tech.into(), category: category.into(), relevance: "dev".into(),
         endpoints: vec![Endpoint { family: "IPv4".into(), address: "127.0.0.1".into(), port, scope: "loopback".into(), protocol: "TCP".into() }],
-        process: Some(ProcessInfo { pid: 20_000 + port as u32, parent_pid: Some(1000), name: tech.into(), executable: Some(format!("/usr/local/bin/{tech}")), working_directory: Some(path.into()), command: format!("{tech} run --port {port}"), create_time: now.saturating_sub(age), uptime_seconds: age, cpu_percent: Some(1.4), memory_bytes: Some(146_800_640), uid: current_uid() }),
+        process: Some(ProcessInfo { pid: 20_000 + port as u32, parent_pid: Some(1000), name: tech.into(), executable: Some(format!("/usr/local/bin/{tech}")), working_directory: Some(path.into()), command: format!("{tech} run --port {port}"), launch_command: Some(format!("{tech} run --port {port}")), create_time: now.saturating_sub(age), uptime_seconds: age, cpu_percent: Some(1.4), memory_bytes: Some(146_800_640), uid: current_uid() }),
         project: Some(project(&format!("project-{id}"), path.rsplit('/').next().unwrap_or(name), path)), status: "healthy".into(), warnings: vec![], origin_kind: origin_kind.into(), origin_label: Some(origin.into()), can_terminate: false,
         browser_url: Some(format!("http://localhost:{port}")),
     };
@@ -1332,9 +1355,41 @@ mod tests {
     #[test]
     fn redacts_secret_values() {
         let args = vec!["server".into(), "--token=abc".into(), "--password".into(), "value".into()];
-        let value = redact_command(&args, "server");
+        let value = truncate_command(&redact_command_full(&args, "server"));
         assert!(!value.contains("abc"));
         assert!(!value.contains("value"));
+    }
+
+    #[test]
+    fn keeps_full_redacted_commands_separate_from_display_truncation() {
+        let args = vec!["java".into(), "-cp".into(), "a".repeat(700), "com.example.Application".into()];
+        let full = redact_command_full(&args, "java");
+        let display = truncate_command(&full);
+
+        assert!(full.len() > 700);
+        assert_eq!(display.chars().count(), 600);
+        assert!(display.ends_with('…'));
+        assert!(full.ends_with("com.example.Application"));
+    }
+
+    #[test]
+    fn does_not_redact_secret_words_inside_classpaths() {
+        let args = vec![
+            "java".into(),
+            "-cp".into(),
+            "/cache/io.jsonwebtoken/jjwt-impl/0.12.6/jjwt-impl.jar".into(),
+            "com.example.Application".into(),
+        ];
+
+        assert_eq!(redact_command_full(&args, "java"), args.join(" "));
+    }
+
+    #[test]
+    fn redacts_sensitive_jvm_properties() {
+        let args = vec!["java".into(), "-Dspring.datasource.password=secret".into()];
+        let value = redact_command_full(&args, "java");
+
+        assert_eq!(value, "java -Dspring.datasource.password=•••");
     }
 
     #[test]

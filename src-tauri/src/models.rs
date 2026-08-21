@@ -18,6 +18,8 @@ pub struct ProcessInfo {
     pub executable: Option<String>,
     pub working_directory: Option<String>,
     pub command: String,
+    #[serde(default)]
+    pub launch_command: Option<String>,
     pub create_time: u64,
     pub uptime_seconds: u64,
     pub cpu_percent: Option<f32>,
@@ -183,4 +185,31 @@ pub fn now_epoch() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_process_payloads_default_missing_launch_command() {
+        let process: ProcessInfo = serde_json::from_str(
+            r#"{
+                "pid": 1,
+                "parent_pid": null,
+                "name": "node",
+                "executable": null,
+                "working_directory": null,
+                "command": "node server.js",
+                "create_time": 0,
+                "uptime_seconds": 0,
+                "cpu_percent": null,
+                "memory_bytes": null,
+                "uid": null
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(process.launch_command, None);
+    }
 }

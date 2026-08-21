@@ -18,6 +18,7 @@ export interface ProcessInfo {
   executable: string | null;
   working_directory: string | null;
   command: string;
+  launch_command?: string | null;
   create_time: number;
   uptime_seconds: number;
   cpu_percent: number | null;

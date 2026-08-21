@@ -277,7 +277,7 @@ function generatedTasksForGroup(services: ServiceSnapshot[]): LaunchTask[] {
     return {
       name,
       cwd: service.process?.working_directory ?? "",
-      command: service.process?.command ?? "",
+      command: service.process?.launch_command ?? service.process?.command ?? "",
       expected_port: uniquePorts(service)[0] ?? null
     };
   });

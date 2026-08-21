@@ -74,11 +74,78 @@ pub fn save_settings(path: &Path, settings: UiSettings) -> Result<UiSettings, St
 }
 
 pub fn load_profiles(path: &Path) -> Result<Vec<LaunchProfile>, String> {
-    let profiles = read_json_or_default::<Vec<LaunchProfile>>(path)?;
+    let mut profiles = read_json_or_default::<Vec<LaunchProfile>>(path)?;
+    let migrated = profiles
+        .iter_mut()
+        .map(migrate_legacy_profile)
+        .any(|changed| changed);
     for profile in &profiles {
         validate_profile(profile)?;
     }
+    if migrated {
+        write_json_atomic(path, &profiles)?;
+    }
     Ok(profiles)
+}
+
+fn migrate_legacy_profile(profile: &mut LaunchProfile) -> bool {
+    let project_root = PathBuf::from(profile.project_root.trim());
+    profile
+        .tasks
+        .iter_mut()
+        .map(|task| repair_legacy_java_command(&project_root, task))
+        .any(|changed| changed)
+}
+
+fn repair_legacy_java_command(project_root: &Path, task: &mut LaunchTask) -> bool {
+    let mut parts = task.command.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+    let Some(classpath_index) = parts.iter().position(|part| matches!(part.as_str(), "-cp" | "-classpath" | "--class-path")) else {
+        return false;
+    };
+    let Some(classpath) = parts.get(classpath_index + 1) else { return false };
+    if !classpath.contains("spring-boot") || parts.get(classpath_index + 2).map(String::as_str) != Some("•••") {
+        return false;
+    }
+    let Some(main_class) = find_spring_boot_main_class(project_root) else { return false };
+    parts[classpath_index + 2] = main_class;
+    task.command = parts.join(" ");
+    true
+}
+
+fn find_spring_boot_main_class(project_root: &Path) -> Option<String> {
+    ["src/main/kotlin", "src/main/java"]
+        .into_iter()
+        .map(|relative| project_root.join(relative))
+        .find_map(|root| find_spring_boot_main_class_in(&root))
+}
+
+fn find_spring_boot_main_class_in(directory: &Path) -> Option<String> {
+    let entries = fs::read_dir(directory).ok()?.filter_map(Result::ok).collect::<Vec<_>>();
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_spring_boot_main_class_in(&path) {
+                return Some(found);
+            }
+            continue;
+        }
+        if !matches!(path.extension().and_then(|value| value.to_str()), Some("java" | "kt")) {
+            continue;
+        }
+        let text = fs::read_to_string(&path).ok()?;
+        if !text.contains("@SpringBootApplication") {
+            continue;
+        }
+        let class_name = text.lines().find_map(|line| {
+            let name = line.split_once("class ")?.1.split(|character: char| !character.is_ascii_alphanumeric() && character != '_').next()?;
+            (!name.is_empty()).then_some(name.to_string())
+        })?;
+        let package = text.lines().find_map(|line| line.trim().strip_prefix("package "))
+            .map(|value| value.trim().trim_end_matches(';'))
+            .filter(|value| !value.is_empty());
+        return Some(package.map_or(class_name.clone(), |value| format!("{value}.{class_name}")));
+    }
+    None
 }
 
 pub fn save_profile(path: &Path, profile: LaunchProfile) -> Result<Vec<LaunchProfile>, String> {
@@ -183,5 +250,37 @@ mod tests {
         assert_eq!(value.theme_mode, "dark");
         assert_eq!(value.scan_interval_ms, 500);
         assert_eq!(value.window_width, 560);
+    }
+
+    #[test]
+    fn migrates_redacted_spring_boot_main_class_on_load() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("src/main/kotlin/com/example/DemoApplication.kt");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(
+            &source,
+            "package com.example\n\n@SpringBootApplication\nclass DemoApplication\n",
+        )
+        .unwrap();
+        let profile_path = temporary.path().join("profiles.json");
+        let profile = LaunchProfile {
+            id: "profile".into(),
+            name: "Demo".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "api".into(),
+                cwd: ".".into(),
+                command: "java -cp /cache/spring-boot.jar ••• --spring.profiles.active=dev".into(),
+                expected_port: Some(8080),
+            }],
+        };
+        write_json_atomic(&profile_path, &vec![profile]).unwrap();
+
+        let profiles = load_profiles(&profile_path).unwrap();
+
+        assert_eq!(
+            profiles[0].tasks[0].command,
+            "java -cp /cache/spring-boot.jar com.example.DemoApplication --spring.profiles.active=dev"
+        );
     }
 }
