@@ -55,6 +55,7 @@ from cutting_board.ui.widgets import ContainerTile, ScrollArea, SectionHeader, S
 from cutting_board.ui.window_icon import BLOB_NAME, apply_window_icon
 
 POLL_INTERVAL_MS = 120
+UPTIME_REFRESH_MS = 1000
 HEADER_HEIGHT = 56
 SETTINGS_HIT_TARGET = 36
 
@@ -325,6 +326,7 @@ class CuttingBoardWindow:
         # The loop runs even with no scanner behind it: the Docker tab feeds
         # itself through the same queue and has to be drained either way.
         self.root.after(POLL_INTERVAL_MS, self._poll_events)
+        self.root.after(UPTIME_REFRESH_MS, self._refresh_uptime_clock)
         self.render()
 
         if auto_close_seconds is not None:
@@ -499,6 +501,14 @@ class CuttingBoardWindow:
         self._drain_container_results()
         self._request_containers()
         self.root.after(POLL_INTERVAL_MS, self._poll_events)
+
+    def _refresh_uptime_clock(self) -> None:
+        """Tick visible service uptimes without waiting for the next scan."""
+        if self._closing:
+            return
+        for tile in self._tiles:
+            tile._refresh_uptime()
+        self.root.after(UPTIME_REFRESH_MS, self._refresh_uptime_clock)
 
     def _accept_snapshot(self, snapshot: WorkspaceSnapshot) -> None:
         self.snapshot = snapshot

@@ -11,6 +11,7 @@ from cutting_board.ui.widgets import (
     _browser_link_label,
     _card_style,
     _ellipsis_to_width,
+    _live_uptime_seconds,
     _next_action_key,
     _origin_colour,
     _port_badge_labels,
@@ -205,6 +206,17 @@ class ThemeTests(unittest.TestCase):
 class WidgetLogicTests(unittest.TestCase):
     def tearDown(self) -> None:
         theme.apply_palette("dark")
+
+    def test_live_uptime_advances_between_scans_without_moving_backwards(self) -> None:
+        self.assertEqual(
+            _live_uptime_seconds(60, 1_000.0, now=1_061.9),
+            61,
+        )
+        self.assertEqual(
+            _live_uptime_seconds(62, 1_000.0, now=1_061.9),
+            62,
+        )
+        self.assertIsNone(_live_uptime_seconds(None, 1_000.0, now=1_061.9))
 
     def test_port_badges_stay_quiet_and_report_hidden_count(self) -> None:
         self.assertEqual(_port_badge_labels(()), ())

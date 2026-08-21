@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -29,6 +30,19 @@ WHEEL_SEQUENCES = ("<MouseWheel>", "<Button-4>", "<Button-5>")
 # glide rather than the jump a canvas "unit" would give (a unit is a tenth of
 # the viewport, which grows with the window).
 WHEEL_STEP_PIXELS = 54
+
+
+def _live_uptime_seconds(
+    scanned_uptime_seconds: int | None,
+    create_time: float,
+    *,
+    now: float | None = None,
+) -> int | None:
+    """Advance a scanned uptime locally so the tile ticks between scans."""
+    if scanned_uptime_seconds is None:
+        return None
+    current_time = time.time() if now is None else now
+    return max(0, scanned_uptime_seconds, int(current_time - create_time))
 
 
 @dataclass(slots=True)
@@ -444,11 +458,15 @@ class ServiceTile(tk.Canvas):
         process = self.service.process
         if process is None:
             return
-        text = format_uptime_compact(process.uptime_seconds)
+        uptime_seconds = _live_uptime_seconds(
+            process.uptime_seconds,
+            process.create_time,
+        )
+        text = format_uptime_compact(uptime_seconds)
         if not text:
             return
         text = f"Running {text}"
-        colour = self._uptime_colour(process.uptime_seconds)
+        colour = self._uptime_colour(uptime_seconds)
         dot = self.create_oval(x, y - 3, x + 6, y + 3, fill=colour, outline="")
         label = self.create_text(
             x + 11,
@@ -487,7 +505,12 @@ class ServiceTile(tk.Canvas):
             return
         x, y = self._uptime_at
         process = self.service.process
-        text = format_uptime_compact(process.uptime_seconds) if process else ""
+        uptime_seconds = (
+            _live_uptime_seconds(process.uptime_seconds, process.create_time)
+            if process
+            else None
+        )
+        text = format_uptime_compact(uptime_seconds)
         if not text:
             if self._uptime_items is not None:
                 self.delete(*self._uptime_items)
@@ -497,7 +520,7 @@ class ServiceTile(tk.Canvas):
             self._draw_uptime(x, y)
             return
         dot, label = self._uptime_items
-        colour = self._uptime_colour(process.uptime_seconds if process else None)
+        colour = self._uptime_colour(uptime_seconds)
         text = f"Running {text}"
         self.coords(dot, x, y - 3, x + 6, y + 3)
         self.itemconfigure(dot, fill=colour)

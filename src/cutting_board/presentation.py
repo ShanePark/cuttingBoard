@@ -161,20 +161,20 @@ FRESH_UPTIME_SECONDS = 300
 
 
 def format_uptime_compact(seconds: int | None) -> str:
-    """Uptime short enough for a tile: at most two units, never wrapping."""
+    """Uptime short enough for a tile while always showing live seconds."""
     if seconds is None:
         return ""
     seconds = max(0, seconds)
     if seconds < 60:
         return f"{seconds}s"
-    minutes, _ = divmod(seconds, 60)
+    minutes, seconds = divmod(seconds, 60)
     if minutes < 60:
-        return f"{minutes}m"
+        return f"{minutes}m {seconds}s"
     hours, minutes = divmod(minutes, 60)
     if hours < 24:
-        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+        return f"{hours}h {minutes}m {seconds}s"
     days, hours = divmod(hours, 24)
-    return f"{days}d {hours}h" if hours else f"{days}d"
+    return f"{days}d {hours}h {minutes}m {seconds}s"
 
 
 def format_cpu(value: float | None) -> str:

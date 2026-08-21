@@ -23,6 +23,7 @@ from cutting_board.ui.main_window import (
     HEADER_HEIGHT,
     SETTINGS_HIT_TARGET,
     TAB_LAUNCH,
+    UPTIME_REFRESH_MS,
     CuttingBoardWindow,
     _bind_action,
     _gear_polygon_points,
@@ -268,6 +269,32 @@ class ThemeLifecycleTests(unittest.TestCase):
             THEME_MODE_CHOICES,
             (("System", "system"), ("Dark", "dark"), ("Light", "light")),
         )
+
+    def test_uptime_clock_refreshes_tiles_and_reschedules_each_second(self) -> None:
+        window = CuttingBoardWindow.__new__(CuttingBoardWindow)
+        window._closing = False
+        window.root = Mock()
+        window._tiles = [Mock(), Mock()]
+
+        window._refresh_uptime_clock()
+
+        for tile in window._tiles:
+            tile._refresh_uptime.assert_called_once_with()
+        window.root.after.assert_called_once_with(
+            UPTIME_REFRESH_MS,
+            window._refresh_uptime_clock,
+        )
+
+    def test_uptime_clock_stops_rescheduling_while_window_closes(self) -> None:
+        window = CuttingBoardWindow.__new__(CuttingBoardWindow)
+        window._closing = True
+        window.root = Mock()
+        window._tiles = [Mock()]
+
+        window._refresh_uptime_clock()
+
+        window._tiles[0]._refresh_uptime.assert_not_called()
+        window.root.after.assert_not_called()
 
     def test_settings_dialog_destroys_before_requesting_rebuild(self) -> None:
         calls: list[str] = []

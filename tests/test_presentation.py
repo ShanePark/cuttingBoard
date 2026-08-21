@@ -7,6 +7,7 @@ from cutting_board.presentation import (
     format_bytes,
     format_cpu,
     format_duration,
+    format_uptime_compact,
     group_services,
     visible_services,
 )
@@ -71,6 +72,22 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(format_duration(3660), "1 hour 1 minute")
         self.assertEqual(format_cpu(None), "Calculating")
         self.assertEqual(format_cpu(2.345), "2.3%")
+
+    def test_compact_uptime_keeps_seconds_visible_after_each_unit_boundary(self) -> None:
+        cases = (
+            (59, "59s"),
+            (60, "1m 0s"),
+            (61, "1m 1s"),
+            (3_599, "59m 59s"),
+            (3_600, "1h 0m 0s"),
+            (3_661, "1h 1m 1s"),
+            (86_400, "1d 0h 0m 0s"),
+            (90_061, "1d 1h 1m 1s"),
+        )
+
+        for seconds, expected in cases:
+            with self.subTest(seconds=seconds):
+                self.assertEqual(format_uptime_compact(seconds), expected)
 
 
 if __name__ == "__main__":
