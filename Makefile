@@ -1,38 +1,20 @@
-PYTHON ?= $(if $(wildcard $(CURDIR)/.venv/bin/python),$(CURDIR)/.venv/bin/python,python3)
-PYTHONPATH := $(CURDIR)/src
+.PHONY: install dev check test build clean
 
-.PHONY: run demo dev-macos snapshot test smoke verify verify-macos install-macos package clean
+install:
+	npm install
 
-run:
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m cutting_board
+dev:
+	npm run tauri dev
 
-demo:
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m cutting_board --demo
-
-dev-macos:
-	./scripts/dev-macos.sh
-
-snapshot:
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m cutting_board --snapshot
+check:
+	npm run check
+	cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
 test:
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m unittest discover -s tests -v
+	cargo test --manifest-path src-tauri/Cargo.toml --all-targets
 
-smoke:
-	xvfb-run -a env PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m cutting_board --demo --auto-close 1
-
-verify:
-	./scripts/verify.sh
-
-verify-macos:
-	PYTHON=$(PYTHON) ./scripts/verify-macos.sh
-
-install-macos:
-	./scripts/install-macos.sh
-
-package:
-	./scripts/build-deb.sh
+build:
+	npm run tauri build
 
 clean:
-	rm -rf build *.egg-info src/*.egg-info
-	find . -type d -name __pycache__ -prune -exec rm -rf {} +
+	rm -rf dist node_modules src-tauri/target
