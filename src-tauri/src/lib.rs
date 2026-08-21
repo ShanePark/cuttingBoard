@@ -200,6 +200,29 @@ fn shutdown(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+fn persist_window_geometry<R: tauri::Runtime>(window: &tauri::Window<R>, state: &AppState) {
+    let (Ok(size), Ok(position)) = (window.inner_size(), window.outer_position()) else {
+        return;
+    };
+    let settings = read_settings(&state.0.settings_path).unwrap_or_default();
+    let updated = UiSettings {
+        window_width: size.width.max(560),
+        window_height: size.height.max(420),
+        window_x: Some(position.x),
+        window_y: Some(position.y),
+        ..settings
+    };
+    if let Err(error) = persist_settings(&state.0.settings_path, updated) {
+        eprintln!("Could not persist window geometry: {error}");
+    }
+}
+
+fn stop_managed_tasks(state: &AppState) {
+    if let Ok(mut launch) = state.0.launch.lock() {
+        launch.stop_all();
+    }
+}
+
 fn terminate_discovered_service(
     state: &AppState,
     request: &TerminateRequest,
@@ -420,11 +443,14 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                let state = window.app_handle().state::<AppState>();
-                if let Ok(mut launch) = state.0.launch.lock() {
-                    launch.stop_all();
-                };
+            let state = window.app_handle().state::<AppState>();
+            match event {
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    persist_window_geometry(window, state.inner());
+                    stop_managed_tasks(state.inner());
+                }
+                tauri::WindowEvent::Destroyed => stop_managed_tasks(state.inner()),
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -443,8 +469,17 @@ pub fn run() {
             terminate_service,
             shutdown
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Cutting Board");
+        .build(tauri::generate_context!())
+        .expect("error while building Cutting Board")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                let state = app.state::<AppState>();
+                if let Some(window) = app.get_window("main") {
+                    persist_window_geometry(&window, state.inner());
+                }
+                stop_managed_tasks(state.inner());
+            }
+        });
 }
 
 #[cfg(test)]
