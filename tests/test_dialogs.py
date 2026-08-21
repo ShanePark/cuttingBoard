@@ -16,6 +16,7 @@ from cutting_board.ui.dialogs import (
     SettingsDialog,
     _centred_modal_geometry,
     configure_detail_dismiss,
+    configure_detail_window,
 )
 
 EventHandler = Callable[[SimpleNamespace], object]
@@ -160,6 +161,9 @@ class _Dialog(_BindingTarget):
         self.focus_calls = 0
         self.update_idletasks_calls = 0
         self.deiconify_calls = 0
+        self.withdraw_calls = 0
+        self.wait_visibility_calls = 0
+        self.grab_set_calls = 0
         self.geometries: list[str] = []
         self.lift_targets: list[object] = []
         self.idle_callbacks: list[Callable[[], None]] = []
@@ -179,6 +183,18 @@ class _Dialog(_BindingTarget):
         self.deiconify_calls += 1
         self.events.append("dialog.deiconify")
 
+    def withdraw(self) -> None:
+        self.withdraw_calls += 1
+        self.events.append("dialog.withdraw")
+
+    def wait_visibility(self) -> None:
+        self.wait_visibility_calls += 1
+        self.events.append("dialog.wait_visibility")
+
+    def grab_set(self) -> None:
+        self.grab_set_calls += 1
+        self.events.append("dialog.grab_set")
+
     def update_idletasks(self) -> None:
         self.update_idletasks_calls += 1
         self.events.append("dialog.update_idletasks")
@@ -197,6 +213,12 @@ class _Dialog(_BindingTarget):
 
     def winfo_y(self) -> int:
         return self.frame_y
+
+    def winfo_reqwidth(self) -> int:
+        return self.width
+
+    def winfo_reqheight(self) -> int:
+        return self.height
 
     def after_idle(self, callback: Callable[[], None]) -> None:
         self.idle_callbacks.append(callback)
@@ -400,15 +422,52 @@ class ModalBackdropTests(unittest.TestCase):
         dialog.bindings["<Escape>"](_event(dialog))
         self.assertEqual(dialog.destroy_calls, 1)
 
+    def test_detail_window_maps_above_parent_before_taking_grab(self) -> None:
+        parent = _BindingTarget()
+        dialog = _Dialog()
+        dialog.events = parent.events
+
+        configure_detail_window(
+            dialog,  # type: ignore[arg-type]
+            parent,  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(dialog.withdraw_calls, 1)
+        self.assertEqual(dialog.geometries, ["+320+250"])
+        self.assertEqual(dialog.deiconify_calls, 1)
+        self.assertEqual(dialog.wait_visibility_calls, 1)
+        self.assertIs(dialog.lift_targets[-1], parent)
+        self.assertEqual(dialog.grab_set_calls, 1)
+        self.assertEqual(dialog.focus_calls, 1)
+        self.assertLess(parent.events.index("dialog.deiconify"), parent.events.index("dialog.grab_set"))
+        self.assertLess(parent.events.index("dialog.lift"), parent.events.index("dialog.grab_set"))
+
+        self.assertEqual(dialog.lift_targets, [parent])
+
+    def test_detail_window_grab_dismisses_only_outside_clicks(self) -> None:
+        parent = _BindingTarget()
+        dialog = _Dialog()
+        configure_detail_window(
+            dialog,  # type: ignore[arg-type]
+            parent,  # type: ignore[arg-type]
+        )
+        click_handler = dialog.bindings["<Button-1>"]
+
+        click_handler(SimpleNamespace(widget=dialog, x_root=350, y_root=300))
+        self.assertEqual(dialog.destroy_calls, 0)
+
+        click_handler(SimpleNamespace(widget=dialog, x_root=121, y_root=81))
+        self.assertEqual(dialog.destroy_calls, 1)
+
     def test_dialog_initializers_assign_explicit_outside_policies(self) -> None:
-        self.assertIn(
-            "configure_detail_dismiss(self, backdrop)",
-            inspect.getsource(ContainerDetailDialog.__init__),
-        )
-        self.assertIn(
-            "configure_detail_dismiss(self, backdrop)",
-            inspect.getsource(ServiceDetailDialog.__init__),
-        )
+        container_source = inspect.getsource(ContainerDetailDialog.__init__)
+        service_source = inspect.getsource(ServiceDetailDialog.__init__)
+        for source in (container_source, service_source):
+            self.assertIn("super().__init__(parent.winfo_toplevel()", source)
+            self.assertIn("self.transient(parent.winfo_toplevel())", source)
+            self.assertIn("configure_detail_window(self, parent)", source)
+            self.assertNotIn("ModalBackdrop", source)
+            self.assertNotIn("backdrop.window", source)
         confirm_source = inspect.getsource(ConfirmDialog.__init__)
         settings_source = inspect.getsource(SettingsDialog.__init__)
         self.assertIn("on_outside=lambda: self._answer(False)", confirm_source)

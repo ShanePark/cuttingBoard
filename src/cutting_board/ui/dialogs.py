@@ -42,9 +42,7 @@ class ContainerDetailDialog(tk.Toplevel):
         fonts: dict[str, tuple[str, int, str]],
         icons: IconStore,
     ) -> None:
-        backdrop = ModalBackdrop(parent)
-        super().__init__(backdrop.window, bg=theme.CANVAS)
-        self._modal_backdrop = backdrop
+        super().__init__(parent.winfo_toplevel(), bg=theme.CANVAS)
         self.container = container
         self._tech = tech
         self._fonts = fonts
@@ -52,12 +50,11 @@ class ContainerDetailDialog(tk.Toplevel):
 
         self.title(container.name)
         self.resizable(False, False)
-        self.transient(backdrop.window)
+        self.transient(parent.winfo_toplevel())
 
         self._build()
 
-        self.update_idletasks()
-        configure_detail_dismiss(self, backdrop)
+        configure_detail_window(self, parent)
 
     def _build(self) -> None:
         container = self.container
@@ -374,6 +371,54 @@ def configure_detail_dismiss(dialog: tk.Toplevel, backdrop: ModalBackdrop) -> No
     backdrop.activate(dialog, on_outside=dialog.destroy)
 
 
+def configure_detail_window(dialog: tk.Toplevel, parent: tk.Misc) -> None:
+    """Map a read-only detail popup above its parent without an X11 scrim.
+
+    An override-redirect scrim can remain above a window-manager-controlled
+    transient on X11 even after ``lift``.  A local grab provides the same
+    modal click blocking without adding a second native window to the stack.
+    """
+    top = parent.winfo_toplevel()
+    dialog.withdraw()
+    dialog.bind("<Escape>", lambda _event: dialog.destroy())
+    dialog.update_idletasks()
+    dialog_width = dialog.winfo_reqwidth()
+    dialog_height = dialog.winfo_reqheight()
+    dialog.geometry(
+        _centred_modal_geometry(
+            parent_x=top.winfo_rootx(),
+            parent_y=top.winfo_rooty(),
+            parent_width=top.winfo_width(),
+            parent_height=top.winfo_height(),
+            dialog_width=dialog_width,
+            dialog_height=dialog_height,
+        )
+    )
+    dialog.deiconify()
+    try:
+        dialog.wait_visibility()
+    except tk.TclError:
+        pass
+    dialog.lift(top)
+    dialog.grab_set()
+    dialog.focus_set()
+    dismiss_on_outside_click(dialog, dialog.destroy)
+
+
+def dismiss_on_outside_click(dialog: tk.Toplevel, on_dismiss: Callable[[], None]) -> None:
+    """Dismiss a grabbed dialog when a pointer press lands outside it."""
+
+    def handle(event: tk.Event) -> None:
+        left = dialog.winfo_rootx()
+        top = dialog.winfo_rooty()
+        inside_x = left <= event.x_root < left + dialog.winfo_width()
+        inside_y = top <= event.y_root < top + dialog.winfo_height()
+        if not (inside_x and inside_y):
+            on_dismiss()
+
+    dialog.bind("<Button-1>", handle, add="+")
+
+
 class ServiceDetailDialog(tk.Toplevel):
     """Everything the scanner knows about one service.
 
@@ -391,9 +436,7 @@ class ServiceDetailDialog(tk.Toplevel):
         on_open: Callable[[ServiceSnapshot], None],
         on_terminate: Callable[[ServiceSnapshot], None],
     ) -> None:
-        backdrop = ModalBackdrop(parent)
-        super().__init__(backdrop.window, bg=theme.CANVAS)
-        self._modal_backdrop = backdrop
+        super().__init__(parent.winfo_toplevel(), bg=theme.CANVAS)
         self.service = service
         self._fonts = fonts
         self._icons = icons
@@ -403,12 +446,11 @@ class ServiceDetailDialog(tk.Toplevel):
         self.title(service.display_name)
         self.configure(padx=0, pady=0)
         self.resizable(False, False)
-        self.transient(backdrop.window)
+        self.transient(parent.winfo_toplevel())
 
         self._build()
 
-        self.update_idletasks()
-        configure_detail_dismiss(self, backdrop)
+        configure_detail_window(self, parent)
 
     # --------------------------------------------------------------- layout
 
