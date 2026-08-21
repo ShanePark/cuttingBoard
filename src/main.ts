@@ -1,10 +1,11 @@
 import "./styles.css";
 import { open as choosePath } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
 import { techIcon, uiIcon } from "./icons";
+import type { UiIconName } from "./icons";
 import {
+  FRESH_UPTIME_SECONDS,
   browserLinkLabel,
   currentUptime,
   formatBytes,
@@ -13,7 +14,9 @@ import {
   imageTech,
   middleEllipsis,
   portBadgeLabels,
+  serviceTitle,
   shortenPath,
+  techLabel,
   uniquePorts
 } from "./presentation";
 import type {
@@ -32,6 +35,7 @@ import type {
 
 type Tab = "services" | "docker" | "launch";
 const SOURCE_URL = "https://github.com/ShanePark/cuttingBoard";
+const MIN_TILE_WIDTH = 300;
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing application root");
@@ -40,9 +44,9 @@ root.innerHTML = `
   <div class="app-shell">
     <header class="toolbar">
       <nav class="tabs" aria-label="Workspace">
-        <button class="tab is-active" type="button" data-tab="services">Services&nbsp;&nbsp;<span id="services-count">0</span></button>
-        <button class="tab" type="button" data-tab="docker">Docker&nbsp;&nbsp;<span id="docker-count">0</span></button>
-        <button class="tab" type="button" data-tab="launch">Launch Profiles&nbsp;&nbsp;<span id="launch-count">0</span></button>
+        <button class="tab is-active" type="button" data-tab="services">Services<span id="services-count">0</span></button>
+        <button class="tab" type="button" data-tab="docker">Docker<span id="docker-count">0</span></button>
+        <button class="tab" type="button" data-tab="launch">Launch Profiles<span id="launch-count">0</span></button>
       </nav>
       <button class="gear-button" type="button" data-action="settings" aria-label="Settings" title="Settings">${uiIcon("settings", 18)}</button>
     </header>
@@ -70,13 +74,13 @@ let profiles: LaunchProfile[] = [];
 let taskSnapshots: ManagedTaskSnapshot[] = [];
 let scanBusy = false;
 let dockerBusy = false;
-let closing = false;
 let scanTimer: number | null = null;
 let uptimeTimer: number | null = null;
 let serviceSignature = "";
 let dockerSignature = "";
 let launchSignature = "";
 let modalFocusReturn: HTMLElement | null = null;
+let pendingServiceStopId: string | null = null;
 const operations = new Set<string>();
 
 root.addEventListener("click", (event) => void handleClick(event));
@@ -101,10 +105,31 @@ async function bootstrap(): Promise<void> {
     applyTheme(settings.theme_mode);
     renderHeaderCounts();
     await refreshWorkspace(true);
+    void refreshContainers();
     installTimers();
-    await installWindowLifecycle();
+    installBoardObserver();
   } catch (error) {
     showFatal(error);
+  }
+}
+
+function installBoardObserver(): void {
+  new ResizeObserver(() => applyBoardLayout()).observe(workspaceElement);
+}
+
+// Groups share rows: the board is one column grid and every section spans as many
+// columns as it has cards, so a one-card group and a two-card group sit side by side.
+function applyBoardLayout(): void {
+  const board = workspaceElement.querySelector<HTMLElement>(".board");
+  if (!board) return;
+  const styles = window.getComputedStyle(board);
+  const gap = Number.parseFloat(styles.columnGap) || 0;
+  const width = board.clientWidth - Number.parseFloat(styles.paddingLeft) - Number.parseFloat(styles.paddingRight);
+  const columns = Math.max(1, Math.floor((width + gap) / (MIN_TILE_WIDTH + gap)));
+  board.style.setProperty("--board-columns", String(columns));
+  for (const section of board.querySelectorAll<HTMLElement>(".service-section")) {
+    const tiles = Number(section.dataset.tiles) || 1;
+    section.style.setProperty("--section-span", String(Math.min(Math.max(1, tiles), columns)));
   }
 }
 
@@ -112,30 +137,7 @@ function installTimers(): void {
   if (scanTimer !== null) window.clearInterval(scanTimer);
   scanTimer = window.setInterval(() => void refreshWorkspace(), Math.max(500, settings.scan_interval_ms));
   if (uptimeTimer !== null) window.clearInterval(uptimeTimer);
-  uptimeTimer = window.setInterval(updateLiveUptimes, 1000);
-}
-
-async function installWindowLifecycle(): Promise<void> {
-  const windowHandle = getCurrentWindow();
-  await windowHandle.onCloseRequested(async (event) => {
-    if (closing) return;
-    event.preventDefault();
-    closing = true;
-    try {
-      const [size, position] = await Promise.all([windowHandle.innerSize(), windowHandle.outerPosition()]);
-      settings = await api.saveSettings({
-        ...settings,
-        window_width: Math.max(560, size.width),
-        window_height: Math.max(420, size.height),
-        window_x: position.x,
-        window_y: position.y
-      });
-      await api.shutdown();
-    } catch (error) {
-      console.error(error);
-    }
-    await windowHandle.close();
-  });
+  uptimeTimer = window.setInterval(updateLiveMetrics, 1000);
 }
 
 async function refreshWorkspace(force = false): Promise<void> {
@@ -212,7 +214,7 @@ function renderServices(force = false): void {
     operations.has(`stop:${service.id}`)
   ]));
   if (!force && signature === serviceSignature && workspaceElement.dataset.view === "services") {
-    updateLiveUptimes();
+    updateLiveMetrics();
     return;
   }
   serviceSignature = signature;
@@ -226,47 +228,81 @@ function renderServices(force = false): void {
     return;
   }
   workspaceElement.innerHTML = `<div class="board">${groupServices(services).map((group) => `
-    <section class="service-section" aria-labelledby="group-${h(encodeURIComponent(group.id))}">
+    <section class="service-section" data-tiles="${group.services.length}" aria-labelledby="group-${h(encodeURIComponent(group.id))}">
       <header class="section-header">
         <span class="section-accent accent-${h(group.accent)}"></span>
         <h2 id="group-${h(encodeURIComponent(group.id))}">${h(group.name.toUpperCase())}</h2>
         ${group.path ? `<p title="${h(group.path)}">${h(shortenPath(group.path))}</p>` : ""}
+        <span class="section-count" aria-label="${group.services.length} services">${group.services.length}</span>
       </header>
-      <div class="section-rule"></div>
       <div class="tile-grid">${group.services.map(renderServiceTile).join("")}</div>
     </section>`).join("")}</div>`;
-  updateLiveUptimes();
+  applyBoardLayout();
+  updateLiveMetrics();
 }
 
 function renderServiceTile(service: ServiceSnapshot): string {
-  const ports = uniquePorts(service);
-  const labels = portBadgeLabels(ports);
   const busy = operations.has(`stop:${service.id}`);
-  const uptime = formatUptimeCompact(currentUptime(service));
-  const origin = ["agent", "ide"].includes(service.origin_kind) && service.origin_label;
+  const uptime = currentUptime(service);
+  const pip = busy ? "busy" : uptime === null ? "idle" : service.status === "limited" ? "limited" : "running";
   return `
-    <article class="service-tile category-${service.category}${busy ? " is-busy" : ""}" aria-label="${h(service.display_name)} service">
+    <article class="service-tile category-${service.category}${busy ? " is-busy" : ""}" data-metrics-id="${h(service.id)}" aria-label="${h(service.display_name)} service">
       <button class="tile-details-button" type="button" data-tile-action data-action="service-details" data-service-id="${h(service.id)}" aria-label="View ${h(service.display_name)} details" title="View details"></button>
-      <div class="icon-well" aria-hidden="true">${techIcon(service.tech, 44)}</div>
-      <div class="tile-content">
-        <h3 title="${h(service.display_name)}">${h(service.display_name)}</h3>
-        <div class="status-line">
-          <span class="uptime ${currentUptime(service) !== null && (currentUptime(service) ?? 999) < 300 ? "is-fresh" : ""}" data-uptime-id="${h(service.id)}">
-            <span class="status-dot"></span><span data-uptime-text>${busy ? "Stopping…" : uptime ? `Running ${h(uptime)}` : ""}</span>
-          </span>
-          ${origin ? `<span class="origin-badge origin-${service.origin_kind}" title="Detected launch source: ${h(service.origin_label ?? service.origin_kind)}" aria-label="Detected launch source: ${h(service.origin_label ?? service.origin_kind)}"><span class="origin-dot"></span>${h(service.origin_label ?? "")}</span>` : ""}
-        </div>
-        <div class="port-row">
-          ${ports.length ? `<span class="port-label">Ports</span>` : ""}
-          ${labels.map((label) => `<span class="port-chip${label.startsWith("+") ? " port-overflow" : ""}" title="${h(portChipDescription(label, ports))}" aria-label="${h(portChipDescription(label, ports))}">${h(label)}</span>`).join("")}
-          ${ports.length === 0 ? `<span class="no-port-label">No port information</span>` : ""}
-        </div>
-        ${service.browser_url ? `<button type="button" class="service-link" data-tile-action data-action="open-service" data-service-id="${h(service.id)}" aria-label="Open ${h(service.display_name)} in the browser" title="${h(service.browser_url)}">${h(browserLinkLabel(service.browser_url))}</button>` : ""}
-        ${service.process ? `<span class="process-meta" title="Process: ${h(service.process.name)} · PID ${service.process.pid}" aria-label="Process ${h(service.process.name)}, PID ${service.process.pid}">PID ${service.process.pid}</span>` : ""}
+      <div class="tile-top">
+        <span class="icon-well" aria-hidden="true">${techIcon(service.tech, 44)}<span class="status-pip state-${pip}"></span></span>
+        ${renderTileHeading(serviceTitle(service), techLabel(service.tech), originBadge(service.origin_kind, service.origin_label))}
+        <span class="details-hint" aria-hidden="true">${uiIcon("details", 14)}</span>
+        ${service.can_terminate ? `<button type="button" class="stop-button" data-tile-action data-action="stop-service" data-service-id="${h(service.id)}" aria-label="${busy ? "Stopping" : "Stop"} ${h(service.display_name)}" title="${busy ? "Stopping process" : "Stop process"}" ${busy ? "disabled" : ""}><span class="stop-glyph" aria-hidden="true"></span></button>` : ""}
       </div>
-      <span class="details-hint">${uiIcon("details", 12)} Details</span>
-      ${service.can_terminate ? `<button type="button" class="power-button" data-tile-action data-action="stop-service" data-service-id="${h(service.id)}" aria-label="${busy ? "Stopping" : "Stop"} ${h(service.display_name)}" title="${busy ? "Stopping process" : "Stop process"}" ${busy ? "disabled" : ""}><span class="power-glyph" aria-hidden="true"></span></button>` : ""}
+      <div class="tile-metrics">
+        <span class="metric metric-uptime${uptime !== null && uptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(uptimeText(service, busy))}</span></span>
+        <span class="metric metric-memory" data-metric="memory">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(service.process?.memory_bytes ?? null))}</span></span>
+      </div>
+      ${renderTileFoot(uniquePorts(service), "No port information", service.browser_url
+        ? `<button type="button" class="service-link" data-tile-action data-action="open-service" data-service-id="${h(service.id)}" aria-label="Open ${h(service.display_name)} in the browser" title="${h(service.browser_url)}"><span>${h(browserLinkLabel(service.browser_url))}</span>${uiIcon("external", 12)}</button>`
+        : "")}
     </article>`;
+}
+
+// The subtitle carries the technology once: skip the label when the title already says it.
+function renderTileHeading(title: string, label: string, badge: string): string {
+  const tech = label.toLowerCase() === title.trim().toLowerCase() ? "" : `<span class="tech-label">${h(label)}</span>`;
+  return `<div class="tile-heading">
+        <h3 class="tile-name" title="${h(title)}">${h(title)}</h3>
+        ${tech || badge ? `<p class="tile-subtitle">${tech}${badge}</p>` : ""}
+      </div>`;
+}
+
+function originBadge(kind: string, label: string | null): string {
+  if (!label || kind === "system" || kind === "unknown") return "";
+  return `<span class="origin-badge origin-${h(kind)}" title="Started from ${h(label)}" aria-label="Started from ${h(label)}">${uiIcon(originIcon(kind, label), 12)}${h(label)}</span>`;
+}
+
+function originIcon(kind: string, label: string): UiIconName {
+  const value = label.toLowerCase();
+  if (value.includes("claude")) return "claude";
+  if (value.includes("copilot")) return "copilot";
+  if (value.includes("cursor")) return "cursor";
+  if (["intellij", "pycharm", "webstorm", "rider", "goland", "jetbrains"].some((name) => value.includes(name))) return "jetbrains";
+  if (kind === "agent") return "bot";
+  return kind === "ide" ? "ide" : "terminal";
+}
+
+function renderTileFoot(ports: number[], emptyLabel: string, trailing: string): string {
+  const labels = portBadgeLabels(ports);
+  return `<div class="tile-foot">
+        <div class="port-row">
+          ${labels.map((label) => `<span class="port-chip${label.startsWith("+") ? " port-overflow" : ""}" title="${h(portChipDescription(label, ports))}" aria-label="${h(portChipDescription(label, ports))}">${h(label)}</span>`).join("")}
+          ${ports.length === 0 ? `<span class="no-port-label">${h(emptyLabel)}</span>` : ""}
+        </div>
+        ${trailing}
+      </div>`;
+}
+
+function uptimeText(service: ServiceSnapshot, busy: boolean): string {
+  if (busy) return "Stopping…";
+  const uptime = currentUptime(service);
+  return uptime === null ? "—" : formatUptimeCompact(uptime);
 }
 
 function renderDocker(force = false): void {
@@ -282,7 +318,8 @@ function renderDocker(force = false): void {
   }
   if (!containerListing.available) {
     if (fallback.length) {
-      workspaceElement.innerHTML = `<div class="inline-notice"><strong>Docker could not be queried.</strong><span>${h(containerListing.message ?? "Docker is unavailable.")}</span></div><div class="board"><section class="service-section"><header class="section-header"><span class="section-accent accent-container"></span><h2>CONTAINER LISTENERS</h2></header><div class="section-rule"></div><div class="tile-grid">${fallback.map(renderServiceTile).join("")}</div></section></div>`;
+      workspaceElement.innerHTML = `<div class="inline-notice"><strong>Docker could not be queried.</strong><span>${h(containerListing.message ?? "Docker is unavailable.")}</span></div><div class="board"><section class="service-section" data-tiles="${fallback.length}"><header class="section-header"><span class="section-accent accent-container"></span><h2>CONTAINER LISTENERS</h2><span class="section-count">${fallback.length}</span></header><div class="tile-grid">${fallback.map(renderServiceTile).join("")}</div></section></div>`;
+      applyBoardLayout();
       return;
     }
     workspaceElement.innerHTML = emptyState("Docker is unavailable", containerListing.message ?? "The Docker CLI could not be queried.");
@@ -294,10 +331,11 @@ function renderDocker(force = false): void {
   }
   const groups = groupContainers(containerListing.containers);
   workspaceElement.innerHTML = `<div class="board">${groups.map((group) => `
-    <section class="service-section">
-      <header class="section-header"><span class="section-accent accent-container"></span><h2>${h(group.name.toUpperCase())}</h2></header>
-      <div class="section-rule"></div><div class="tile-grid">${group.containers.map(renderContainerTile).join("")}</div>
+    <section class="service-section" data-tiles="${group.containers.length}">
+      <header class="section-header"><span class="section-accent accent-container"></span><h2>${h(group.name.toUpperCase())}</h2><span class="section-count" aria-label="${group.containers.length} containers">${group.containers.length}</span></header>
+      <div class="tile-grid">${group.containers.map(renderContainerTile).join("")}</div>
     </section>`).join("")}</div>`;
+  applyBoardLayout();
 }
 
 function groupContainers(containers: ContainerInfo[]): Array<{ name: string; containers: ContainerInfo[] }> {
@@ -315,19 +353,20 @@ function groupContainers(containers: ContainerInfo[]): Array<{ name: string; con
 }
 
 function renderContainerTile(container: ContainerInfo): string {
-  const labels = portBadgeLabels(container.ports);
   const running = container.state === "running";
-  const stateText = `${running ? "Running" : "Stopped"}${container.status ? ` · ${ellipsis(container.status, 22)}` : ""}`;
+  const stateText = container.status || (running ? "Running" : "Stopped");
   return `
     <article class="service-tile container-tile ${running ? "is-running" : "is-stopped"}" aria-label="${h(container.name)} container">
       <button class="tile-details-button" type="button" data-tile-action data-action="container-details" data-container-id="${h(container.id)}" aria-label="View ${h(container.name)} details" title="View details"></button>
-      <div class="icon-well" aria-hidden="true">${techIcon(imageTech(container.image), 44)}</div>
-      <div class="tile-content">
-        <h3>${h(container.name)}</h3>
-        <div class="status-line"><span class="container-state state-${h(container.state)}"><span class="status-dot"></span>${h(stateText)}</span></div>
-        <div class="port-row">${container.ports.length ? `<span class="port-label">Ports</span>` : ""}${labels.map((label) => `<span class="port-chip${label.startsWith("+") ? " port-overflow" : ""}" title="${h(portChipDescription(label, container.ports))}" aria-label="${h(portChipDescription(label, container.ports))}">${h(label)}</span>`).join("")}${container.ports.length ? "" : `<span class="no-port-label">No published ports</span>`}</div>
-        <span class="process-meta" title="Container image: ${h(container.image)}">${h(ellipsis(container.image, 22))}</span>
-      </div><span class="details-hint">${uiIcon("details", 12)} Details</span>
+      <div class="tile-top">
+        <span class="icon-well" aria-hidden="true">${techIcon(imageTech(container.image), 44)}<span class="status-pip state-${running ? "running" : "idle"}"></span></span>
+        ${renderTileHeading(container.name, container.compose_service ? `${container.compose_project ?? "compose"} · ${container.compose_service}` : "Standalone container", "")}
+        <span class="details-hint" aria-hidden="true">${uiIcon("details", 14)}</span>
+      </div>
+      <div class="tile-metrics">
+        <span class="metric metric-state ${running ? "is-running" : "is-stopped"}">${uiIcon("docker", 13)}<span class="sr-only">State </span>${h(ellipsis(stateText, 30))}</span>
+      </div>
+      ${renderTileFoot(container.ports, "No published ports", `<span class="image-label" title="Container image: ${h(container.image)}">${h(ellipsis(container.image, 24))}</span>`)}
     </article>`;
 }
 
@@ -354,7 +393,7 @@ function renderProfile(profile: LaunchProfile): string {
   return `<section class="profile-card"><div class="profile-content">
     <header class="profile-header"><div class="profile-title-line"><h2>${h(profile.name)}</h2><span class="task-count">${profile.tasks.length} ${profile.tasks.length === 1 ? "Task" : "Tasks"}</span></div><p class="profile-path">${h(middleEllipsis(profile.project_root, 120))}</p></header>
     <div class="profile-actions-row"><div>${primary}</div><div class="profile-secondary-actions"><button class="quiet-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" ${appInfo?.demo || canStop ? "disabled" : ""}>Edit</button><button class="quiet-button danger-button" type="button" data-action="delete-profile" data-profile-id="${h(profile.id)}" ${appInfo?.demo || canStop ? "disabled" : ""}>Delete</button></div></div>
-    <div class="profile-separator"></div><div class="task-list">${profile.tasks.map((task) => renderTask(profile, task)).join("")}</div>
+    <div class="task-list">${profile.tasks.map((task) => renderTask(profile, task)).join("")}</div>
   </div></section>`;
 }
 
@@ -396,7 +435,8 @@ async function handleClick(event: Event): Promise<void> {
   try {
     if (action === "service-details") showServiceDetails(findService(required(target.dataset.serviceId)));
     else if (action === "open-service") await openService(required(target.dataset.serviceId));
-    else if (action === "stop-service") await stopService(required(target.dataset.serviceId));
+    else if (action === "stop-service") await requestStopService(required(target.dataset.serviceId));
+    else if (action === "confirm-stop-service") await confirmStopService(required(target.dataset.serviceId));
     else if (action === "container-details") showContainerDetails(findContainer(required(target.dataset.containerId)));
     else if (action === "settings") showSettings();
     else if (action === "close-modal") closeModal();
@@ -438,10 +478,23 @@ async function openService(id: string): Promise<void> {
   await openUrl(service.browser_url);
 }
 
+function requestStopService(id: string): void {
+  if (pendingServiceStopId !== null || operations.has(`stop:${id}`)) return;
+  const service = findService(id);
+  if (!service.can_terminate) throw new Error("This process cannot be stopped safely.");
+  pendingServiceStopId = id;
+  openModal("Stop service?", `<p class="confirm-copy">Stop <strong>${h(service.display_name)}</strong>? This will terminate process PID <span class="mono">${service.process?.pid ?? "unknown"}</span>.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-stop-service" data-service-id="${h(id)}">${uiIcon("stop", 13)} Stop</button></div>`, { dismissOnBackdrop: false });
+}
+
+async function confirmStopService(id: string): Promise<void> {
+  if (pendingServiceStopId !== id) return;
+  closeModal();
+  await stopService(id);
+}
+
 async function stopService(id: string): Promise<void> {
   const service = findService(id);
   if (!service.can_terminate) throw new Error("This process cannot be stopped safely.");
-  if (!window.confirm(`Stop ${service.display_name}?\n\nPID ${service.process?.pid ?? "unknown"}`)) return;
   const key = `stop:${id}`;
   operations.add(key);
   renderServices(true);
@@ -493,7 +546,7 @@ function mergeSnapshots(current: ManagedTaskSnapshot[], next: ManagedTaskSnapsho
 function showServiceDetails(service: ServiceSnapshot): void {
   const process = service.process;
   openModal(service.display_name, `
-    <div class="detail-identity"><div class="detail-icon" aria-hidden="true">${techIcon(service.tech, 56)}</div><div><strong>${h(service.display_name)}</strong><span>${h(service.tech)} · ${h(service.category)}</span></div></div>
+    <div class="detail-identity"><div class="detail-icon" aria-hidden="true">${techIcon(service.tech, 56)}</div><div><strong>${h(serviceTitle(service))}</strong><span>${h(techLabel(service.tech))} · ${h(service.category)}</span></div></div>
     ${service.warnings.map((warning) => `<div class="detail-warning">${h(warning)}</div>`).join("")}
     <dl class="detail-grid">
       <dt>Status</dt><dd>${h(service.status)}</dd><dt>Origin</dt><dd>${h(service.origin_label ?? service.origin_kind)}</dd>
@@ -623,6 +676,7 @@ function openModal(title: string, body: string, options: { dismissOnBackdrop?: b
 }
 
 function closeModal(): void {
+  pendingServiceStopId = null;
   if (!document.querySelector(".modal-backdrop")) return;
   byId("modal-root").replaceChildren();
   const appShell = document.querySelector<HTMLElement>(".app-shell");
@@ -658,18 +712,22 @@ function trapModalFocus(event: KeyboardEvent): void {
   }
 }
 
-function updateLiveUptimes(): void {
+function updateLiveMetrics(): void {
   if (!workspace) return;
   const services = new Map(workspace.services.map((service) => [service.id, service]));
-  document.querySelectorAll<HTMLElement>("[data-uptime-id]").forEach((element) => {
-    const service = services.get(element.dataset.uptimeId ?? "");
+  document.querySelectorAll<HTMLElement>("[data-metrics-id]").forEach((tile) => {
+    const service = services.get(tile.dataset.metricsId ?? "");
     if (!service) return;
-    const busy = operations.has(`stop:${service.id}`);
     const uptime = currentUptime(service);
-    const text = element.querySelector<HTMLElement>("[data-uptime-text]");
-    if (text) text.textContent = busy ? "Stopping…" : uptime === null ? "" : `Running ${formatUptimeCompact(uptime)}`;
-    element.classList.toggle("is-fresh", uptime !== null && uptime < 300);
+    setMetricText(tile, "uptime", uptimeText(service, operations.has(`stop:${service.id}`)));
+    setMetricText(tile, "memory", formatBytes(service.process?.memory_bytes ?? null));
+    tile.querySelector(".metric-uptime")?.classList.toggle("is-fresh", uptime !== null && uptime < FRESH_UPTIME_SECONDS);
   });
+}
+
+function setMetricText(tile: HTMLElement, metric: string, value: string): void {
+  const node = tile.querySelector<HTMLElement>(`[data-metric="${metric}"] [data-metric-text]`);
+  if (node && node.textContent !== value) node.textContent = value;
 }
 
 function applyTheme(mode: ThemeMode): void {

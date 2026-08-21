@@ -825,9 +825,12 @@ fn origin_for(process: Option<&sysinfo::Process>, system: &System) -> (String, O
             .join(" ")
             .to_lowercase();
         let text = format!("{name} {command}");
-        if contains_any(&text, &["codex", "claude", "aider", "cursor-agent", "copilot-agent"]) {
-            let label = if text.contains("claude") { "Claude Code" } else if text.contains("aider") { "Aider" } else { "Agent" };
-            return ("agent".into(), Some(label.into()));
+        let agents = [
+            ("claude", "Claude Code"), ("codex", "Codex"), ("aider", "Aider"),
+            ("cursor-agent", "Cursor"), ("copilot-agent", "GitHub Copilot"),
+        ];
+        if let Some((_, label)) = agents.iter().find(|(needle, _)| text.contains(needle)) {
+            return ("agent".into(), Some((*label).into()));
         }
         let ide = [
             ("visual studio code", "VS Code"), ("code helper", "VS Code"), ("cursor", "Cursor"),

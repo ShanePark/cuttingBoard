@@ -45,6 +45,8 @@ const UI_CATALOG = {
   refresh: ["lucide", "refresh-cw"], chevronDown: ["lucide", "chevron-down"], folder: ["lucide", "folder"],
   clock: ["lucide", "clock"], cpu: ["lucide", "cpu"], memory: ["lucide", "memory-stick"],
   port: ["lucide", "ethernet-port"], warning: ["lucide", "triangle-alert"], check: ["lucide", "check"],
+  bot: ["lucide", "bot"], claude: ["simple-icons", "claude"], copilot: ["simple-icons", "githubcopilot"],
+  cursor: ["simple-icons", "cursor"], jetbrains: ["simple-icons", "jetbrains"],
 };
 
 const SIMPLE_ICONS = new Map(Object.values(simpleIcons)

@@ -8,12 +8,12 @@ The application is implemented with **Tauri 2**, a strict TypeScript/Vite webvie
 
 ## Current interface
 
-The Tauri interface preserves the existing Cutting Board design:
+The Tauri interface is built from:
 
 - 56 px toolbar with segmented `Services`, `Docker`, and `Launch Profiles` tabs
 - semantic dark, light, and system palettes
-- 284 × 136 grid cells containing 268 × 124 rounded service cards
-- 56 px technology wells, live uptime, launcher origin, compact port chips, browser links, and guarded stop controls
+- project groups drawn as bordered panels that pack onto shared rows, each spanning one measured column per card it holds
+- service cards with a 62 px technology well, a two-line title beside it, live status pip, live uptime and memory, a launcher origin badge for the terminal, IDE, or coding agent that started the process, category-tinted port chips, browser links, and guarded media-stop controls
 - project section headings, responsive columns, keyboard focus, arrow-key action selection, and modal detail views
 - launch profile cards with task state, expected-port ownership, logs, and explicit start/stop actions
 
