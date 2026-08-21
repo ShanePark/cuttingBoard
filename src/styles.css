@@ -440,6 +440,17 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .launch-empty { margin: 4px 20px; padding: 40px 28px; border: 1px solid var(--hairline); border-radius: 18px; background: var(--panel); text-align: center; }
 .launch-empty h2 { margin: 0; font-size: 15px; }
 .launch-empty p { margin: 8px 0 16px; color: var(--text-muted); }
+.launch-profile { padding: 13px 14px 14px; }
+.launch-profile-header { margin-bottom: 12px; }
+.launch-profile-heading { min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.launch-profile-heading h2 { min-width: 0; margin: 0; overflow: hidden; color: var(--text); font-size: 11px; font-weight: 700; letter-spacing: .07em; text-overflow: ellipsis; white-space: nowrap; }
+.launch-profile-heading p { max-width: min(34vw, 320px); }
+.launch-profile-status { flex: 0 0 auto; height: 19px; display: inline-flex; align-items: center; padding: 0 8px; border-radius: 999px; background: var(--surface-alt); color: var(--text-dim); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.launch-profile-status.is-active { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.launch-profile-status.is-failed { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.launch-profile-actions { flex-wrap: wrap; margin-left: 3px; }
+.launch-profile-actions .primary-button, .launch-profile-actions .secondary-button { min-height: 26px; padding: 3px 9px; border-radius: 8px; font-size: 10px; }
+.launch-profile-actions .section-action { white-space: nowrap; }
 .profile-card { min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--hairline); border-radius: 18px; background: var(--panel); box-shadow: 0 1px 2px var(--shadow); }
 .profile-content { padding: 0; background: transparent; }
 .profile-title-line { display: flex; align-items: center; gap: 10px; }
@@ -455,7 +466,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .task-row.is-selected { border-color: color-mix(in srgb, var(--accent) 72%, var(--border)); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); box-shadow: inset 3px 0 0 var(--accent), 0 7px 22px var(--shadow); }
 .task-row.state-failed.is-selected { border-color: color-mix(in srgb, var(--danger) 72%, var(--border)); box-shadow: inset 3px 0 0 var(--danger), 0 7px 22px var(--shadow); }
 .task-copy { padding: 12px 13px; border-radius: inherit; background: transparent; }
-.task-copy h3 { margin: 0; overflow-wrap: anywhere; color: var(--text); font-size: 13px; }
+.task-heading-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.task-copy h3 { min-width: 0; margin: 0; overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .task-status-line { display: flex; align-items: center; gap: 9px; margin-top: 8px; }
 .task-state { height: 21px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border-radius: 999px; background: var(--surface-alt); color: var(--text-dim); font-size: 10px; font-weight: 700; }
 .task-state-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
@@ -464,15 +476,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .task-state.state-failed { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
 .task-state.state-external { background: color-mix(in srgb, var(--violet) 16%, transparent); color: var(--violet); }
 .task-port { color: var(--accent); font-family: "SF Mono", Menlo, monospace; font-size: 11px; }
-.task-message { margin: 9px 0 0; overflow-wrap: anywhere; color: var(--text-dim); font-size: 10px; line-height: 1.5; }
-.task-actions-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 11px; }
-.task-console-hint { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; color: var(--text-dim); font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.task-row.is-selected .task-console-hint { color: var(--accent); }
+.task-actions-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 13px; }
+.task-port-group { min-width: 0; }
 .task-row .quiet-button { pointer-events: auto; }
 
 .launch-console { position: sticky; z-index: 5; bottom: 12px; min-width: 0; margin: 0 20px 24px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 18px; background: color-mix(in srgb, var(--surface) 94%, var(--accent)); box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow) 88%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent); }
 .launch-console-empty { border-color: var(--hairline); }
-.console-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 66px; padding: 12px 15px; border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 38%, var(--surface)); }
+.console-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 56px; padding: 10px 15px; border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 38%, var(--surface)); }
 .console-title { min-width: 0; display: flex; align-items: center; gap: 10px; }
 .console-icon { width: 34px; height: 34px; display: grid; flex: 0 0 34px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); }
 .console-icon.state-running { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 13%, transparent); }
@@ -490,6 +500,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .console-state.state-external { background: color-mix(in srgb, var(--violet) 17%, transparent); color: var(--violet); }
 .console-meta-item { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px; border: 1px solid var(--hairline); border-radius: 7px; color: var(--text-dim); font-size: 9px; font-weight: 700; }
 .console-meta-item code { color: var(--text-muted); font: 10px "SF Mono", Menlo, monospace; }
+.console-meta-source { min-width: 0; max-width: min(280px, 28vw); }
+.console-meta-source code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console-context-details { border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 14%, var(--surface)); }
+.console-context-details > summary { display: inline-flex; align-items: center; gap: 6px; min-height: 29px; padding: 0 14px; color: var(--text-dim); font-size: 10px; font-weight: 700; cursor: pointer; list-style: none; }
+.console-context-details > summary::-webkit-details-marker { display: none; }
+.console-context-details > summary:hover, .console-context-details > summary:focus-visible { color: var(--text); }
+.console-context-details[open] > summary { color: var(--accent); }
 .console-context { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 1px; border-bottom: 1px solid var(--hairline); background: var(--hairline); }
 .console-context-item { min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 31px; padding: 0 14px; background: color-mix(in srgb, var(--surface-alt) 22%, var(--surface)); }
 .console-context-item > span { flex: 0 0 auto; color: var(--text-dim); font-size: 9px; font-weight: 800; letter-spacing: .08em; }
@@ -638,6 +655,11 @@ button:disabled { opacity: .45; cursor: default; }
   .interval-choice { flex: 1 1 0; }
   .interval-choice span { width: 100%; padding: 0 5px; }
   .profile-actions-row { align-items: flex-start; }
+  .launch-profile-header { align-items: flex-start; flex-wrap: wrap; row-gap: 8px; }
+  .launch-profile-heading { flex: 1 1 calc(100% - 80px); }
+  .launch-profile-heading p { max-width: 44vw; }
+  .launch-profile-status { margin-left: auto; }
+  .launch-profile-actions { flex: 1 1 100%; justify-content: flex-end; margin-left: 0; }
   .task-editor { grid-template-columns: 1fr; }
   .task-editor label:nth-of-type(3) { grid-column: auto; }
   .detail-grid { grid-template-columns: 110px minmax(0, 1fr); }
@@ -645,6 +667,7 @@ button:disabled { opacity: .45; cursor: default; }
   .launch-console { position: relative; bottom: auto; margin: 0 12px 20px; border-radius: 15px; }
   .console-header { align-items: flex-start; flex-direction: column; gap: 10px; }
   .console-meta { width: 100%; flex-wrap: wrap; }
+  .console-meta-source { max-width: 100%; }
   .console-context { grid-template-columns: 1fr; }
   .console-context-item { min-height: 34px; }
   .console-toolbar { padding-left: 11px; }

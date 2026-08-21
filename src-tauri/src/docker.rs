@@ -1,5 +1,12 @@
 use crate::models::{ContainerInfo, ContainerListing};
-use std::{collections::BTreeSet, process::Command};
+use std::{
+    collections::BTreeSet,
+    env,
+    ffi::OsStr,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 pub fn list_containers(demo: bool) -> ContainerListing {
     if demo {
@@ -15,6 +22,7 @@ pub fn list_containers(demo: bool) -> ContainerListing {
                     ports: vec![5432],
                     compose_project: Some("local-stack".into()),
                     compose_service: Some("database".into()),
+                    compose_working_dir: Some("/Users/shane/Developer/local-stack".into()),
                 },
                 ContainerInfo {
                     id: "e9396d773a34".into(),
@@ -25,6 +33,7 @@ pub fn list_containers(demo: bool) -> ContainerListing {
                     ports: vec![1025, 8025],
                     compose_project: Some("local-stack".into()),
                     compose_service: Some("mail".into()),
+                    compose_working_dir: Some("/Users/shane/Developer/local-stack".into()),
                 },
                 ContainerInfo {
                     id: "91fd0fb2d381".into(),
@@ -35,6 +44,7 @@ pub fn list_containers(demo: bool) -> ContainerListing {
                     ports: vec![],
                     compose_project: None,
                     compose_service: None,
+                    compose_working_dir: None,
                 },
             ],
             message: None,
@@ -44,9 +54,17 @@ pub fn list_containers(demo: bool) -> ContainerListing {
     let format = concat!(
         "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.Ports}}\t",
         "{{.Label \"com.docker.compose.project\"}}\t",
-        "{{.Label \"com.docker.compose.service\"}}"
+        "{{.Label \"com.docker.compose.service\"}}\t",
+        "{{.Label \"com.docker.compose.project.working_dir\"}}"
     );
-    let output = match Command::new("docker")
+    let Some(executable) = resolve_docker_executable() else {
+        return ContainerListing {
+            available: false,
+            containers: vec![],
+            message: Some("Docker CLI was not found in PATH or standard macOS locations.".into()),
+        };
+    };
+    let output = match Command::new(executable)
         .args(["ps", "-a", "--no-trunc", "--format", format])
         .output()
     {
@@ -101,6 +119,7 @@ fn parse_container_line(line: &str) -> Option<ContainerInfo> {
     let ports = columns.next().unwrap_or_default();
     let compose_project = non_empty(columns.next());
     let compose_service = non_empty(columns.next());
+    let compose_working_dir = non_empty(columns.next()).map(|value| canonicalize_working_dir(&value));
     if id.is_empty() || name.is_empty() {
         return None;
     }
@@ -113,7 +132,58 @@ fn parse_container_line(line: &str) -> Option<ContainerInfo> {
         ports: parse_published_ports(ports),
         compose_project,
         compose_service,
+        compose_working_dir,
     })
+}
+
+fn canonicalize_working_dir(value: &str) -> String {
+    fs::canonicalize(value)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| value.to_string())
+}
+
+fn resolve_docker_executable() -> Option<PathBuf> {
+    let path = env::var_os("PATH");
+    let home = dirs::home_dir();
+    docker_executable_candidates(path.as_deref(), home.as_deref())
+        .into_iter()
+        .find(|candidate| is_executable(candidate))
+}
+
+fn docker_executable_candidates(path: Option<&OsStr>, home: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = path
+        .into_iter()
+        .flat_map(env::split_paths)
+        .filter(|entry| !entry.as_os_str().is_empty())
+        .map(|entry| entry.join("docker"))
+        .collect::<Vec<_>>();
+
+    candidates.extend([
+        PathBuf::from("/opt/homebrew/bin/docker"),
+        PathBuf::from("/usr/local/bin/docker"),
+        PathBuf::from("/Applications/Docker.app/Contents/Resources/bin/docker"),
+    ]);
+    if let Some(home) = home {
+        candidates.push(home.join("Applications/Docker.app/Contents/Resources/bin/docker"));
+    }
+    candidates
+}
+
+fn is_executable(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn non_empty(value: Option<&str>) -> Option<String> {
@@ -153,8 +223,40 @@ mod tests {
 
     #[test]
     fn parses_container_columns() {
-        let item = parse_container_line("abc\tpostgres\tpostgres:16\trunning\tUp 1m\t0.0.0.0:5432->5432/tcp\tstack\tdb").unwrap();
+        let item = parse_container_line("abc\tpostgres\tpostgres:16\trunning\tUp 1m\t0.0.0.0:5432->5432/tcp\tstack\tdb\t/work/stack").unwrap();
         assert_eq!(item.ports, vec![5432]);
         assert_eq!(item.compose_project.as_deref(), Some("stack"));
+        assert_eq!(item.compose_working_dir.as_deref(), Some("/work/stack"));
+    }
+
+    #[test]
+    fn canonicalizes_existing_working_directories_and_preserves_missing_paths() {
+        let temporary = tempfile::tempdir().unwrap();
+        let existing = temporary.path().join("project");
+        std::fs::create_dir(&existing).unwrap();
+        let existing_text = existing.to_string_lossy().into_owned();
+        let canonical = std::fs::canonicalize(&existing).unwrap().to_string_lossy().into_owned();
+
+        assert_eq!(canonicalize_working_dir(&existing_text), canonical);
+
+        let missing = temporary.path().join("missing").to_string_lossy().into_owned();
+        assert_eq!(canonicalize_working_dir(&missing), missing);
+    }
+
+    #[test]
+    fn docker_path_candidates_prefer_gui_process_path_before_fallbacks() {
+        let path = env::join_paths([
+            PathBuf::from("/tmp/custom-bin"),
+            PathBuf::from("/tmp/another-bin"),
+        ])
+        .unwrap();
+        let candidates = docker_executable_candidates(
+            Some(path.as_os_str()),
+            Some(Path::new("/Users/example")),
+        );
+
+        assert_eq!(candidates[0], PathBuf::from("/tmp/custom-bin/docker"));
+        assert_eq!(candidates[1], PathBuf::from("/tmp/another-bin/docker"));
+        assert_eq!(candidates[2], PathBuf::from("/opt/homebrew/bin/docker"));
     }
 }

@@ -78,6 +78,8 @@ pub struct ContainerInfo {
     pub ports: Vec<u16>,
     pub compose_project: Option<String>,
     pub compose_service: Option<String>,
+    #[serde(default)]
+    pub compose_working_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

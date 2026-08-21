@@ -70,6 +70,7 @@ export interface ContainerInfo {
   ports: number[];
   compose_project: string | null;
   compose_service: string | null;
+  compose_working_dir: string | null;
 }
 
 export interface ContainerListing {

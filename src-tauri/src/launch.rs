@@ -27,6 +27,14 @@ struct RuntimeTask {
     log_path: PathBuf,
 }
 
+#[derive(Debug)]
+struct ExternalTaskInfo {
+    pid: Option<u32>,
+    working_directory: Option<String>,
+    log_path: Option<PathBuf>,
+    log_tail: String,
+}
+
 #[derive(Debug, Default)]
 pub struct LaunchManager {
     tasks: HashMap<String, RuntimeTask>,
@@ -45,16 +53,8 @@ impl LaunchManager {
                 let key = task_key(&profile.id, &task.name);
                 if let Some(runtime) = self.tasks.get(&key) {
                     snapshots.push(snapshot_from(&profile.id, &task.name, runtime));
-                } else if listener_is_external(profile, task, workspace) {
-                    snapshots.push(ManagedTaskSnapshot {
-                        profile_id: profile.id.clone(),
-                        task_name: task.name.clone(),
-                        state: "external".into(),
-                        main_pid: None,
-                        started_at: None,
-                        message: Some("This process is running externally and cannot be stopped by Cutting Board.".into()),
-                        log_tail: String::new(),
-                    });
+                } else if let Some(external) = external_task_info(profile, task, workspace) {
+                    snapshots.push(external_snapshot(&profile.id, &task.name, external));
                 } else {
                     snapshots.push(ManagedTaskSnapshot {
                         profile_id: profile.id.clone(),
@@ -64,6 +64,9 @@ impl LaunchManager {
                         started_at: None,
                         message: None,
                         log_tail: String::new(),
+                        external_pid: None,
+                        external_working_directory: None,
+                        external_log_path: None,
                     });
                 }
             }
@@ -80,16 +83,8 @@ impl LaunchManager {
     ) -> Result<ManagedTaskSnapshot, String> {
         self.refresh();
         let (profile, task) = find_task(profiles, request)?;
-        if listener_is_external(profile, task, workspace) {
-            return Ok(ManagedTaskSnapshot {
-                profile_id: profile.id.clone(),
-                task_name: task.name.clone(),
-                state: "external".into(),
-                main_pid: None,
-                started_at: None,
-                message: Some("The expected port is already owned by an external process.".into()),
-                log_tail: String::new(),
-            });
+        if let Some(external) = external_task_info(profile, task, workspace) {
+            return Ok(external_snapshot(&profile.id, &task.name, external));
         }
         let key = task_key(&profile.id, &task.name);
         if let Some(runtime) = self.tasks.get(&key) {
@@ -409,6 +404,37 @@ fn snapshot_from(
         started_at: runtime.started_at,
         message: runtime.message.clone(),
         log_tail: read_log_tail(&runtime.log_path).unwrap_or_default(),
+        external_pid: None,
+        external_working_directory: None,
+        external_log_path: None,
+    }
+}
+
+fn external_snapshot(
+    profile_id: &str,
+    task_name: &str,
+    external: ExternalTaskInfo,
+) -> ManagedTaskSnapshot {
+    let message = match external.log_path.as_ref() {
+        Some(path) => format!(
+            "This process is running externally and cannot be stopped by Cutting Board. Reading output from {}.",
+            path.display()
+        ),
+        None => "This process is running externally and cannot be stopped by Cutting Board. Output is unavailable because stdout and stderr are not connected to a readable regular file.".into(),
+    };
+    ManagedTaskSnapshot {
+        profile_id: profile_id.into(),
+        task_name: task_name.into(),
+        state: "external".into(),
+        main_pid: external.pid,
+        started_at: None,
+        message: Some(message),
+        log_tail: external.log_tail,
+        external_pid: external.pid,
+        external_working_directory: external.working_directory,
+        external_log_path: external
+            .log_path
+            .map(|path| path.to_string_lossy().into_owned()),
     }
 }
 
@@ -422,17 +448,17 @@ fn read_log_tail(path: &Path) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn listener_is_external(
+fn external_task_info(
     profile: &LaunchProfile,
     task: &LaunchTask,
     workspace: Option<&WorkspaceSnapshot>,
-) -> bool {
-    let Some(port) = task.expected_port else { return false };
+) -> Option<ExternalTaskInfo> {
+    let Some(port) = task.expected_port else { return None };
     let task_root = task_cwd(profile, task)
         .canonicalize()
         .unwrap_or_else(|_| task_cwd(profile, task));
-    workspace.is_some_and(|snapshot| {
-        snapshot.services.iter().any(|service| {
+    let service = workspace.and_then(|snapshot| {
+        snapshot.services.iter().find(|service| {
             service.endpoints.iter().any(|endpoint| endpoint.port == port)
                 && (service
                     .process
@@ -445,7 +471,85 @@ fn listener_is_external(
                             .any(|path| path_matches_task(path, &task_root))
                     }))
         })
+    })?;
+    let process = service.process.as_ref();
+    let pid = process.map(|process| process.pid);
+    let working_directory = process
+        .and_then(|process| process.working_directory.clone());
+    let (log_path, log_tail) = pid
+        .and_then(external_log_path)
+        .and_then(|path| read_log_tail(&path).ok().map(|tail| (Some(path), tail)))
+        .unwrap_or_else(|| (None, String::new()));
+    Some(ExternalTaskInfo {
+        pid,
+        working_directory,
+        log_path,
+        log_tail,
     })
+}
+
+#[cfg(unix)]
+fn external_log_path(pid: u32) -> Option<PathBuf> {
+    let output = Command::new("lsof")
+        .args(["-nP", "-a", "-p", &pid.to_string(), "-d", "1,2", "-Ffn"])
+        .output()
+        .ok()?;
+    if !output.status.success() && output.stdout.is_empty() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    first_readable_external_log_path(parse_lsof_output_paths(&text))
+}
+
+#[cfg(not(unix))]
+fn external_log_path(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(unix)]
+fn parse_lsof_output_paths(text: &str) -> Vec<(u8, PathBuf)> {
+    let mut fd = None;
+    let mut paths = Vec::new();
+    for line in text.lines() {
+        let Some((field, value)) = line.split_at_checked(1) else { continue };
+        match field {
+            "f" => fd = parse_lsof_fd(value),
+            "n" if matches!(fd, Some(1 | 2)) => {
+                paths.push((fd.expect("checked above"), PathBuf::from(value)));
+            }
+            _ => {}
+        }
+    }
+    paths
+}
+
+#[cfg(unix)]
+fn parse_lsof_fd(value: &str) -> Option<u8> {
+    let digits = value
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    matches!(digits.as_str(), "1" | "2").then(|| digits.parse().expect("known fd"))
+}
+
+fn first_readable_external_log_path(mut paths: Vec<(u8, PathBuf)>) -> Option<PathBuf> {
+    paths.sort_by_key(|(fd, _)| *fd);
+    let mut seen = Vec::new();
+    for (_, path) in paths {
+        let comparison_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if seen.iter().any(|candidate| candidate == &comparison_path) {
+            continue;
+        }
+        seen.push(comparison_path);
+        let Ok(metadata) = fs::metadata(&path) else { continue };
+        if !metadata.is_file() {
+            continue;
+        }
+        if OpenOptions::new().read(true).open(&path).is_ok() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn path_matches_task(candidate: &str, task_root: &Path) -> bool {
@@ -585,6 +689,12 @@ mod tests {
         let snapshots = LaunchManager::default().snapshots(&[profile], Some(&workspace));
 
         assert_eq!(snapshots[0].state, "external");
+        assert_eq!(snapshots[0].main_pid, Some(123));
+        assert_eq!(snapshots[0].external_pid, Some(123));
+        assert_eq!(
+            snapshots[0].external_working_directory.as_deref(),
+            Some(frontend.to_string_lossy().as_ref())
+        );
     }
 
     #[test]
@@ -627,6 +737,40 @@ mod tests {
     #[test]
     fn task_key_separates_profile_and_name() {
         assert_ne!(task_key("ab", "c"), task_key("a", "bc"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_log_path_prefers_stdout_and_skips_non_regular_files() {
+        let temporary = tempfile::tempdir().unwrap();
+        let stdout = temporary.path().join("stdout.log");
+        let stderr = temporary.path().join("stderr.log");
+        fs::write(&stdout, "stdout").unwrap();
+        fs::write(&stderr, "stderr").unwrap();
+        let output = format!(
+            "f2w\nn{}\nf1w\nn{}\nf2w\nn{}\n",
+            temporary.path().display(),
+            stdout.display(),
+            stderr.display()
+        );
+
+        let paths = parse_lsof_output_paths(&output);
+        assert_eq!(first_readable_external_log_path(paths), Some(stdout));
+        assert_eq!(
+            first_readable_external_log_path(vec![
+                (1, temporary.path().to_path_buf()),
+                (2, stderr.clone()),
+            ]),
+            Some(stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsof_fd_parser_does_not_treat_fd_ten_as_stdout() {
+        assert_eq!(parse_lsof_fd("10w"), None);
+        assert_eq!(parse_lsof_fd("1w"), Some(1));
+        assert_eq!(parse_lsof_fd("2r"), Some(2));
     }
 
     #[cfg(unix)]

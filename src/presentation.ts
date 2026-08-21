@@ -1,4 +1,4 @@
-import type { LaunchTask, ServiceSnapshot } from "./types";
+import type { ContainerInfo, LaunchTask, ServiceSnapshot } from "./types";
 
 export const FRESH_UPTIME_SECONDS = 300;
 
@@ -118,6 +118,44 @@ export function groupServices(services: ServiceSnapshot[]): Array<{
     group.services.sort((a, b) => (uniquePorts(a)[0] ?? 65536) - (uniquePorts(b)[0] ?? 65536) || a.display_name.localeCompare(b.display_name));
   }
   return [...groups.values()].sort((a, b) => (a.id === "other" ? 1 : b.id === "other" ? -1 : a.name.localeCompare(b.name)));
+}
+
+function normalisePath(value: string): string {
+  const input = value.trim().replaceAll("\\", "/");
+  const absolute = input.startsWith("/");
+  const parts: string[] = [];
+  for (const part of input.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length && parts[parts.length - 1] !== "..") parts.pop();
+      else if (!absolute) parts.push(part);
+      continue;
+    }
+    parts.push(part);
+  }
+  const normalized = `${absolute ? "/" : ""}${parts.join("/")}`;
+  return (normalized || (absolute ? "/" : "")).replace(/\/+$/, "") || "/";
+}
+
+export function pathIsEqualOrNested(path: string, root: string): boolean {
+  const candidate = normalisePath(path);
+  const parent = normalisePath(root);
+  if (!candidate || !parent) return false;
+  return parent === "/" ? candidate.startsWith("/") : candidate === parent || candidate.startsWith(`${parent}/`);
+}
+
+export function relatedContainersForGroup(services: ServiceSnapshot[], containers: ContainerInfo[]): ContainerInfo[] {
+  const roots = services
+    .map((service) => service.project?.root_path?.trim() || (!service.project ? service.process?.working_directory?.trim() : ""))
+    .filter((root): root is string => Boolean(root));
+  if (roots.length === 0) return [];
+  return containers
+    .filter((container) => container.state.trim().toLowerCase() === "running")
+    .filter((container) => {
+      const workingDir = container.compose_working_dir?.trim();
+      return Boolean(workingDir && roots.some((root) => pathIsEqualOrNested(workingDir, root)));
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
 }
 
 export function middleEllipsis(value: string, maximum: number): string {
