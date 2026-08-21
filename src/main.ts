@@ -86,9 +86,17 @@ let pendingGroupSaveId: string | null = null;
 let pendingGroupStopId: string | null = null;
 let pendingProfileDeleteId: string | null = null;
 const operations = new Set<string>();
+type LaunchTaskRef = { profile: LaunchProfile; task: LaunchTask };
+let selectedTaskKey: string | null = null;
+let consoleWrap = false;
+let consoleFollow = true;
+let consoleScrollTop = 0;
+let consoleScrollTaskKey: string | null = null;
+let restoringConsoleScroll = false;
 
 root.addEventListener("click", (event) => void handleClick(event));
 root.addEventListener("keydown", handleKeyboard);
+root.addEventListener("scroll", handleConsoleScroll, true);
 document.addEventListener("keydown", (event) => {
   if (!document.querySelector(".modal-backdrop")) return;
   if (event.key === "Escape") closeModal();
@@ -423,16 +431,20 @@ function renderContainerTile(container: ContainerInfo): string {
 }
 
 function renderLaunch(force = false): void {
+  captureConsoleState();
   const signature = JSON.stringify([profiles, taskSnapshots, appInfo?.demo, [...operations]]);
   if (!force && signature === launchSignature && workspaceElement.dataset.view === "launch") return;
   launchSignature = signature;
   workspaceElement.dataset.view = "launch";
   const header = `<div class="launch-heading"><div><h1>Launch Profiles</h1><p>Run backend, frontend, and auto-build tasks together.</p></div><button class="primary-button icon-button-label" type="button" data-action="add-profile" ${appInfo?.demo ? "disabled" : ""}>${uiIcon("plus", 14)} Add</button></div>`;
   if (profiles.length === 0) {
+    selectedTaskKey = null;
     workspaceElement.innerHTML = `${header}<div class="launch-empty"><h2>No launch profiles yet</h2><p>Add a project and run commands to start and stop them together without an IDE.</p><button class="secondary-button" type="button" data-action="add-profile" ${appInfo?.demo ? "disabled" : ""}>Add First Profile</button></div>`;
     return;
   }
-  workspaceElement.innerHTML = `${header}<div class="launch-list">${profiles.map(renderProfile).join("")}</div>`;
+  const selected = ensureSelectedTask();
+  workspaceElement.innerHTML = `${header}<div class="launch-list">${profiles.map(renderProfile).join("")}</div>${renderLaunchConsole(selected)}`;
+  restoreConsoleScroll();
 }
 
 function renderProfile(profile: LaunchProfile): string {
@@ -445,7 +457,7 @@ function renderProfile(profile: LaunchProfile): string {
   return `<section class="profile-card"><div class="profile-content">
     <header class="profile-header"><div class="profile-title-line"><h2>${h(profile.name)}</h2><span class="task-count">${profile.tasks.length} ${profile.tasks.length === 1 ? "Task" : "Tasks"}</span></div><p class="profile-path">${h(middleEllipsis(profile.project_root, 120))}</p></header>
     <div class="profile-actions-row"><div>${primary}</div><div class="profile-secondary-actions"><button class="quiet-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" ${appInfo?.demo || canStop ? "disabled" : ""}>Edit</button><button class="quiet-button danger-button" type="button" data-action="delete-profile" data-profile-id="${h(profile.id)}" ${appInfo?.demo || canStop ? "disabled" : ""}>Delete</button></div></div>
-    <div class="task-list">${profile.tasks.map((task) => renderTask(profile, task)).join("")}</div>
+    <div class="task-list" role="list" aria-label="Tasks">${profile.tasks.map((task) => renderTask(profile, task)).join("")}</div>
   </div></section>`;
 }
 
@@ -456,12 +468,163 @@ function renderTask(profile: LaunchProfile, task: LaunchTask): string {
   const external = state === "external";
   const busy = operations.has(`task:${profile.id}:${task.name}`);
   const meta = snapshot?.message || `${middleEllipsis(task.cwd, 54)}  ·  ${middleEllipsis(task.command, 100)}`;
-  return `<article class="task-row state-${state}"><div class="task-copy">
+  const selected = selectedTaskKey === launchTaskKey(profile.id, task.name);
+  return `<article class="task-row state-${state}${selected ? " is-selected" : ""}" data-action="select-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" tabindex="0" role="listitem" aria-current="${selected ? "true" : "false"}" aria-label="${h(`${profile.name} · ${task.name}, ${stateLabel(state)}`)}"><div class="task-copy">
     <h3>${h(middleEllipsis(task.name, 72))}</h3>
     <div class="task-status-line"><span class="task-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span>${task.expected_port ? `<span class="task-port">localhost:${task.expected_port}</span>` : ""}</div>
     <p class="task-message">${h(meta)}</p>
-    <div class="task-actions-row"><div>${active ? `<button class="quiet-button warning-action icon-button-label" type="button" data-action="stop-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>${uiIcon("stop", 13)} Stop</button>` : !external ? `<button class="quiet-button start-action icon-button-label" type="button" data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>${uiIcon("play", 13)} Start</button>` : ""}</div><button class="quiet-button logs-action icon-button-label" type="button" data-action="show-logs" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}">${uiIcon("log", 13)} Logs</button></div>
+    <div class="task-actions-row"><div>${active ? `<button class="quiet-button warning-action icon-button-label" type="button" data-action="stop-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>${uiIcon("stop", 13)} Stop</button>` : !external ? `<button class="quiet-button start-action icon-button-label" type="button" data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>${uiIcon("play", 13)} Start</button>` : ""}</div><span class="task-console-hint">${selected ? `${uiIcon("terminal", 12)} Viewing output` : `${uiIcon("chevronDown", 12)} Select to view output`}</span></div>
   </div></article>`;
+}
+
+function launchTaskKey(profileId: string, taskName: string): string {
+  return `${profileId}\0${taskName}`;
+}
+
+// Keep the NUL-delimited key for in-memory identity, but never put it in HTML:
+// HTML parsers normalize NUL characters in attribute values.
+function launchTaskDomKey(profileId: string, taskName: string): string {
+  return `${encodeURIComponent(profileId)}:${encodeURIComponent(taskName)}`;
+}
+
+function launchTaskRefs(): LaunchTaskRef[] {
+  return profiles.flatMap((profile) => profile.tasks.map((task) => ({ profile, task })));
+}
+
+function launchTaskRefForKey(key: string | null): LaunchTaskRef | null {
+  if (!key) return null;
+  return launchTaskRefs().find(({ profile, task }) => launchTaskKey(profile.id, task.name) === key) ?? null;
+}
+
+function selectedTaskDomKey(): string | null {
+  const ref = launchTaskRefForKey(selectedTaskKey);
+  return ref ? launchTaskDomKey(ref.profile.id, ref.task.name) : null;
+}
+
+function ensureSelectedTask(): LaunchTaskRef | null {
+  const existing = launchTaskRefForKey(selectedTaskKey);
+  if (existing) return existing;
+  const refs = launchTaskRefs();
+  const active = refs
+    .map((ref, index) => ({ ref, index, state: snapshotFor(ref.profile.id, ref.task.name)?.state ?? "stopped" as LaunchState }))
+    .filter(({ state }) => ["running", "starting", "stopping", "external"].includes(state))
+    .sort((a, b) => launchStatePriority(a.state) - launchStatePriority(b.state) || a.index - b.index)[0]?.ref;
+  const next = active ?? refs[0] ?? null;
+  selectedTaskKey = next ? launchTaskKey(next.profile.id, next.task.name) : null;
+  return next;
+}
+
+function launchStatePriority(state: LaunchState): number {
+  return ({ running: 0, starting: 1, stopping: 2, external: 3, failed: 4, stopped: 5 })[state];
+}
+
+function renderLaunchConsole(ref: LaunchTaskRef | null): string {
+  if (!ref) {
+    return `<section class="launch-console launch-console-empty" aria-labelledby="launch-console-title"><header class="console-header"><div class="console-title"><span class="console-icon" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">Task console</h2><p>Select a task to view its output.</p></div></div></header><div class="console-output console-empty-output" role="status"><div class="console-message"><strong>No tasks available</strong><span>Add at least one task to this launch profile.</span></div></div></section>`;
+  }
+  const { profile, task } = ref;
+  const snapshot = snapshotFor(profile.id, task.name);
+  const state: LaunchState = snapshot?.state ?? "stopped";
+  const pid = snapshot?.main_pid ?? null;
+  const port = task.expected_port;
+  const command = task.command || "No command configured";
+  const cwd = task.cwd || "No working directory configured";
+  return `<section class="launch-console state-${state}" aria-labelledby="launch-console-title" data-console-task-key="${h(launchTaskDomKey(profile.id, task.name))}">
+    <header class="console-header">
+      <div class="console-title"><span class="console-icon state-${state}" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">Task console</h2><p><strong>${h(task.name)}</strong><span> in ${h(profile.name)}</span></p></div></div>
+      <div class="console-meta" aria-label="Task status"><span class="console-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span><span class="console-meta-item"><span>PID</span><code>${pid ?? "—"}</code></span>${port ? `<span class="console-meta-item"><span>PORT</span><code>localhost:${port}</code></span>` : ""}</div>
+    </header>
+    <div class="console-context" aria-label="Task context"><div class="console-context-item"><span>COMMAND</span><code title="${h(task.command)}">${h(middleEllipsis(command, 240))}</code></div><div class="console-context-item"><span>WORKING DIRECTORY</span><code title="${h(task.cwd)}">${h(middleEllipsis(cwd, 240))}</code></div></div>
+    <div class="console-toolbar"><span class="console-toolbar-label">${uiIcon("log", 13)} Output</span><div class="console-tools"><button class="console-tool${consoleWrap ? " is-active" : ""}" type="button" data-action="toggle-log-wrap" aria-pressed="${consoleWrap ? "true" : "false"}" title="${consoleWrap ? "Disable line wrapping" : "Wrap long lines"}">${uiIcon("chevronDown", 12)}<span>Wrap</span></button><button class="console-tool${consoleFollow ? " is-active" : ""}" type="button" data-action="toggle-log-follow" aria-pressed="${consoleFollow ? "true" : "false"}" title="${consoleFollow ? "Pause following new output" : "Follow new output"}">${uiIcon(consoleFollow ? "refresh" : "play", 12)}<span data-console-follow-label>${consoleFollow ? "Following" : "Follow output"}</span></button></div></div>
+    <div class="console-output${consoleWrap ? " is-wrapped" : ""}" tabindex="0" role="log" aria-live="polite" aria-label="Output for ${h(task.name)}">${renderConsoleOutput(snapshot, state)}</div>
+  </section>`;
+}
+
+function renderConsoleOutput(snapshot: ManagedTaskSnapshot | undefined, state: LaunchState): string {
+  if (state === "external") {
+    return `<div class="console-message is-external"><span class="console-message-icon">${uiIcon("terminal", 18)}</span><strong>Output unavailable</strong><span>This task is already running outside Cutting Board, so its output is not captured.</span></div>`;
+  }
+  const log = snapshot?.log_tail ?? "";
+  const message = snapshot?.message?.trim() ?? "";
+  const notice = state === "failed"
+    ? `<div class="console-alert">${uiIcon("warning", 14)}<span>${h(message || "The task exited before completing successfully.")}</span></div>`
+    : "";
+  if (log.length > 0) return `${notice}<pre class="console-log">${h(log)}</pre>`;
+  if (state === "failed") {
+    return `<div class="console-message is-failed"><span class="console-message-icon">${uiIcon("warning", 18)}</span><strong>Task failed before producing output</strong><span>${h(message || "The task exited before completing successfully.")}</span></div>`;
+  }
+  const copy = state === "starting"
+    ? "Waiting for the task to produce output…"
+    : state === "running"
+      ? "No output has been captured yet."
+      : state === "stopping"
+        ? "Stopping task…"
+        : "No output has been captured for this task.";
+  return `${notice}<div class="console-message"><span class="console-message-icon">${uiIcon("log", 18)}</span><strong>${h(copy)}</strong><span>${state === "stopped" ? "Start the task to stream its output here." : "New output will appear here automatically."}</span></div>`;
+}
+
+function captureConsoleState(): void {
+  const output = document.querySelector<HTMLElement>(".console-output");
+  if (!output) return;
+  const taskKey = output.closest<HTMLElement>(".launch-console")?.dataset.consoleTaskKey ?? null;
+  if (taskKey !== selectedTaskDomKey()) return;
+  consoleScrollTaskKey = selectedTaskKey;
+  consoleScrollTop = output.scrollTop;
+}
+
+function restoreConsoleScroll(): void {
+  const output = document.querySelector<HTMLElement>(".console-output");
+  if (!output) return;
+  restoringConsoleScroll = true;
+  const savedScrollTop = consoleScrollTaskKey === selectedTaskKey ? consoleScrollTop : 0;
+  output.scrollTop = consoleFollow ? output.scrollHeight : Math.min(savedScrollTop, output.scrollHeight);
+  consoleScrollTaskKey = selectedTaskKey;
+  consoleScrollTop = output.scrollTop;
+  window.setTimeout(() => { restoringConsoleScroll = false; }, 0);
+}
+
+function handleConsoleScroll(event: Event): void {
+  const target = event.target instanceof Element ? event.target.closest<HTMLElement>(".console-output") : null;
+  if (!target) return;
+  const taskKey = target.closest<HTMLElement>(".launch-console")?.dataset.consoleTaskKey ?? null;
+  if (taskKey !== selectedTaskDomKey()) return;
+  consoleScrollTaskKey = selectedTaskKey;
+  consoleScrollTop = target.scrollTop;
+  if (restoringConsoleScroll) return;
+  const distanceFromEnd = target.scrollHeight - target.clientHeight - target.scrollTop;
+  consoleFollow = distanceFromEnd <= 18;
+  updateConsoleControls();
+}
+
+function updateConsoleControls(): void {
+  const button = document.querySelector<HTMLButtonElement>("[data-action='toggle-log-follow']");
+  if (!button) return;
+  button.classList.toggle("is-active", consoleFollow);
+  button.setAttribute("aria-pressed", String(consoleFollow));
+  button.title = consoleFollow ? "Pause following new output" : "Follow new output";
+  const label = button.querySelector<HTMLElement>("[data-console-follow-label]");
+  if (label) label.textContent = consoleFollow ? "Following" : "Follow output";
+}
+
+function selectTask(profileId: string, taskName: string, focus = false): void {
+  const ref = launchTaskRefs().find(({ profile, task }) => profile.id === profileId && task.name === taskName);
+  if (!ref) throw new Error("The launch task no longer exists.");
+  setSelectedTask(profileId, taskName);
+  renderLaunch(true);
+  if (focus) focusTaskRow(profileId, taskName);
+}
+
+function setSelectedTask(profileId: string, taskName: string): void {
+  const key = launchTaskKey(profileId, taskName);
+  if (selectedTaskKey === key) return;
+  selectedTaskKey = key;
+  consoleScrollTaskKey = key;
+  consoleScrollTop = 0;
+}
+
+function focusTaskRow(profileId: string, taskName: string): void {
+  const row = [...document.querySelectorAll<HTMLElement>(".task-row")].find((item) => item.dataset.profileId === profileId && item.dataset.taskName === taskName);
+  row?.focus();
 }
 
 async function handleClick(event: Event): Promise<void> {
@@ -505,9 +668,17 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "confirm-delete-profile") await confirmDeleteProfile(required(target.dataset.profileId));
     else if (action === "start-profile") await startProfile(required(target.dataset.profileId));
     else if (action === "stop-profile") await stopProfile(required(target.dataset.profileId));
+    else if (action === "select-task") selectTask(required(target.dataset.profileId), required(target.dataset.taskName), true);
     else if (action === "start-task") await runTask(required(target.dataset.profileId), required(target.dataset.taskName), true);
     else if (action === "stop-task") await runTask(required(target.dataset.profileId), required(target.dataset.taskName), false);
-    else if (action === "show-logs") showLogs(required(target.dataset.profileId), required(target.dataset.taskName));
+    else if (action === "toggle-log-wrap") {
+      consoleWrap = !consoleWrap;
+      renderLaunch(true);
+    }
+    else if (action === "toggle-log-follow") {
+      consoleFollow = !consoleFollow;
+      renderLaunch(true);
+    }
     else if (action === "choose-root") await chooseProfileRoot();
     else if (action === "add-task-row") addTaskRow();
     else if (action === "remove-task-row") target.closest(".task-editor")?.remove();
@@ -517,6 +688,22 @@ async function handleClick(event: Event): Promise<void> {
 }
 
 function handleKeyboard(event: KeyboardEvent): void {
+  const taskRow = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(".task-row") : null;
+  if (taskRow && event.target === taskRow) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      selectTask(required(taskRow.dataset.profileId), required(taskRow.dataset.taskName), true);
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      const rows = [...document.querySelectorAll<HTMLElement>(".task-row")];
+      const index = rows.indexOf(taskRow);
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      rows[(index + step + rows.length) % rows.length]?.focus();
+      event.preventDefault();
+      return;
+    }
+  }
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
   const current = event.target instanceof HTMLElement ? event.target.closest<HTMLButtonElement>("[data-tile-action]") : null;
   const card = current?.closest<HTMLElement>(".service-tile");
@@ -660,9 +847,11 @@ async function stopService(id: string): Promise<void> {
 
 async function startProfile(id: string): Promise<void> {
   const profile = findProfile(id);
+  const firstStartable = profile.tasks.find((task) => !["starting", "running", "stopping", "external"].includes(snapshotFor(id, task.name)?.state ?? "stopped"));
+  if (firstStartable) setSelectedTask(id, firstStartable.name);
   for (const task of profile.tasks) {
     const state = snapshotFor(id, task.name)?.state ?? "stopped";
-    if (!["starting", "running", "stopping", "external"].includes(state)) await runTask(id, task.name, true, false);
+    if (!["starting", "running", "stopping", "external"].includes(state)) await runTask(id, task.name, true, false, false);
   }
   await refreshLaunch(true);
 }
@@ -672,9 +861,10 @@ async function stopProfile(id: string): Promise<void> {
   await refreshLaunch(true);
 }
 
-async function runTask(profileId: string, taskName: string, start: boolean, refresh = true): Promise<void> {
+async function runTask(profileId: string, taskName: string, start: boolean, refresh = true, select = true): Promise<void> {
   const key = `task:${profileId}:${taskName}`;
   if (operations.has(key)) return;
+  if (select) setSelectedTask(profileId, taskName);
   operations.add(key);
   renderLaunch(true);
   try {
@@ -803,11 +993,6 @@ async function deleteProfile(id: string): Promise<void> {
   renderHeaderCounts();
   renderLaunch(true);
   toast("Launch profile deleted.");
-}
-
-function showLogs(profileId: string, taskName: string): void {
-  const snapshot = snapshotFor(profileId, taskName);
-  openModal(`${findProfile(profileId).name} · ${taskName}`, `<pre class="log-view">${h(snapshot?.log_tail || "No output has been captured yet.")}</pre><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
 }
 
 function openModal(title: string, body: string, options: { dismissOnBackdrop?: boolean } = {}): void {
