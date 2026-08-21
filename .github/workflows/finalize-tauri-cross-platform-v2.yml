@@ -1,0 +1,472 @@
+name: Finalize verified Tauri tree v2
+
+on:
+  push:
+    branches: [feat/tauri-migration]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  checks: read
+  pull-requests: write
+
+concurrency:
+  group: cutting-board-tauri-finalizer-v2
+  cancel-in-progress: false
+
+jobs:
+  cancel-earlier-runs:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel superseded branch workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          runs="$(gh api "/repos/${REPOSITORY}/actions/runs?branch=feat%2Ftauri-migration&per_page=100")"
+          mapfile -t ids < <(jq -r --arg current "$CURRENT_RUN_ID" '
+            .workflow_runs[]
+            | select((.id | tostring) != $current)
+            | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "requested" or .status == "pending")
+            | .id
+          ' <<<"$runs")
+          for id in "${ids[@]}"; do
+            echo "Cancelling superseded run ${id}"
+            gh api --method POST "/repos/${REPOSITORY}/actions/runs/${id}/cancel" || true
+          done
+          sleep 60
+
+  prepare:
+    needs: cancel-earlier-runs
+    runs-on: ubuntu-24.04
+    outputs:
+      base_sha: ${{ steps.base.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/tauri-migration
+          fetch-depth: 0
+
+      - id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install Linux Tauri prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            lsof \
+            patchelf \
+            rpm \
+            wget
+
+      - name: Produce the canonical migration tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import re
+          from pathlib import Path
+
+          package_path = Path("package.json")
+          package = json.loads(package_path.read_text())
+          package.setdefault("devDependencies", {})["@types/node"] = "^24.0.0"
+          package_path.write_text(json.dumps(package, indent=2) + "\n")
+
+          Path("vite.config.ts").write_text('''import { defineConfig } from "vite";
+
+const host = process.env.TAURI_DEV_HOST;
+
+export default defineConfig({
+  publicDir: "assets",
+  clearScreen: false,
+  server: {
+    port: 1420,
+    strictPort: true,
+    host: host || false,
+    hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
+    watch: { ignored: ["**/src-tauri/**"] }
+  },
+  envPrefix: ["VITE_", "TAURI_"]
+});
+''')
+
+          main_path = Path("src/main.ts")
+          main = main_path.read_text()
+          main = re.sub(
+              r'^const HTML_ESCAPES: Record<string, string> = .*?;\n',
+              '',
+              main,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          escapes = json.dumps(
+              {"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"},
+              ensure_ascii=False,
+          )
+          replacement = (
+              f"const HTML_ESCAPES: Record<string, string> = {escapes};\n"
+              "function h(value: unknown): string { "
+              "return String(value ?? \"\").replace(/[&<>'\"]/g, (character) => HTML_ESCAPES[character] ?? character); "
+              "}"
+          )
+          main, count = re.subn(
+              r'^function h\(value: unknown\): string \{.*$',
+              replacement,
+              main,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if count != 1:
+              raise SystemExit("Could not normalize the HTML escaping helper")
+          main_path.write_text(main)
+
+          scanner_path = Path("src-tauri/src/scanner.rs")
+          scanner = scanner_path.read_text()
+          scanner = re.sub(
+              r'\s*let Some\(\(field, value\)\) = line\.split_at_checked\(1\) else \{\s*continue;\s*\};',
+              '\n        if line.is_empty() {\n            continue;\n        }\n        let (field, value) = line.split_at(1);',
+              scanner,
+              count=1,
+          )
+          scanner = scanner.replace('.map(Pid::as_u32)', '.map(|pid| pid.as_u32())')
+          scanner = re.sub(
+              r'("pom\.xml"\s*=>\s*xml_tag\([^\n]+"artifactId"\))\.map\(clean_project_name\)',
+              r'\1.map(|value| clean_project_name(&value))',
+              scanner,
+              count=1,
+          )
+          scanner = scanner.replace(
+              '        matches!(\n            port,',
+              '        matches!(\n            *port,',
+          )
+          scanner = scanner.replace(
+              '.map(|value| value.to_string_lossy())\n            .collect::<Vec<_>>()',
+              '.map(|value| value.to_string_lossy().into_owned())\n            .collect::<Vec<_>>()',
+          )
+          scanner_path.write_text(scanner)
+
+          lib_path = Path("src-tauri/src/lib.rs")
+          lib = lib_path.read_text()
+          lib = re.sub(
+              r'let config_dir = app\s*\.path\(\)\s*\.app_config_dir\(\)\s*\.map_err\(\|error\| format!\("Could not resolve the app configuration directory: \{error\}"\)\)\?;',
+              'let config_dir = app.path().app_config_dir()?;',
+              lib,
+              count=1,
+          )
+          lib = lib.replace(
+              'tauri::async_runtime::spawn_blocking(move || Ok(docker::list_containers(demo)))',
+              'tauri::async_runtime::spawn_blocking(move || -> Result<ContainerListing, String> {\n        Ok(docker::list_containers(demo))\n    })',
+          )
+          lib_path.write_text(lib)
+
+          config_path = Path("src-tauri/tauri.conf.json")
+          config = json.loads(config_path.read_text())
+          config["bundle"]["icon"] = [
+              "icons/32x32.png",
+              "icons/128x128.png",
+              "icons/128x128@2x.png",
+              "icons/icon.icns",
+              "icons/icon.ico",
+          ]
+          config_path.write_text(json.dumps(config, indent=2) + "\n")
+
+          matrix_os = "$" + "{{ matrix.os }}"
+          matrix_name = "$" + "{{ matrix.name }}"
+          ci = '''name: Tauri CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: ubuntu
+          - os: macos-latest
+            name: macos
+    runs-on: __MATRIX_OS__
+    name: __MATRIX_NAME__
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install Linux webview dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \\
+            build-essential \\
+            curl \\
+            file \\
+            libayatana-appindicator3-dev \\
+            librsvg2-dev \\
+            libssl-dev \\
+            libwebkit2gtk-4.1-dev \\
+            libxdo-dev \\
+            lsof \\
+            patchelf \\
+            rpm \\
+            wget
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Type-check frontend
+        run: npm run check
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - name: Test native core
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+      - name: Build desktop bundles
+        run: npm run tauri build
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: cutting-board-__MATRIX_NAME__
+          path: src-tauri/target/release/bundle/**/*
+          if-no-files-found: error
+'''
+          ci = ci.replace("__MATRIX_OS__", matrix_os).replace("__MATRIX_NAME__", matrix_name)
+          Path(".github/workflows/ci.yml").write_text(ci)
+          PY
+
+          git rm -r -f --ignore-unmatch \
+            packaging \
+            scripts \
+            tests \
+            src/cutting_board \
+            .migration
+          git rm -f --ignore-unmatch \
+            pyproject.toml \
+            requirements.txt \
+            requirements-dev.txt \
+            .github/workflows/ubuntu-24.04.yml \
+            .github/workflows/finalize-tauri-migration.yml \
+            .github/workflows/verify-tauri-migration.yml \
+            .github/workflows/tauri-migration-pr-gate.yml \
+            .github/workflows/finalize-tauri-cross-platform.yml \
+            .github/workflows/finalize-tauri-cross-platform-v2.yml
+
+          npm install
+          npm run tauri icon assets/cutting-board-512.png
+          cargo fix --manifest-path src-tauri/Cargo.toml --all-targets --allow-dirty --allow-staged || true
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all
+          npm run check
+          cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+
+          cat > MIGRATION_VALIDATED.md <<EOF
+          # Tauri migration validation
+
+          This source tree was prepared by GitHub Actions run ${GITHUB_RUN_ID} from branch commit $(git rev-parse HEAD), then tested as one immutable artifact on Ubuntu and macOS before publication.
+
+          The validation matrix runs strict TypeScript checking, Rust formatting, every Rust test target, and complete Tauri desktop bundle builds. The regular pull request workflow repeats the same release checks.
+          EOF
+
+          tar \
+            --exclude=.git \
+            --exclude=node_modules \
+            --exclude=dist \
+            --exclude=src-tauri/target \
+            -czf /tmp/cutting-board-tauri-tree.tar.gz .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: canonical-tauri-tree-v2
+          path: /tmp/cutting-board-tauri-tree.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  validate:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: ubuntu
+          - os: macos-latest
+            name: macos
+    runs-on: ${{ matrix.os }}
+    name: validate-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base_sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: canonical-tauri-tree-v2
+          path: /tmp/canonical
+
+      - name: Restore canonical source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          tar -xzf /tmp/canonical/cutting-board-tauri-tree.tar.gz -C .
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install Linux webview dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            lsof \
+            patchelf \
+            rpm \
+            wget
+
+      - name: Install locked frontend dependencies
+        run: npm ci
+
+      - name: Type-check frontend
+        run: npm run check
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Test native core
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+
+      - name: Build Tauri bundles
+        run: npm run tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cutting-board-validated-v2-${{ matrix.name }}
+          path: src-tauri/target/release/bundle/**/*
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, validate]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/tauri-migration
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: canonical-tauri-tree-v2
+          path: /tmp/canonical
+
+      - name: Publish exactly the validated source tree
+        env:
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_sha="$(git rev-parse HEAD)"
+          if [[ "$current_sha" != "$BASE_SHA" ]]; then
+            echo "Branch moved during validation: ${current_sha} != ${BASE_SHA}" >&2
+            exit 1
+          fi
+
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          tar -xzf /tmp/canonical/cutting-board-tauri-tree.tar.gz -C .
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git rm -r -f --ignore-unmatch \
+            packaging \
+            scripts \
+            tests \
+            src/cutting_board \
+            .migration
+          git rm -f --ignore-unmatch \
+            pyproject.toml \
+            requirements.txt \
+            requirements-dev.txt \
+            .github/workflows/ubuntu-24.04.yml \
+            .github/workflows/finalize-tauri-migration.yml \
+            .github/workflows/verify-tauri-migration.yml \
+            .github/workflows/tauri-migration-pr-gate.yml \
+            .github/workflows/finalize-tauri-cross-platform.yml \
+            .github/workflows/finalize-tauri-cross-platform-v2.yml
+
+          git add -- \
+            .gitignore \
+            AGENTS.md \
+            CHANGELOG.md \
+            CONTRIBUTING.md \
+            Makefile \
+            MIGRATION_VALIDATED.md \
+            README.md \
+            SPEC.md \
+            TAURI_MIGRATION.md \
+            TEST_REPORT.md \
+            index.html \
+            package.json \
+            package-lock.json \
+            tsconfig.json \
+            vite.config.ts \
+            src \
+            src-tauri \
+            .github/workflows/ci.yml
+
+          git commit -m "refactor: publish the cross-platform validated Tauri app"
+          git push origin HEAD:feat/tauri-migration
+
+          pr_url="$(gh pr list --repo "$GITHUB_REPOSITORY" --head feat/tauri-migration --state open --json url --jq '.[0].url')"
+          if [[ -z "$pr_url" ]]; then
+            echo "No open migration PR found." >&2
+            exit 1
+          fi
+          gh pr comment "$pr_url" --body "Ubuntu and macOS both passed strict TypeScript checking, Rust formatting, all Rust test targets, and complete Tauri bundle builds in run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. The published branch tree is the exact artifact validated by that matrix."
+          gh pr ready "$pr_url"

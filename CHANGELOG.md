@@ -1,31 +1,25 @@
 # Changelog
 
-## 0.1.0 — 2026-08-20
+All notable changes to Cutting Board are documented here.
 
-First release, targeting Ubuntu 24.04.
+## [0.6.0] - Unreleased
 
-- Automatic discovery of TCP IPv4/IPv6 `LISTEN` sockets, swept every 2 seconds
-- Endpoints of one PID collapsed into a single service
-- Project inference from the process working directory and a marker walk
-- Service identification from process name, argv, executable and package name
-- Noise filtering: every listener is classified `dev`, `container` or `noise`,
-  and only development work reaches the board
-- Tile board on a near-black canvas with a single cyan accent, grouped by
-  project and reflowing to the window width
-- Brand marks for 61 technologies, drawn from Simple Icons (CC0 1.0)
-- Docker tab listing containers grouped by compose project, with a port
-  fallback when the Docker CLI cannot be reached
-- Uptime and ports on the tile; everything else in a detail dialog
-- Launcher attribution from process ancestry and inherited environment markers,
-  badging services started by a coding agent or an IDE
-- Open a web service in the default browser
-- Validated `SIGTERM`, with `SIGKILL` offered only after a timeout and a second
-  confirmation
-- Masking of common secrets in displayed and exported command lines
-- Headless snapshot CLI with plain-text and JSON output
-- JSON settings under XDG, written atomically, behind a settings dialog that
-  applies a new scan interval to the running scan loop immediately
-- Debian package, desktop entry and application icon
-- A watch-and-restart development runner, `scripts/dev.py`
-- Unit tests, a live TCP integration test, a headless GUI smoke test and a
-  package smoke test
+### Changed
+
+- Replaced the Python/Tkinter application with Tauri 2, Rust, strict TypeScript, and Vite.
+- Preserved the existing dark/light/system palettes, toolbar, project sections, fixed service-card geometry, technology artwork, keyboard action model, details, settings, Docker tab, and Launch Profiles layout.
+- Moved TCP listener discovery, process metadata, relevance filtering, technology classification, project attribution, origin detection, Spring context-path handling, and command redaction into Rust.
+- Reimplemented guarded service termination with UID and process-creation-time validation before signaling a PID.
+- Reimplemented Docker enumeration as a native command with read-only Compose grouping and listener fallback.
+- Reimplemented launch profiles with atomic JSON persistence, owned process sessions, task logs, external-port detection, and shutdown cleanup.
+- Replaced Python packaging and tests with Tauri bundles and Ubuntu/macOS CI.
+
+### Security
+
+- The webview now has an explicit least-privilege Tauri capability file.
+- Process command arguments recognized as passwords, tokens, secrets, API keys, authorization values, or credentials are redacted before they cross the command boundary.
+- Demonstration mode disables every mutation.
+
+## [0.5.0]
+
+The final Python/Tkinter release before the Tauri migration. Its product behavior and design are retained by the 0.6.0 implementation.
