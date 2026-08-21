@@ -1,0 +1,109 @@
+name: Finalize Tauri migration
+
+on:
+  push:
+    branches: [feat/tauri-migration]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply final source fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text()
+              if old not in text:
+                  raise SystemExit(f"Expected source fragment not found in {path}: {old[:80]!r}")
+              target.write_text(text.replace(old, new))
+
+          replace(
+              "vite.config.ts",
+              "export default defineConfig({\n  clearScreen: false,",
+              "export default defineConfig({\n  publicDir: \"assets\",\n  clearScreen: false,",
+          )
+          replace(
+              "src/main.ts",
+              "function h(value: unknown): string { return String(value ?? \"\").replace(/[&<>'\\\"]/g, (character) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", \"'\": \"&#39;\", '\\\"': \"&quot;\" })[character] ?? character); }",
+              "const HTML_ESCAPES: Record<string, string> = { \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", \"'\": \"&#39;\", '\\\"': \"&quot;\" };\nfunction h(value: unknown): string { return String(value ?? \"\").replace(/[&<>'\\\"]/g, (character) => HTML_ESCAPES[character] ?? character); }",
+          )
+          replace(
+              "src-tauri/src/scanner.rs",
+              "        let Some((field, value)) = line.split_at_checked(1) else { continue };",
+              "        if line.is_empty() {\n            continue;\n        }\n        let (field, value) = line.split_at(1);",
+          )
+          replace(
+              "src-tauri/src/scanner.rs",
+              "    if process.and_then(|item| item.parent()).map(Pid::as_u32) == Some(1) {",
+              "    if process.and_then(|item| item.parent()).map(|pid| pid.as_u32()) == Some(1) {",
+          )
+          replace(
+              "src-tauri/src/lib.rs",
+              "            let config_dir = app\n                .path()\n                .app_config_dir()\n                .map_err(|error| format!(\"Could not resolve the app configuration directory: {error}\"))?;",
+              "            let config_dir = app.path().app_config_dir()?;",
+          )
+          replace(
+              ".github/workflows/ci.yml",
+              "          - os: macos-15\n            name: macos",
+              "          - os: macos-latest\n            name: macos",
+          )
+
+          readme = Path("README.md")
+          if not Path("assets/cutting-board-screenshot.png").exists():
+              readme.write_text(readme.read_text().replace("\n![Cutting Board](assets/cutting-board-screenshot.png)\n", "\n"))
+          PY
+
+      - name: Remove the legacy Python runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git rm -r --ignore-unmatch \
+            packaging \
+            scripts \
+            tests \
+            src/cutting_board \
+            .migration
+          git rm --ignore-unmatch \
+            pyproject.toml \
+            requirements.txt \
+            requirements-dev.txt \
+            .github/workflows/ubuntu-24.04.yml \
+            .github/workflows/finalize-tauri-migration.yml
+
+          git add -- \
+            README.md \
+            vite.config.ts \
+            src/main.ts \
+            src-tauri/src/scanner.rs \
+            src-tauri/src/lib.rs \
+            .github/workflows/ci.yml
+
+          git commit -m "refactor: complete the Tauri migration"
+          git push origin HEAD:feat/tauri-migration
+
+      - name: Format Rust sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all
+          if ! git diff --quiet -- src-tauri; then
+            git add -- src-tauri
+            git commit -m "style: format Tauri native sources"
+            git push origin HEAD:feat/tauri-migration
+          fi
