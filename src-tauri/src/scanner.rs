@@ -396,6 +396,10 @@ fn classify(
     ports: &[u16],
     project: Option<&ProjectInfo>,
 ) -> Classification {
+    if is_macos_application_executable(executable) {
+        return Classification { tech: "generic".into(), category: "other".into(), relevance: "noise".into() };
+    }
+
     let identity = process_identity(process_name, executable, args);
     let command = args.join(" ").to_lowercase();
     let searchable = format!("{} {}", identity.join(" "), command);
@@ -500,6 +504,10 @@ fn classify(
         category: if common_dev_port { "web".into() } else { "other".into() },
         relevance: if is_dev { "dev".into() } else { "noise".into() },
     }
+}
+
+fn is_macos_application_executable(executable: Option<&str>) -> bool {
+    executable.is_some_and(|value| Path::new(value).starts_with("/Applications"))
 }
 
 fn process_identity(process_name: &str, executable: Option<&str>, args: &[String]) -> Vec<String> {
@@ -1363,6 +1371,51 @@ mod tests {
         );
         assert_eq!(result.relevance, "dev");
         assert_eq!(result.tech, "nodejs");
+    }
+
+    #[test]
+    fn applications_executables_are_noise() {
+        let result = classify(
+            "node",
+            Some("/Applications/Visual Studio Code.app/Contents/MacOS/Electron"),
+            &["node".into(), "server.js".into()],
+            &[3000],
+            Some(&project()),
+        );
+        assert_eq!(result.relevance, "noise");
+        assert_eq!(result.category, "other");
+    }
+
+    #[test]
+    fn non_application_executables_keep_their_existing_classification() {
+        let ollama = classify(
+            "ollama",
+            Some("/opt/homebrew/bin/ollama"),
+            &["ollama".into(), "serve".into()],
+            &[11_434],
+            None,
+        );
+        assert_eq!(ollama.relevance, "dev");
+        assert_eq!(ollama.tech, "ollama");
+
+        let project_binary = classify(
+            "node",
+            Some("/work/test-project/node_modules/.bin/node"),
+            &["node".into(), "/Applications/project/server.js".into()],
+            &[31_337],
+            Some(&project()),
+        );
+        assert_eq!(project_binary.relevance, "dev");
+        assert_eq!(project_binary.tech, "nodejs");
+
+        let similarly_named_directory = classify(
+            "ollama",
+            Some("/Applications2/Ollama.app/Contents/MacOS/ollama"),
+            &["ollama".into(), "serve".into()],
+            &[11_434],
+            None,
+        );
+        assert_eq!(similarly_named_directory.relevance, "dev");
     }
 
     #[test]

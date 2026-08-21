@@ -21,7 +21,7 @@ The Tauri interface is built from:
 
 ### Service discovery
 
-The Rust scanner reads listening TCP sockets with `lsof` on macOS and Linux, falling back to `ss` on Linux. It joins listeners to live process metadata, rejects listeners owned by another user, suppresses known operating-system noise, and keeps Docker plumbing separate from user-facing services.
+The Rust scanner reads listening TCP sockets with `lsof` on macOS and Linux, falling back to `ss` on Linux. It joins listeners to live process metadata, rejects listeners owned by another user, suppresses known operating-system noise and macOS application-bundle executables under `/Applications`, and keeps Docker plumbing separate from user-facing services.
 
 Project ownership is inferred by walking from the process working directory and command paths to markers such as `.git`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `pom.xml`, Gradle files, and Compose files. Technology and category classification cover common web runtimes, API frameworks, databases, caches, and proxies.
 
