@@ -12,6 +12,7 @@ import {
   formatUptimeCompact,
   groupServices,
   imageTech,
+  launchTasksEquivalent,
   middleEllipsis,
   portBadgeLabels,
   serviceTitle,
@@ -44,9 +45,9 @@ root.innerHTML = `
   <div class="app-shell">
     <header class="toolbar">
       <nav class="tabs" aria-label="Workspace">
-        <button class="tab is-active" type="button" data-tab="services">Services<span id="services-count">0</span></button>
-        <button class="tab" type="button" data-tab="docker">Docker<span id="docker-count">0</span></button>
-        <button class="tab" type="button" data-tab="launch">Launch Profiles<span id="launch-count">0</span></button>
+        <button class="tab is-active" type="button" data-tab="services">${uiIcon("power", 14)}<span>Services</span><span class="tab-count" id="services-count">0</span></button>
+        <button class="tab" type="button" data-tab="docker">${uiIcon("docker", 14)}<span>Docker</span><span class="tab-count" id="docker-count">0</span></button>
+        <button class="tab" type="button" data-tab="launch">${uiIcon("play", 14)}<span>Launch Profiles</span><span class="tab-count" id="launch-count">0</span></button>
       </nav>
       <button class="gear-button" type="button" data-action="settings" aria-label="Settings" title="Settings">${uiIcon("settings", 18)}</button>
     </header>
@@ -81,6 +82,9 @@ let dockerSignature = "";
 let launchSignature = "";
 let modalFocusReturn: HTMLElement | null = null;
 let pendingServiceStopId: string | null = null;
+let pendingGroupSaveId: string | null = null;
+let pendingGroupStopId: string | null = null;
+let pendingProfileDeleteId: string | null = null;
 const operations = new Set<string>();
 
 root.addEventListener("click", (event) => void handleClick(event));
@@ -234,11 +238,59 @@ function renderServices(force = false): void {
         <h2 id="group-${h(encodeURIComponent(group.id))}">${h(group.name.toUpperCase())}</h2>
         ${group.path ? `<p title="${h(group.path)}">${h(shortenPath(group.path))}</p>` : ""}
         <span class="section-count" aria-label="${group.services.length} services">${group.services.length}</span>
+        ${renderGroupActions(group)}
       </header>
       <div class="tile-grid">${group.services.map(renderServiceTile).join("")}</div>
     </section>`).join("")}</div>`;
   applyBoardLayout();
   updateLiveMetrics();
+}
+
+function renderGroupActions(group: ReturnType<typeof groupServices>[number]): string {
+  const saveBusy = operations.has(`group-save:${group.id}`);
+  const stopBusy = operations.has(`group-stop:${group.id}`);
+  const profilePresent = profileForGroup(group) !== undefined;
+  const saveAction = profilePresent
+    ? `<span class="group-profile-saved" title="Launch profile saved" aria-label="Launch profile saved">${uiIcon("check", 14)}</span>`
+    : `<button class="section-action save-group-action icon-button-label" type="button" data-action="save-service-group" data-group-id="${h(group.id)}" title="Save launch profile" aria-label="${saveBusy ? "Saving" : "Save"} launch profile for ${h(group.name)}" ${saveBusy ? "disabled" : ""}>${uiIcon("folder", 13)}<span>${saveBusy ? "Saving…" : "Save"}</span></button>`;
+  const terminableCount = group.services.filter((service) => service.can_terminate).length;
+  const stopDisabled = !terminableCount || stopBusy;
+  return `<div class="section-actions">${saveAction}<button class="section-action stop-group-action icon-button-label" type="button" data-action="stop-service-group" data-group-id="${h(group.id)}" title="${terminableCount ? "Stop all stoppable services" : "No services can be stopped safely"}" aria-label="${stopBusy ? "Stopping" : terminableCount ? "Stop all" : "No stoppable"} services in ${h(group.name)}" ${stopDisabled ? "disabled" : ""}>${uiIcon("stop", 13)}<span>${stopBusy ? "Stopping…" : "Stop All"}</span></button></div>`;
+}
+
+function generatedTasksForGroup(services: ServiceSnapshot[]): LaunchTask[] {
+  const usedNames = new Set<string>();
+  return services.map((service) => {
+    const baseName = serviceTitle(service) || service.display_name;
+    let name = baseName;
+    let suffix = 2;
+    while (usedNames.has(name.toLowerCase())) name = `${baseName} ${suffix++}`;
+    usedNames.add(name.toLowerCase());
+    return {
+      name,
+      cwd: service.process?.working_directory ?? "",
+      command: service.process?.command ?? "",
+      expected_port: uniquePorts(service)[0] ?? null
+    };
+  });
+}
+
+function groupForId(id: string): ReturnType<typeof groupServices>[number] {
+  const group = groupServices(workspace?.services.filter((service) => service.relevance === "dev") ?? []).find((item) => item.id === id);
+  if (!group) throw new Error("The workspace group is no longer available.");
+  return group;
+}
+
+function profileForGroup(group: ReturnType<typeof groupServices>[number]): LaunchProfile | undefined {
+  if (!group.path) return undefined;
+  return profiles.find((profile) => profile.project_root === group.path && launchTasksEquivalent(profile.tasks, generatedTasksForGroup(group.services)));
+}
+
+function validateGroupProfile(group: ReturnType<typeof groupServices>[number]): LaunchTask[] {
+  if (!group.path) throw new Error("This workspace group has no project root and cannot be saved.");
+  const incomplete = group.services.filter((service) => !service.process?.command.trim() || !service.process?.working_directory?.trim());
+  if (incomplete.length) throw new Error(`Cannot save ${group.name}: ${incomplete.map((service) => serviceTitle(service) || service.display_name).join(", ")} ${incomplete.length === 1 ? "is missing" : "are missing"} a process command or working directory.`);
+  return generatedTasksForGroup(group.services);
 }
 
 function renderServiceTile(service: ServiceSnapshot): string {
@@ -437,6 +489,10 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "open-service") await openService(required(target.dataset.serviceId));
     else if (action === "stop-service") await requestStopService(required(target.dataset.serviceId));
     else if (action === "confirm-stop-service") await confirmStopService(required(target.dataset.serviceId));
+    else if (action === "save-service-group") requestSaveGroup(required(target.dataset.groupId));
+    else if (action === "confirm-save-service-group") await confirmSaveGroup(required(target.dataset.groupId));
+    else if (action === "stop-service-group") requestStopGroup(required(target.dataset.groupId));
+    else if (action === "confirm-stop-service-group") await confirmStopGroup(required(target.dataset.groupId));
     else if (action === "container-details") showContainerDetails(findContainer(required(target.dataset.containerId)));
     else if (action === "settings") showSettings();
     else if (action === "close-modal") closeModal();
@@ -445,7 +501,8 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "add-profile") showProfileEditor(null);
     else if (action === "edit-profile") showProfileEditor(findProfile(required(target.dataset.profileId)));
     else if (action === "save-profile") await saveProfileFromModal(target.dataset.profileId ?? null);
-    else if (action === "delete-profile") await deleteProfile(required(target.dataset.profileId));
+    else if (action === "delete-profile") requestDeleteProfile(required(target.dataset.profileId));
+    else if (action === "confirm-delete-profile") await confirmDeleteProfile(required(target.dataset.profileId));
     else if (action === "start-profile") await startProfile(required(target.dataset.profileId));
     else if (action === "stop-profile") await stopProfile(required(target.dataset.profileId));
     else if (action === "start-task") await runTask(required(target.dataset.profileId), required(target.dataset.taskName), true);
@@ -484,6 +541,99 @@ function requestStopService(id: string): void {
   if (!service.can_terminate) throw new Error("This process cannot be stopped safely.");
   pendingServiceStopId = id;
   openModal("Stop service?", `<p class="confirm-copy">Stop <strong>${h(service.display_name)}</strong>? This will terminate process PID <span class="mono">${service.process?.pid ?? "unknown"}</span>.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-stop-service" data-service-id="${h(id)}">${uiIcon("stop", 13)} Stop</button></div>`, { dismissOnBackdrop: false });
+}
+
+function requestSaveGroup(id: string): void {
+  if (pendingGroupSaveId !== null || operations.has(`group-save:${id}`)) return;
+  const group = groupForId(id);
+  const tasks = validateGroupProfile(group);
+  if (profileForGroup(group)) return;
+  pendingGroupSaveId = id;
+  openModal("Save launch profile?", `<p class="confirm-copy">Save <strong>${h(group.name)}</strong> as a launch profile with ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}?</p><p class="form-note mono">${h(group.path)}</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button icon-button-label" type="button" data-action="confirm-save-service-group" data-group-id="${h(id)}">${uiIcon("folder", 13)} Save Profile</button></div>`, { dismissOnBackdrop: false });
+}
+
+async function confirmSaveGroup(id: string): Promise<void> {
+  if (pendingGroupSaveId !== id) return;
+  closeModal();
+  await saveGroup(id);
+}
+
+async function saveGroup(id: string): Promise<void> {
+  const group = groupForId(id);
+  const key = `group-save:${id}`;
+  if (operations.has(key)) return;
+  const tasks = validateGroupProfile(group);
+  if (profileForGroup(group)) return;
+  operations.add(key);
+  renderServices(true);
+  try {
+    profiles = await api.saveProfile({
+      id: crypto.randomUUID().replaceAll("-", ""),
+      name: group.name,
+      project_root: group.path!,
+      tasks
+    });
+    renderHeaderCounts();
+    toast(`Launch profile saved for ${group.name}.`);
+  } finally {
+    operations.delete(key);
+    renderServices(true);
+  }
+}
+
+function requestStopGroup(id: string): void {
+  if (pendingGroupStopId !== null || operations.has(`group-stop:${id}`)) return;
+  const group = groupForId(id);
+  const candidates = group.services.filter((service) => service.can_terminate);
+  if (!candidates.length) throw new Error("No services in this group can be stopped safely.");
+  pendingGroupStopId = id;
+  openModal("Stop all services?", `<p class="confirm-copy">Stop <strong>${candidates.length} stoppable ${candidates.length === 1 ? "service" : "services"}</strong> in ${h(group.name)}? Services that cannot be terminated safely will remain untouched.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-stop-service-group" data-group-id="${h(id)}">${uiIcon("stop", 13)} Stop All</button></div>`, { dismissOnBackdrop: false });
+}
+
+async function confirmStopGroup(id: string): Promise<void> {
+  if (pendingGroupStopId !== id) return;
+  closeModal();
+  await stopGroup(id);
+}
+
+async function stopGroup(id: string): Promise<void> {
+  const group = groupForId(id);
+  const candidates = group.services.filter((service) => service.can_terminate);
+  if (!candidates.length) throw new Error("No services in this group can be stopped safely.");
+  const key = `group-stop:${id}`;
+  if (operations.has(key)) return;
+  const pending = candidates.filter((service) => !operations.has(`stop:${service.id}`));
+  if (!pending.length) {
+    toast(`All stoppable services in ${group.name} are already stopping.`);
+    return;
+  }
+  pending.forEach((service) => operations.add(`stop:${service.id}`));
+  operations.add(key);
+  renderServices(true);
+  try {
+    const results = await Promise.allSettled(pending.map((service) => api.terminate(service.id)));
+    const successes = results.filter((result) => result.status === "fulfilled" && result.value.success).length;
+    const failures = results.length - successes;
+    toast(`${successes} of ${results.length} services in ${group.name} stopped${failures ? `; ${failures} could not be stopped.` : "."}`, failures > 0);
+    await refreshWorkspace(true);
+  } finally {
+    pending.forEach((service) => operations.delete(`stop:${service.id}`));
+    operations.delete(key);
+    renderServices(true);
+  }
+}
+
+function requestDeleteProfile(id: string): void {
+  if (pendingProfileDeleteId !== null) return;
+  const profile = findProfile(id);
+  pendingProfileDeleteId = id;
+  openModal("Delete launch profile?", `<p class="confirm-copy">Delete <strong>${h(profile.name)}</strong>? This removes its saved commands.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button" type="button" data-action="confirm-delete-profile" data-profile-id="${h(id)}">Delete</button></div>`, { dismissOnBackdrop: false });
+}
+
+async function confirmDeleteProfile(id: string): Promise<void> {
+  if (pendingProfileDeleteId !== id) return;
+  closeModal();
+  await deleteProfile(id);
 }
 
 async function confirmStopService(id: string): Promise<void> {
@@ -649,8 +799,6 @@ async function saveProfileFromModal(id: string | null): Promise<void> {
 }
 
 async function deleteProfile(id: string): Promise<void> {
-  const profile = findProfile(id);
-  if (!window.confirm(`Delete ${profile.name}?\n\nThis removes its saved commands.`)) return;
   profiles = await api.deleteProfile(id);
   renderHeaderCounts();
   renderLaunch(true);
@@ -675,6 +823,9 @@ function openModal(title: string, body: string, options: { dismissOnBackdrop?: b
 
 function closeModal(): void {
   pendingServiceStopId = null;
+  pendingGroupSaveId = null;
+  pendingGroupStopId = null;
+  pendingProfileDeleteId = null;
   if (!document.querySelector(".modal-backdrop")) return;
   byId("modal-root").replaceChildren();
   const appShell = document.querySelector<HTMLElement>(".app-shell");

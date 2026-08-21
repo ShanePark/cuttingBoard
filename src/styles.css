@@ -154,7 +154,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   cursor: pointer;
   white-space: nowrap;
 }
-.tab span {
+.tab > .ui-icon { color: var(--text-dim); }
+.tab > span:not(.tab-count) { line-height: 1; }
+.tab .tab-count {
   min-width: 18px;
   height: 18px;
   display: inline-flex;
@@ -167,7 +169,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
-.tab.is-active span { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+.tab.is-active .tab-count { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+.tab.is-active > .ui-icon { color: var(--accent); }
 .tab:hover, .tab:focus-visible { color: var(--text); background: var(--surface-hover); }
 .tab.is-active { color: var(--text); background: var(--surface); box-shadow: 0 1px 2px var(--shadow); }
 .gear-button {
@@ -222,6 +225,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   white-space: nowrap;
 }
 .section-count { flex: 0 0 auto; height: 19px; display: inline-flex; align-items: center; margin-left: auto; padding: 0 9px; border-radius: 999px; background: var(--surface-alt); color: var(--text-dim); font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.section-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; }
+.section-action { min-height: 26px; padding: 3px 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; font-size: 10px; font-weight: 700; cursor: pointer; }
+.section-action:hover, .section-action:focus-visible { background: var(--surface-hover); }
+.save-group-action { color: var(--accent); }
+.stop-group-action { color: var(--danger); }
+.group-profile-saved { width: 26px; height: 26px; display: inline-grid; place-items: center; border-radius: 8px; background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
 .tile-grid { display: grid; grid-template-columns: repeat(var(--section-span, 1), minmax(0, 1fr)); align-items: stretch; gap: 10px; }
 
 .service-tile {
