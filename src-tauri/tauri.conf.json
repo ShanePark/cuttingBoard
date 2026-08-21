@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cutting Board",
+  "version": "0.6.0",
+  "identifier": "dev.shanepark.cuttingboard",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Cutting Board",
+        "width": 1080,
+        "height": 720,
+        "minWidth": 560,
+        "minHeight": 420,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "See and control local development services.",
+    "longDescription": "Cutting Board discovers local development listeners, Docker containers, and saved launch profiles without telemetry or login startup.",
+    "icon": [
+      "../assets/cutting-board-32.png",
+      "../assets/cutting-board-128.png",
+      "../assets/cutting-board-256.png",
+      "../assets/cutting-board-512.png"
+    ]
+  }
+}
