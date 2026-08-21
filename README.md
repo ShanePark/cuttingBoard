@@ -1,76 +1,106 @@
-# Cutting Board
+<p align="center">
+  <img src="assets/app-icon-source.png" alt="Cutting Board icon" width="128" />
+</p>
 
-Cutting Board is a native desktop board for local development services. It discovers TCP listeners owned by the current user, groups them by project, identifies common frameworks and infrastructure, shows Docker containers, and owns optional launch profiles for starting and stopping project commands.
+<h1 align="center">Cutting Board</h1>
 
-The application is implemented with **Tauri 2**, a strict TypeScript/Vite webview, and a Rust native core.
+<p align="center">A native desktop control board for local development services.</p>
 
-![Cutting Board](assets/cutting-board-screenshot.png)
+<p align="center">
+  Discover what is running, see it by project, and start or stop your own development tasks from one place.
+</p>
 
-## Current interface
+<p align="center">
+  <img src="assets/cutting-board-screenshot.png" alt="Cutting Board Services view showing local development projects and ports" width="960" />
+</p>
 
-The Tauri interface is built from:
+## Overview
 
-- 56 px toolbar with segmented `Services`, `Docker`, and `Launch Profiles` tabs
-- semantic dark, light, and system palettes
-- project groups drawn as bordered panels that pack onto shared rows, each spanning one measured column per card it holds
-- service cards with a 62 px technology well, a two-line title beside it, live status pip, live uptime and memory, a launcher origin badge for the terminal, IDE, or coding agent that started the process, category-tinted port chips, browser links, and guarded media-stop controls
-- project section headings, responsive columns, keyboard focus, arrow-key action selection, and modal detail views
-- launch profile cards with task state, expected-port ownership, logs, and explicit start/stop actions
+Cutting Board is a local-first desktop app for keeping track of development services on your machine. It discovers TCP listeners owned by the current user, groups them by project, identifies common runtimes and frameworks, shows Docker containers, and provides saved launch profiles for project commands.
 
-## Native capabilities
+The app is built with [Tauri 2](https://v2.tauri.app/), a TypeScript/Vite frontend, and a Rust native core. It has no account, cloud sync, telemetry, or login-startup behavior.
 
-### Service discovery
+## Highlights
 
-The Rust scanner reads listening TCP sockets with `lsof` on macOS and Linux, falling back to `ss` on Linux. It joins listeners to live process metadata, rejects listeners owned by another user, suppresses known operating-system noise and macOS application-bundle executables under `/Applications`, and keeps Docker plumbing separate from user-facing services.
+### Services
 
-Project ownership is inferred by walking from the process working directory and command paths to markers such as `.git`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `pom.xml`, Gradle files, and Compose files. Technology and category classification cover common web runtimes, API frameworks, databases, caches, and proxies.
-
-### Safe termination
-
-A service can be stopped only when all of the following remain true at action time:
-
-1. the service was marked as a user-owned development process during the last scan;
-2. its PID still exists;
-3. its process creation time still matches, preventing PID-reuse mistakes;
-4. its UID still matches the current user;
-5. the target is not PID 1 or Cutting Board itself.
-
-Cutting Board sends `SIGTERM`, waits for a graceful exit, and uses `SIGKILL` only when the validated process ignores the initial signal. Demonstration mode never exposes destructive actions.
+- Refreshes local TCP listeners on a configurable interval.
+- Groups services by project and infers project roots from common markers such as `.git`, `package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, Maven/Gradle files, and Compose files.
+- Identifies common web frameworks, API runtimes, databases, caches, and proxies.
+- Shows ports, status, uptime, memory, process origin, browser links, and process details.
+- Keeps operating-system noise, desktop apps, build daemons, and unrelated-user processes out of the workspace view where they can be safely identified.
 
 ### Docker
 
-The Docker tab reads `docker ps -a`, including state, status, image, published host ports, and Compose project/service labels. If the Docker CLI is unavailable, container listener processes discovered by the socket scanner remain visible as a read-only fallback.
+- Reads `docker ps -a` when the Docker CLI is available.
+- Shows container state, image, status, published ports, and Compose project/service metadata.
+- Falls back to read-only container listener information when Docker cannot be queried.
 
 ### Launch Profiles
 
-Launch Profiles are intended as a lightweight replacement for the common IntelliJ IDEA Services workflow. They let one project define multiple development tasks—such as backend, frontend, and auto-build or watch commands—and start, monitor, and stop them together without opening an IDE.
+- Save a project root and multiple named shell tasks—for example, backend, frontend, and watch commands.
+- Start and stop tasks individually or together, with an optional expected port for each task.
+- Track the process session Cutting Board started, inspect live output, and keep task logs locally.
+- Detects a task's expected port when another process is already using it; externally owned processes are never stopped by the profile manager.
 
-Profiles are local JSON records containing a project root and one or more named shell tasks. Cutting Board starts each task in a dedicated process session, redirects output to a local log, tracks ownership, and stops the whole owned process group. A process already listening on a task's expected port is displayed as external and is never stopped by the profile manager.
+<p align="center">
+  <img src="assets/cutting-board-launch-profiles.png" alt="Cutting Board Launch Profiles view with task controls and live output" width="960" />
+</p>
 
-Settings, profiles, and logs are stored in the operating system's application configuration directory. There is no account, telemetry, cloud sync, or login-startup behavior.
+## Safety and privacy
 
-## Development
+Cutting Board only exposes listeners classified as belonging to the current user. Before stopping a discovered service, the native core revalidates its PID, process creation time, and available ownership metadata, and refuses to target PID 1 or Cutting Board itself. It sends `SIGTERM` first and uses `SIGKILL` only after the validated process does not exit gracefully.
 
-### Prerequisites
+Process command lines can contain secrets. The scanner redacts common password, token, secret, authorization, credential, API-key, and URL-userinfo values before returning process details to the UI. Launch commands are intentionally user-authored shell commands, so review a profile before starting it; its logs remain local and may contain output from the launched program.
 
-- Node.js 22 or later
-- current stable Rust toolchain
-- Tauri 2 platform prerequisites
-- Linux: WebKitGTK 4.1 development packages and related system libraries
-- `lsof`; Linux may use `ss` as a fallback
-- Docker CLI only for the Docker tab
+Demonstration mode disables actions that change processes or profiles.
 
-### Commands
+## Prerequisites
+
+- macOS or Linux for local service discovery (`lsof` is used first; Linux can fall back to `ss`).
+- Node.js 20.19 or newer. Node.js 22.12 or newer is recommended.
+- Rust 1.77.2 or newer with the stable toolchain.
+- The platform dependencies listed in the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/). Linux builds need WebKitGTK 4.1 development packages and the related system libraries.
+- Docker CLI is optional and is only needed for full Docker metadata; the Docker tab remains available in read-only fallback mode without it.
+
+## Quick start
 
 ```bash
 npm install
 npm run tauri dev
-npm run check
-cargo test --manifest-path src-tauri/Cargo.toml --all-targets
-npm run tauri build
 ```
 
-Equivalent Make targets are available:
+The Vite development server uses `http://localhost:1420` when running the frontend directly. `npm run tauri dev` starts the native desktop app and rebuilds generated runtime icons as needed.
+
+## Demonstration mode
+
+Use deterministic sample services, containers, and a launch profile without changing real processes:
+
+```bash
+npm run tauri dev -- -- --demo
+```
+
+The packaged binary accepts the same native options:
+
+```text
+cutting-board --demo
+cutting-board --auto-close-seconds 5
+cutting-board --help
+cutting-board --version
+```
+
+## Development commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm run check` | Type-check the frontend. |
+| `npm run build` | Type-check and build the Vite frontend. |
+| `npm run icons` | Regenerate runtime and application icons. |
+| `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | Check Rust formatting. |
+| `cargo test --manifest-path src-tauri/Cargo.toml --all-targets` | Run the Rust test suite. |
+| `npm run tauri build` | Build the Tauri application bundle. |
+
+Equivalent Make targets are available for the common workflow:
 
 ```bash
 make install
@@ -80,39 +110,30 @@ make test
 make build
 ```
 
-### Demonstration mode
+Rust tests are embedded in `#[cfg(test)]` modules under `src-tauri/src/`; there is no separate tracked test directory.
 
-```bash
-npm run tauri dev -- -- --demo
-```
+## Local data
 
-The native binary also supports:
+Cutting Board resolves its application data directory through Tauri's `app_config_dir`. It stores:
 
-```text
-cutting-board --demo
-cutting-board --auto-close-seconds 5
-cutting-board --help
-cutting-board --version
-```
+- `settings.json` — theme, scan interval, and saved window geometry.
+- `launch-profiles.json` — local launch profiles and their tasks.
+- `logs/` — output captured from managed launch tasks.
+
+These files stay on the device and are not synchronized to a service.
 
 ## Repository layout
 
 ```text
-src/                         TypeScript presentation and command client
-src-tauri/src/               Rust scanner, Docker, persistence, launch manager, Tauri commands
-src-tauri/capabilities/      least-privilege Tauri capability declaration
-assets/                      application icon source and reference screenshot
-public/icons/                generated UI and unsupported-technology PNG fallbacks
-.github/workflows/ci.yml     Ubuntu and macOS type-check, test, and bundle jobs
-SPEC.md                      normative behavior and design contract
-TAURI_MIGRATION.md          Tauri architecture map
+assets/                         Icon source and current interface screenshots
+public/icons/                   Generated UI and technology icon assets
+scripts/build-icons.mjs         Rebuilds generated icon assets
+src/                            TypeScript frontend and Tauri API client
+src-tauri/src/                  Rust scanner, Docker integration, storage, and launch manager
+src-tauri/capabilities/         Tauri capability declarations
+package.json                    Frontend scripts and dependencies
+Makefile                        Common development commands
 ```
-
-## Security and privacy
-
-Process command lines can contain credentials. The scanner redacts common password, token, secret, API-key, authorization, and credential arguments before returning process details to the webview. All native actions are exposed through typed Tauri commands; the webview receives only the dialog and URL-opener permissions declared in `src-tauri/capabilities/default.json`.
-
-Launch commands are intentionally user-authored shell commands. Review a profile before starting it. Logs remain local and may contain output produced by the launched program.
 
 ## License
 
