@@ -15,6 +15,7 @@ import {
   launchTasksEquivalent,
   middleEllipsis,
   portBadgeLabels,
+  relatedContainersForGroup,
   serviceTitle,
   shortenPath,
   techLabel,
@@ -117,7 +118,6 @@ async function bootstrap(): Promise<void> {
     applyTheme(settings.theme_mode);
     renderHeaderCounts();
     await refreshWorkspace(true);
-    void refreshContainers();
     installTimers();
     installBoardObserver();
   } catch (error) {
@@ -160,7 +160,7 @@ async function refreshWorkspace(force = false): Promise<void> {
     renderHeaderCounts();
     renderFooter();
     render(force);
-    if (activeTab === "docker") await refreshContainers(force);
+    if (activeTab === "services" || activeTab === "docker") await refreshContainers(force);
     if (activeTab === "launch") await refreshLaunch(force);
   } catch (error) {
     toast(messageOf(error), true);
@@ -176,9 +176,11 @@ async function refreshContainers(force = false): Promise<void> {
     containerListing = await api.containers();
     renderHeaderCounts();
     if (activeTab === "docker") renderDocker(force);
+    if (activeTab === "services") renderServices(force);
   } catch (error) {
     containerListing = { available: false, containers: [], message: messageOf(error) };
     if (activeTab === "docker") renderDocker(true);
+    if (activeTab === "services") renderServices(true);
   } finally {
     dockerBusy = false;
   }
@@ -217,15 +219,29 @@ function renderFooter(): void {
 
 function renderServices(force = false): void {
   const services = workspace?.services.filter((service) => service.relevance === "dev") ?? [];
-  const signature = JSON.stringify(services.map((service) => [
-    service.id, service.display_name, service.tech, uniquePorts(service), service.category, service.status,
-    service.origin_kind, service.origin_label, service.can_terminate, service.browser_url,
-    service.project?.id, service.project?.name, service.project?.root_path,
-    service.project?.workspace_name, service.project?.workspace_root_path,
-    service.process?.pid, service.process?.name,
-    service.active_profiles,
-    operations.has(`stop:${service.id}`)
-  ]));
+  const containers = containerListing?.available ? containerListing.containers : [];
+  const groups = groupServices(services).map((group) => ({
+    ...group,
+    containers: relatedContainersForGroup(group.services, containers)
+  }));
+  const signature = JSON.stringify([
+    services.map((service) => [
+      service.id, service.display_name, service.tech, uniquePorts(service), service.category, service.status,
+      service.origin_kind, service.origin_label, service.can_terminate, service.browser_url,
+      service.project?.id, service.project?.name, service.project?.root_path,
+      service.project?.workspace_name, service.project?.workspace_root_path,
+      service.process?.pid, service.process?.name,
+      service.active_profiles,
+      operations.has(`stop:${service.id}`)
+    ]),
+    groups.map((group) => [
+      group.id,
+      group.containers.map((container) => [
+        container.id, container.name, container.image, container.state, container.status,
+        container.ports, container.compose_project, container.compose_service, container.compose_working_dir
+      ])
+    ])
+  ]);
   if (!force && signature === serviceSignature && workspaceElement.dataset.view === "services") {
     updateLiveMetrics();
     return;
@@ -240,16 +256,16 @@ function renderServices(force = false): void {
     workspaceElement.innerHTML = emptyState("No development services are running", "Start a local server from a terminal, agent, or IDE.");
     return;
   }
-  workspaceElement.innerHTML = `<div class="board">${groupServices(services).map((group) => `
-    <section class="service-section" data-tiles="${group.services.length}" aria-labelledby="group-${h(encodeURIComponent(group.id))}">
+  workspaceElement.innerHTML = `<div class="board">${groups.map((group) => `
+    <section class="service-section" data-tiles="${group.services.length + group.containers.length}" aria-labelledby="group-${h(encodeURIComponent(group.id))}">
       <header class="section-header">
         <span class="section-accent accent-${h(group.accent)}"></span>
         <h2 id="group-${h(encodeURIComponent(group.id))}">${h(group.name.toUpperCase())}</h2>
         ${group.path ? `<p title="${h(group.path)}">${h(shortenPath(group.path))}</p>` : ""}
-        <span class="section-count" aria-label="${group.services.length} services">${group.services.length}</span>
+        <span class="section-count" aria-label="${group.services.length} services${group.containers.length ? ` and ${group.containers.length} Docker containers` : ""}">${group.services.length + group.containers.length}</span>
         ${renderGroupActions(group)}
       </header>
-      <div class="tile-grid">${group.services.map(renderServiceTile).join("")}</div>
+      <div class="tile-grid">${group.services.map((service) => renderServiceTile(service)).join("")}${group.containers.map((container) => renderContainerTile(container)).join("")}</div>
     </section>`).join("")}</div>`;
   applyBoardLayout();
   updateLiveMetrics();
@@ -652,7 +668,7 @@ async function handleClick(event: Event): Promise<void> {
     activeTab = tab;
     document.querySelectorAll<HTMLElement>("[data-tab]").forEach((item) => item.classList.toggle("is-active", item.dataset.tab === tab));
     render(true);
-    if (tab === "docker") await refreshContainers(true);
+    if (tab === "services" || tab === "docker") await refreshContainers(true);
     if (tab === "launch") await refreshLaunch(true);
     return;
   }
@@ -914,7 +930,7 @@ function showServiceDetails(service: ServiceSnapshot): void {
 }
 
 function showContainerDetails(container: ContainerInfo): void {
-  openModal(container.name, `<dl class="detail-grid"><dt>Container ID</dt><dd class="mono">${h(container.id)}</dd><dt>Image</dt><dd>${h(container.image)}</dd><dt>State</dt><dd>${h(container.state)}</dd><dt>Status</dt><dd>${h(container.status || "—")}</dd><dt>Compose project</dt><dd>${h(container.compose_project ?? "—")}</dd><dt>Compose service</dt><dd>${h(container.compose_service ?? "—")}</dd><dt>Published ports</dt><dd>${container.ports.length ? container.ports.join(", ") : "—"}</dd></dl><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+  openModal(container.name, `<dl class="detail-grid"><dt>Container ID</dt><dd class="mono">${h(container.id)}</dd><dt>Image</dt><dd>${h(container.image)}</dd><dt>State</dt><dd>${h(container.state)}</dd><dt>Status</dt><dd>${h(container.status || "—")}</dd><dt>Compose project</dt><dd>${h(container.compose_project ?? "—")}</dd><dt>Compose service</dt><dd>${h(container.compose_service ?? "—")}</dd><dt>Compose working directory</dt><dd>${h(container.compose_working_dir ?? "—")}</dd><dt>Published ports</dt><dd>${container.ports.length ? container.ports.join(", ") : "—"}</dd></dl><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
 }
 
 function showSettings(): void {
