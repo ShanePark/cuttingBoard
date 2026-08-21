@@ -1,0 +1,55 @@
+name: Tauri migration PR gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: write
+
+jobs:
+  ready-after-cross-platform-ci:
+    if: github.head_ref == 'feat/tauri-migration' && github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Wait for Ubuntu and macOS Tauri checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 2700))
+          while (( SECONDS < deadline )); do
+            checks="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100")"
+
+            ubuntu_status="$(jq -r '[.check_runs[] | select(.name == "ubuntu")] | last | .status // "missing"' <<<"$checks")"
+            ubuntu_result="$(jq -r '[.check_runs[] | select(.name == "ubuntu")] | last | .conclusion // "pending"' <<<"$checks")"
+            macos_status="$(jq -r '[.check_runs[] | select(.name == "macos")] | last | .status // "missing"' <<<"$checks")"
+            macos_result="$(jq -r '[.check_runs[] | select(.name == "macos")] | last | .conclusion // "pending"' <<<"$checks")"
+
+            echo "ubuntu: ${ubuntu_status}/${ubuntu_result}; macos: ${macos_status}/${macos_result}"
+
+            if [[ "$ubuntu_status" == "completed" && "$macos_status" == "completed" ]]; then
+              if [[ "$ubuntu_result" == "success" && "$macos_result" == "success" ]]; then
+                exit 0
+              fi
+              echo "Cross-platform Tauri CI did not pass." >&2
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "Timed out waiting for cross-platform Tauri CI." >&2
+          exit 1
+
+      - name: Mark the validated PR ready for review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr ready "$PR_URL"
