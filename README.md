@@ -43,6 +43,8 @@ The Docker tab reads `docker ps -a`, including state, status, image, published h
 
 ### Launch Profiles
 
+Launch Profiles are intended as a lightweight replacement for the common IntelliJ IDEA Services workflow. They let one project define multiple development tasks—such as backend, frontend, and auto-build or watch commands—and start, monitor, and stop them together without opening an IDE.
+
 Profiles are local JSON records containing a project root and one or more named shell tasks. Cutting Board starts each task in a dedicated process session, redirects output to a local log, tracks ownership, and stops the whole owned process group. A process already listening on a task's expected port is displayed as external and is never stopped by the profile manager.
 
 Settings, profiles, and logs are stored in the operating system's application configuration directory. There is no account, telemetry, cloud sync, or login-startup behavior.

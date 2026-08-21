@@ -555,8 +555,7 @@ function showServiceDetails(service: ServiceSnapshot): void {
       <dt>Command</dt><dd class="mono">${h(process?.command ?? "—")}</dd><dt>CPU</dt><dd>${process?.cpu_percent === null || process?.cpu_percent === undefined ? "Calculating" : `${process.cpu_percent.toFixed(1)}%`}</dd>
       <dt>Memory</dt><dd>${formatBytes(process?.memory_bytes ?? null)}</dd><dt>Uptime</dt><dd>${h(formatUptimeCompact(currentUptime(service)) || "—")}</dd>
     </dl>
-    <h3 class="detail-heading">Listening endpoints</h3><div class="endpoint-list">${service.endpoints.map((endpoint) => `<div><span class="port-chip">${endpoint.port}</span><code>${h(endpoint.address)} · ${h(endpoint.family)} · ${h(endpoint.scope)}</code></div>`).join("")}</div>
-    <div class="modal-actions">${service.browser_url ? `<button class="secondary-button" type="button" data-action="open-service" data-service-id="${h(service.id)}">Open</button>` : ""}<button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+    <h3 class="detail-heading">Listening endpoints</h3><div class="endpoint-list">${service.endpoints.map((endpoint) => `<div><span class="port-chip">${endpoint.port}</span><code>${h(endpoint.address)} · ${h(endpoint.family)} · ${h(endpoint.scope)}</code></div>`).join("")}</div>`);
 }
 
 function showContainerDetails(container: ContainerInfo): void {
@@ -569,14 +568,13 @@ function showSettings(): void {
     <section class="settings-section" aria-labelledby="appearance-heading">
       <div class="settings-section-heading"><span class="settings-heading-icon">${uiIcon("theme", 18)}</span><div><h3 id="appearance-heading">Appearance</h3><p>Choose how Cutting Board looks on this device.</p></div></div>
       <fieldset class="choice-fieldset"><legend class="sr-only">Theme</legend><div class="theme-options">
-        ${themeChoice("light", "Light", "Bright and clear")}${themeChoice("dark", "Dark", "Easy on the eyes")}${themeChoice("system", "System", "Follow your device")}
+        ${themeChoice("system", "System", "Follow your device")}${themeChoice("light", "Light", "Bright and clear")}${themeChoice("dark", "Dark", "Easy on the eyes")}
       </div></fieldset>
     </section>
     <section class="settings-section" aria-labelledby="scanning-heading">
-      <div class="settings-section-heading"><span class="settings-heading-icon">${uiIcon("scan", 18)}</span><div><h3 id="scanning-heading">Scanning</h3><p>How often running local services are refreshed.</p></div></div>
-      <fieldset class="choice-fieldset"><legend class="sr-only">Scan interval</legend><div class="interval-options">
-        ${intervalChoices.map((value) => `<label class="interval-choice"><input type="radio" name="scan_interval_ms" value="${value}" ${settings.scan_interval_ms === value ? "checked" : ""}><span>${h(formatInterval(value))}</span></label>`).join("")}
-      </div></fieldset>
+      <div class="settings-section-heading"><span class="settings-heading-icon">${uiIcon("scan", 18)}</span><div class="settings-heading-copy"><h3 id="scanning-heading">Scanning</h3><p>How often running local services are refreshed.</p></div><fieldset class="choice-fieldset interval-control"><legend class="sr-only">Scan interval</legend><div class="interval-options">
+          ${intervalChoices.map((value) => `<label class="interval-choice"><input type="radio" name="scan_interval_ms" value="${value}" ${settings.scan_interval_ms === value ? "checked" : ""}><span>${h(formatInterval(value))}</span></label>`).join("")}
+        </div></fieldset></div>
       <p class="settings-help">Short intervals update quickly but use slightly more CPU. Two seconds is a good default.</p>
     </section>
     <button class="source-link" type="button" data-action="open-source" aria-label="View Cutting Board source code on GitHub">${uiIcon("github", 20)}<span><strong>Open source on GitHub</strong><small>github.com/ShanePark/cuttingBoard</small></span>${uiIcon("external", 16)}</button>
