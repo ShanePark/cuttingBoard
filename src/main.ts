@@ -105,6 +105,10 @@ type ServiceLogState = {
   error: string | null;
 };
 let selectedServiceId: string | null = null;
+type ServicesConsoleTarget =
+  | { kind: "service"; id: string }
+  | { kind: "container"; id: string };
+let servicesConsoleTarget: ServicesConsoleTarget | null = null;
 let serviceLogState: ServiceLogState = {
   serviceId: null,
   logs: "",
@@ -125,13 +129,45 @@ type DockerLogState = {
   loading: boolean;
   error: string | null;
 };
-let selectedContainerId: string | null = null;
-let dockerLogState: DockerLogState = { containerId: null, logs: "", loading: false, error: null };
-let dockerLogRequestId = 0;
-let dockerConsoleScrollTop = 0;
-let dockerConsoleScrollContainerId: string | null = null;
-let restoringDockerConsoleScroll = false;
-let dockerConsoleContextState: ConsoleContextState = { key: null, open: false, focused: false };
+type ContainerTab = "services" | "docker";
+type ContainerViewState = {
+  selectedContainerId: string | null;
+  logState: DockerLogState;
+  logRequestId: number;
+  consoleScrollTop: number;
+  consoleScrollContainerId: string | null;
+  restoringConsoleScroll: boolean;
+  consoleContextState: ConsoleContextState;
+};
+function emptyDockerLogState(): DockerLogState {
+  return { containerId: null, logs: "", loading: false, error: null };
+}
+const containerViewStates: Record<ContainerTab, ContainerViewState> = {
+  services: {
+    selectedContainerId: null,
+    logState: emptyDockerLogState(),
+    logRequestId: 0,
+    consoleScrollTop: 0,
+    consoleScrollContainerId: null,
+    restoringConsoleScroll: false,
+    consoleContextState: { key: null, open: false, focused: false }
+  },
+  docker: {
+    selectedContainerId: null,
+    logState: emptyDockerLogState(),
+    logRequestId: 0,
+    consoleScrollTop: 0,
+    consoleScrollContainerId: null,
+    restoringConsoleScroll: false,
+    consoleContextState: { key: null, open: false, focused: false }
+  }
+};
+function containerViewState(tab: ContainerTab): ContainerViewState {
+  return containerViewStates[tab];
+}
+function activeContainerTab(): ContainerTab {
+  return activeTab === "services" ? "services" : "docker";
+}
 
 root.addEventListener("click", (event) => void handleClick(event));
 root.addEventListener("keydown", handleKeyboard);
@@ -198,7 +234,7 @@ async function refreshWorkspace(force = false): Promise<void> {
     syncSelectedService();
     renderHeaderCounts();
     renderFooter();
-    if (activeTab === "services") void refreshSelectedServiceLogs();
+    if (activeTab === "services" && servicesConsoleTarget?.kind === "service") void refreshSelectedServiceLogs();
     render(force);
     if (activeTab === "services" || activeTab === "docker") await refreshContainers(force);
     if (activeTab === "launch") await refreshLaunch(force);
@@ -217,6 +253,7 @@ function syncSelectedService(): void {
 
 function clearServiceSelection(): void {
   selectedServiceId = null;
+  if (servicesConsoleTarget?.kind === "service") servicesConsoleTarget = null;
   serviceLogRequestId += 1;
   serviceLogState = {
     serviceId: null,
@@ -232,7 +269,7 @@ function clearServiceSelection(): void {
 }
 
 async function refreshSelectedServiceLogs(): Promise<void> {
-  if (!selectedServiceId) return;
+  if (servicesConsoleTarget?.kind !== "service" || !selectedServiceId) return;
   const service = workspace?.services.find((item) => item.relevance === "dev" && item.id === selectedServiceId);
   if (!service) {
     clearServiceSelection();
@@ -243,7 +280,7 @@ async function refreshSelectedServiceLogs(): Promise<void> {
 }
 
 async function loadServiceLogs(serviceId: string, showLoading = false): Promise<void> {
-  if (selectedServiceId !== serviceId) return;
+  if (servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId) return;
   if (!showLoading && serviceLogState.serviceId === serviceId && serviceLogState.loading) return;
   const requestId = ++serviceLogRequestId;
   if (showLoading) {
@@ -256,7 +293,7 @@ async function loadServiceLogs(serviceId: string, showLoading = false): Promise<
       message: null,
       error: null
     };
-    if (activeTab === "services") updateServiceConsoleDom();
+    if (activeTab === "services" && servicesConsoleTarget?.kind === "service") updateServiceConsoleDom();
   } else {
     serviceLogState = {
       ...serviceLogState,
@@ -267,7 +304,7 @@ async function loadServiceLogs(serviceId: string, showLoading = false): Promise<
   }
   try {
     const result = await api.serviceLogs(serviceId);
-    if (requestId !== serviceLogRequestId || selectedServiceId !== serviceId) return;
+    if (requestId !== serviceLogRequestId || servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId) return;
     serviceLogState = {
       serviceId,
       logs: result.logs ?? "",
@@ -277,16 +314,16 @@ async function loadServiceLogs(serviceId: string, showLoading = false): Promise<
       message: result.message ?? null,
       error: null
     };
-    if (activeTab === "services") updateServiceConsoleDom();
+    if (activeTab === "services" && servicesConsoleTarget?.kind === "service") updateServiceConsoleDom();
   } catch (error) {
-    if (requestId !== serviceLogRequestId || selectedServiceId !== serviceId) return;
+    if (requestId !== serviceLogRequestId || servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId) return;
     serviceLogState = {
       ...serviceLogState,
       serviceId,
       loading: false,
       error: messageOf(error)
     };
-    if (activeTab === "services") updateServiceConsoleDom();
+    if (activeTab === "services" && servicesConsoleTarget?.kind === "service") updateServiceConsoleDom();
   }
 }
 
@@ -297,7 +334,7 @@ async function refreshContainers(force = false): Promise<void> {
     containerListing = await api.containers();
     syncSelectedContainer();
     renderHeaderCounts();
-    if (activeTab === "docker") await refreshSelectedContainerLogs();
+    if (activeTab === "docker" || (activeTab === "services" && servicesConsoleTarget?.kind === "container")) await refreshSelectedContainerLogs();
     if (activeTab === "docker") renderDocker(force);
     if (activeTab === "services") renderServices(force);
   } catch (error) {
@@ -311,42 +348,67 @@ async function refreshContainers(force = false): Promise<void> {
 }
 
 function syncSelectedContainer(): void {
-  if (!selectedContainerId) return;
-  const stillAvailable = containerListing?.available && containerListing.containers.some((container) => container.id === selectedContainerId);
-  if (!stillAvailable) clearDockerSelection();
+  if (!containerListing?.available) {
+    clearDockerSelection();
+    return;
+  }
+  for (const tab of ["services", "docker"] as const) {
+    const selectedId = containerViewState(tab).selectedContainerId;
+    if (selectedId && !containerListing.containers.some((container) => container.id === selectedId)) clearContainerSelection(tab);
+  }
+  if (servicesConsoleTarget?.kind === "container" && containerViewState("services").selectedContainerId !== servicesConsoleTarget.id) {
+    servicesConsoleTarget = null;
+  }
+}
+
+function clearContainerSelection(tab: ContainerTab): void {
+  const state = containerViewState(tab);
+  const clearedId = state.selectedContainerId;
+  state.selectedContainerId = null;
+  state.logRequestId += 1;
+  state.logState = emptyDockerLogState();
+  state.consoleScrollContainerId = null;
+  state.consoleScrollTop = 0;
+  if (tab === "services" && servicesConsoleTarget?.kind === "container" && servicesConsoleTarget.id === clearedId) servicesConsoleTarget = null;
 }
 
 function clearDockerSelection(): void {
-  selectedContainerId = null;
-  dockerLogRequestId += 1;
-  dockerLogState = { containerId: null, logs: "", loading: false, error: null };
-  dockerConsoleScrollContainerId = null;
-  dockerConsoleScrollTop = 0;
+  clearContainerSelection("services");
+  clearContainerSelection("docker");
 }
 
 async function refreshSelectedContainerLogs(): Promise<void> {
-  if (!selectedContainerId || !containerListing?.available) return;
-  if (dockerLogState.containerId === selectedContainerId && dockerLogState.loading) return;
-  await loadContainerLogs(selectedContainerId);
+  const tab = activeContainerTab();
+  const state = containerViewState(tab);
+  if (tab === "services" && servicesConsoleTarget?.kind !== "container") return;
+  if (!state.selectedContainerId || !containerListing?.available) return;
+  if (state.logState.containerId === state.selectedContainerId && state.logState.loading) return;
+  await loadContainerLogs(state.selectedContainerId, false, tab);
 }
 
-async function loadContainerLogs(containerId: string, showLoading = false): Promise<void> {
-  if (selectedContainerId !== containerId) return;
-  if (!showLoading && dockerLogState.containerId === containerId && dockerLogState.loading) return;
-  const requestId = ++dockerLogRequestId;
+function updateContainerConsoleDom(tab: ContainerTab): void {
+  if (tab === "docker" && activeTab === "docker") updateDockerConsoleDom();
+  else if (tab === "services" && activeTab === "services" && servicesConsoleTarget?.kind === "container") updateServiceConsoleDom();
+}
+
+async function loadContainerLogs(containerId: string, showLoading = false, tab = activeContainerTab()): Promise<void> {
+  const state = containerViewState(tab);
+  if (state.selectedContainerId !== containerId) return;
+  if (!showLoading && state.logState.containerId === containerId && state.logState.loading) return;
+  const requestId = ++state.logRequestId;
   if (showLoading) {
-    dockerLogState = { containerId, logs: "", loading: true, error: null };
-    if (activeTab === "docker") updateDockerConsoleDom();
+    state.logState = { containerId, logs: "", loading: true, error: null };
+    updateContainerConsoleDom(tab);
   }
   try {
     const result = await api.containerLogs(containerId);
-    if (requestId !== dockerLogRequestId || selectedContainerId !== containerId) return;
-    dockerLogState = { containerId, logs: result.logs ?? "", loading: false, error: null };
-    if (activeTab === "docker") updateDockerConsoleDom();
+    if (requestId !== state.logRequestId || state.selectedContainerId !== containerId) return;
+    state.logState = { containerId, logs: result.logs ?? "", loading: false, error: null };
+    updateContainerConsoleDom(tab);
   } catch (error) {
-    if (requestId !== dockerLogRequestId || selectedContainerId !== containerId) return;
-    dockerLogState = { ...dockerLogState, containerId, loading: false, error: messageOf(error) };
-    if (activeTab === "docker") updateDockerConsoleDom();
+    if (requestId !== state.logRequestId || state.selectedContainerId !== containerId) return;
+    state.logState = { ...state.logState, containerId, loading: false, error: messageOf(error) };
+    updateContainerConsoleDom(tab);
   }
 }
 
@@ -382,8 +444,7 @@ function renderFooter(): void {
 }
 
 function renderServices(force = false): void {
-  captureServiceContextState();
-  captureServiceConsoleState();
+  captureServicesConsoleState();
   const services = workspace?.services.filter((service) => service.relevance === "dev") ?? [];
   const containers = containerListing?.available ? containerListing.containers : [];
   const groups = groupServices(services).map((group) => ({
@@ -406,12 +467,16 @@ function renderServices(force = false): void {
       group.id,
       group.containers.map((container) => [
         container.id, container.name, container.image, container.state, container.status,
-        container.ports, container.compose_project, container.compose_service, container.compose_working_dir
+        container.ports, container.compose_project, container.compose_service, container.compose_working_dir,
+        containerOperationBusy(container.id)
       ])
     ]),
-    selectedServiceId
+    selectedServiceId,
+    containerViewState("services").selectedContainerId,
+    servicesConsoleTarget
   ]);
   if (!force && signature === serviceSignature && workspaceElement.dataset.view === "services") {
+    updateDockerContainerStatuses();
     updateServiceConsoleDom();
     updateLiveMetrics();
     return;
@@ -420,10 +485,12 @@ function renderServices(force = false): void {
   workspaceElement.dataset.view = "services";
   if (!workspace) {
     workspaceElement.innerHTML = `<div class="services-view split-view"><div class="split-view-list">${loadingState("Finding services")}</div>${renderServiceConsole()}</div>`;
+    restoreServicesConsoleState();
     return;
   }
   if (services.length === 0) {
     workspaceElement.innerHTML = `<div class="services-view split-view"><div class="split-view-list">${emptyState("No development services are running", "Start a local server from a terminal, agent, or IDE.")}</div>${renderServiceConsole()}</div>`;
+    restoreServicesConsoleState();
     return;
   }
   workspaceElement.innerHTML = `<div class="services-view split-view"><div class="split-view-list"><div class="board">${groups.map((group) => `
@@ -436,9 +503,23 @@ function renderServices(force = false): void {
       <div class="tile-grid">${renderServiceGroupTiles(group)}</div>
     </section>`).join("")}</div></div>${renderServiceConsole()}</div>`;
   applyBoardLayout();
-  restoreServiceContextState();
-  restoreServiceConsoleScroll();
+  restoreServicesConsoleState();
   updateLiveMetrics();
+}
+
+function captureServicesConsoleState(): void {
+  captureServiceContextState();
+  captureServiceConsoleState();
+  captureDockerContextState();
+  captureDockerConsoleState();
+}
+
+function restoreServicesConsoleState(): void {
+  if (servicesConsoleTarget?.kind === "container") restoreDockerConsoleState();
+  else {
+    restoreServiceContextState();
+    restoreServiceConsoleScroll();
+  }
 }
 
 function renderGroupTitle(title: string, itemCount: number, action: string, attributes: string, displayTitle = title, actionTitle = "View group details"): string {
@@ -451,7 +532,7 @@ function renderGroupTitle(title: string, itemCount: number, action: string, attr
 function renderServiceGroupTiles(group: ReturnType<typeof groupServices>[number] & { containers: ContainerInfo[] }): string {
   const total = group.services.length + group.containers.length;
   const ordinalTotal = total > 1 ? total : undefined;
-  return `${group.services.map((service, index) => renderServiceTile(service, ordinalTotal ? index + 1 : undefined, ordinalTotal)).join("")}${group.containers.map((container, index) => renderContainerTile(container, ordinalTotal ? group.services.length + index + 1 : undefined, ordinalTotal, false)).join("")}`;
+  return `${group.services.map((service, index) => renderServiceTile(service, ordinalTotal ? index + 1 : undefined, ordinalTotal)).join("")}${group.containers.map((container, index) => renderContainerTile(container, ordinalTotal ? group.services.length + index + 1 : undefined, ordinalTotal, true)).join("")}`;
 }
 
 function renderGroupActions(group: ReturnType<typeof groupServices>[number]): string {
@@ -546,7 +627,7 @@ function renderServiceTile(service: ServiceSnapshot, ordinal?: number, ordinalTo
   const busy = operations.has(`stop:${service.id}`);
   const uptime = currentUptime(service);
   const pip = busy ? "busy" : uptime === null ? "idle" : service.status === "limited" ? "limited" : "running";
-  const selected = Boolean(scope.select) && selectedServiceId === service.id;
+  const selected = Boolean(scope.select) && servicesConsoleTarget?.kind === "service" && selectedServiceId === service.id;
   const tileAction = scope.select ? "select-service" : "service-details";
   const tileActionLabel = scope.select
     ? `${selected ? "Selected service logs for" : "View logs for"} ${service.display_name}`
@@ -712,11 +793,25 @@ function patchConsoleOutput(output: HTMLElement, markup: string, kind: string, l
 function updateServiceConsoleDom(): void {
   const consoleElement = workspaceElement.querySelector<HTMLElement>(".service-console");
   if (!consoleElement) return;
+  if (consoleElement.dataset.consoleKind === "container") {
+    const containerId = consoleElement.dataset.consoleContainerId || null;
+    const container = containerId
+      ? containerListing?.containers.find((item) => item.id === containerId) ?? null
+      : null;
+    const servicesState = containerViewState("services");
+    if (servicesConsoleTarget?.kind !== "container" || containerId !== servicesState.selectedContainerId) return;
+    patchConsoleElement(consoleElement.querySelector<HTMLElement>("[data-console-log-meta]"), renderDockerLogMeta(container, servicesState.logState));
+    const output = consoleElement.querySelector<HTMLElement>(".console-output");
+    if (!output) return;
+    const log = container && servicesState.logState.containerId === container.id ? servicesState.logState.logs : "";
+    patchConsoleOutput(output, renderDockerLogOutput(container, servicesState.logState), dockerConsoleOutputKind(container, servicesState.logState), log);
+    return;
+  }
   const serviceId = consoleElement.dataset.consoleServiceId || null;
   const service = serviceId
     ? workspace?.services.find((item) => item.relevance === "dev" && item.id === serviceId) ?? null
     : null;
-  if (serviceId !== selectedServiceId) return;
+  if (servicesConsoleTarget?.kind !== "service" || serviceId !== selectedServiceId) return;
   const state = service && serviceLogState.serviceId === service.id ? serviceLogState : null;
   patchConsoleElement(consoleElement.querySelector<HTMLElement>("[data-console-log-meta]"), renderServiceLogMeta(service, state));
   patchConsoleElement(consoleElement.querySelector<HTMLElement>("[data-console-source]"), renderConsoleSourceMeta(service && state?.sourcePath ? state.sourcePath : null, "Log source"));
@@ -726,18 +821,19 @@ function updateServiceConsoleDom(): void {
 }
 
 function updateDockerConsoleDom(): void {
-  const consoleElement = workspaceElement.querySelector<HTMLElement>(".docker-console");
+  const consoleElement = workspaceElement.querySelector<HTMLElement>(".docker-console, .docker-service-console");
   if (!consoleElement) return;
+  const dockerState = containerViewState("docker");
   const containerId = consoleElement.dataset.consoleContainerId || null;
   const container = containerId
     ? containerListing?.containers.find((item) => item.id === containerId) ?? null
     : null;
-  if (containerId !== selectedContainerId) return;
-  patchConsoleElement(consoleElement.querySelector<HTMLElement>("[data-console-log-meta]"), renderDockerLogMeta(container));
+  if (containerId !== dockerState.selectedContainerId) return;
+  patchConsoleElement(consoleElement.querySelector<HTMLElement>("[data-console-log-meta]"), renderDockerLogMeta(container, dockerState.logState));
   const output = consoleElement.querySelector<HTMLElement>(".console-output");
   if (!output) return;
-  const log = container && dockerLogState.containerId === container.id ? dockerLogState.logs : "";
-  patchConsoleOutput(output, renderDockerLogOutput(container), dockerConsoleOutputKind(container), log);
+  const log = container && dockerState.logState.containerId === container.id ? dockerState.logState.logs : "";
+  patchConsoleOutput(output, renderDockerLogOutput(container, dockerState.logState), dockerConsoleOutputKind(container, dockerState.logState), log);
 }
 
 function updateLaunchConsoleDom(): void {
@@ -773,8 +869,9 @@ function serviceConsoleOutputKind(service: ServiceSnapshot | null): string {
 }
 
 function renderServiceConsole(): string {
-  const service = selectedServiceId
-    ? workspace?.services.find((item) => item.relevance === "dev" && item.id === selectedServiceId) ?? null
+  if (servicesConsoleTarget?.kind === "container") return renderDockerConsole("service-console docker-service-console", "container", "services");
+  const service = servicesConsoleTarget?.kind === "service"
+    ? workspace?.services.find((item) => item.relevance === "dev" && item.id === servicesConsoleTarget?.id) ?? null
     : null;
   const stateClass = service ? serviceStateClass(service) : "stopped";
   const statusText = service ? serviceStateText(service) : "No service selected";
@@ -859,7 +956,7 @@ function renderDocker(force = false): void {
   const signature = JSON.stringify([
     containerStructure,
     containerActions,
-    selectedContainerId,
+    containerViewState("docker").selectedContainerId,
     fallback.map((service) => [service.id, uniquePorts(service)])
   ]);
   if (!force && signature === dockerSignature && workspaceElement.dataset.view === "docker") {
@@ -917,7 +1014,8 @@ function groupContainers(containers: ContainerInfo[]): Array<{ name: string; con
 function renderContainerTile(container: ContainerInfo, ordinal?: number, ordinalTotal?: number, showActions = false): string {
   const running = container.state === "running";
   const busy = showActions && containerOperationBusy(container.id);
-  const selected = showActions && selectedContainerId === container.id;
+  const selectedId = showActions ? containerViewState(activeTab === "services" ? "services" : "docker").selectedContainerId : null;
+  const selected = showActions && selectedId === container.id && (activeTab !== "services" || servicesConsoleTarget?.kind === "container");
   const action = running ? "stop-container" : "start-container";
   const actionLabel = busy ? (running ? "Stopping" : "Starting") : running ? "Stop" : "Start";
   const stateText = busy ? `${actionLabel}…` : container.status || (running ? "Running" : "Stopped");
@@ -965,63 +1063,70 @@ function updateDockerContainerStatuses(): void {
     const nextText = ellipsis(stateText, 30);
     if (element.textContent !== nextText) element.textContent = nextText;
   }
-  const consoleElement = workspaceElement.querySelector<HTMLElement>(".docker-console");
+  const consoleElement = workspaceElement.querySelector<HTMLElement>(".docker-console, .docker-service-console");
   const containerId = consoleElement?.dataset.consoleContainerId;
   if (!consoleElement || !containerId) return;
   const container = containerListing.containers.find((item) => item.id === containerId);
-  const statusText = container ? containerStateText(container) : "No container selected";
+  const busy = container ? containerOperationBusy(container.id) : false;
+  const statusText = container
+    ? busy ? `${container.state === "running" ? "Stopping" : "Starting"}…` : containerStateText(container)
+    : "No container selected";
   const statusElement = consoleElement.querySelector<HTMLElement>("[data-console-status-text]");
   if (statusElement && statusElement.textContent !== statusText) statusElement.textContent = statusText;
 }
 
-function renderDockerLogMeta(container: ContainerInfo | null): string {
+function renderDockerLogMeta(container: ContainerInfo | null, logState = containerViewState(activeContainerTab()).logState): string {
   if (!container) return `<span class="console-meta-item" data-console-log-meta hidden></span>`;
-  if (dockerLogState.loading) return `<span class="console-meta-item" data-console-log-meta data-console-log-meta-key="loading" title="Loading recent logs">${uiIcon("refresh", 12)}<span>Loading logs</span></span>`;
-  if (dockerLogState.error) return `<span class="console-meta-item console-meta-error" data-console-log-meta data-console-log-meta-key="error:${h(dockerLogState.error)}" title="${h(dockerLogState.error)}">${uiIcon("warning", 12)}<span>Logs unavailable</span></span>`;
+  if (logState.loading) return `<span class="console-meta-item" data-console-log-meta data-console-log-meta-key="loading" title="Loading recent logs">${uiIcon("refresh", 12)}<span>Loading logs</span></span>`;
+  if (logState.error) return `<span class="console-meta-item console-meta-error" data-console-log-meta data-console-log-meta-key="error:${h(logState.error)}" title="${h(logState.error)}">${uiIcon("warning", 12)}<span>Logs unavailable</span></span>`;
   return `<span class="console-meta-item" data-console-log-meta data-console-log-meta-key="available" title="The backend returns the most recent 200 lines">${uiIcon("log", 12)}<span>Last 200 lines</span></span>`;
 }
 
-function dockerConsoleOutputKind(container: ContainerInfo | null): string {
+function dockerConsoleOutputKind(container: ContainerInfo | null, logState = containerViewState(activeContainerTab()).logState): string {
   if (!container) return "empty";
-  const log = dockerLogState.containerId === container.id ? dockerLogState.logs : "";
-  if (dockerLogState.loading) return "loading";
-  if (dockerLogState.error) return log.trim() ? "log-alert" : "error";
+  const log = logState.containerId === container.id ? logState.logs : "";
+  if (logState.loading) return "loading";
+  if (logState.error) return log.trim() ? "log-alert" : "error";
   return log.trim() ? "log" : "empty";
 }
 
-function renderDockerConsole(): string {
-  const container = selectedContainerId
-    ? containerListing?.containers.find((item) => item.id === selectedContainerId) ?? null
+function renderDockerConsole(consoleClass = "docker-console", consoleKind = "container", tab = activeContainerTab()): string {
+  const viewState = containerViewState(tab);
+  const container = viewState.selectedContainerId
+    ? containerListing?.containers.find((item) => item.id === viewState.selectedContainerId) ?? null
     : null;
   const stateClass = container ? containerStateClass(container) : "idle";
-  const statusText = container ? containerStateText(container) : "No container selected";
+  const busy = container ? containerOperationBusy(container.id) : false;
+  const statusText = container
+    ? busy ? `${container.state === "running" ? "Stopping" : "Starting"}…` : containerStateText(container)
+    : "No container selected";
   const title = container?.name ?? "Container console";
   const subtitle = container ? container.image : "Select a container to view its recent logs";
   const context = container
     ? `<div class="console-context" aria-label="Container context"><div class="console-context-item"><span>CONTAINER ID</span><code title="${h(container.id)}">${h(container.id)}</code></div><div class="console-context-item"><span>IMAGE</span><code title="${h(container.image)}">${h(middleEllipsis(container.image, 240))}</code></div><div class="console-context-item"><span>COMPOSE SERVICE</span><code title="${h(container.compose_service ?? "Standalone container")}">${h(container.compose_service ?? "Standalone container")}</code></div><div class="console-context-item"><span>COMPOSE PROJECT</span><code title="${h(container.compose_project ?? "—")}">${h(container.compose_project ?? "—")}</code></div></div>`
     : "";
   const outputLabel = container ? `Logs for ${h(container.name)}` : "Docker container logs";
-  return `<section class="launch-console docker-console${container ? ` state-${stateClass}` : " launch-console-empty"}" aria-labelledby="docker-console-title" data-console-container-id="${h(container?.id ?? "")}">
+  return `<section class="launch-console ${consoleClass}${container ? ` state-${stateClass}` : " launch-console-empty"}" aria-labelledby="docker-console-title" data-console-kind="${h(consoleKind)}" data-console-container-id="${h(container?.id ?? "")}">
     <header class="console-header">
       <div class="console-title"><span class="console-icon state-${stateClass}" aria-hidden="true">${uiIcon("docker", 16)}</span><div><h2 id="docker-console-title">${h(title)}</h2><p>${h(subtitle)}</p></div></div>
-      <div class="console-meta" aria-label="Container status"><span class="console-state state-${stateClass}"><span class="task-state-dot" aria-hidden="true"></span><span data-console-status-text>${h(statusText)}</span></span>${container ? `<span class="console-meta-item" title="Container ID"><span class="sr-only">Container ID </span>${uiIcon("docker", 12)}<code>${h(middleEllipsis(container.id, 16))}</code></span>` : ""}${renderDockerLogMeta(container)}</div>
+      <div class="console-meta" aria-label="Container status"><span class="console-state state-${stateClass}"><span class="task-state-dot" aria-hidden="true"></span><span data-console-status-text>${h(statusText)}</span></span>${container ? `<span class="console-meta-item" title="Container ID"><span class="sr-only">Container ID </span>${uiIcon("docker", 12)}<code>${h(middleEllipsis(container.id, 16))}</code></span>` : ""}${renderDockerLogMeta(container, viewState.logState)}</div>
     </header>
     ${renderConsoleContext("Container details", context)}
     ${renderConsoleToolbar("Recent logs", !container)}
-    <div class="console-output${consoleWrap ? " is-wrapped" : ""} docker-console-output" data-console-output-kind="${dockerConsoleOutputKind(container)}" tabindex="0" role="log" aria-live="polite" aria-label="${outputLabel}">${renderDockerLogOutput(container)}</div>
+    <div class="console-output${consoleWrap ? " is-wrapped" : ""} docker-console-output" data-console-output-kind="${dockerConsoleOutputKind(container, viewState.logState)}" tabindex="0" role="log" aria-live="polite" aria-label="${outputLabel}">${renderDockerLogOutput(container, viewState.logState)}</div>
   </section>`;
 }
 
-function renderDockerLogOutput(container: ContainerInfo | null): string {
+function renderDockerLogOutput(container: ContainerInfo | null, logState = containerViewState(activeContainerTab()).logState): string {
   if (!container) {
     return `<div class="console-message"><span class="console-message-icon">${uiIcon("docker", 18)}</span><strong>No container selected</strong><span>Select a Docker container card to view its recent logs.</span></div>`;
   }
-  const log = dockerLogState.containerId === container.id ? dockerLogState.logs : "";
-  if (dockerLogState.loading) {
+  const log = logState.containerId === container.id ? logState.logs : "";
+  if (logState.loading) {
     return `<div class="console-message"><span class="console-message-icon">${uiIcon("refresh", 18)}</span><strong>Loading container logs</strong><span>Fetching the most recent output from Docker…</span></div>`;
   }
-  if (dockerLogState.error) {
-    const alert = `<div class="console-alert">${uiIcon("warning", 14)}<span>${h(dockerLogState.error)}</span></div>`;
+  if (logState.error) {
+    const alert = `<div class="console-alert">${uiIcon("warning", 14)}<span>${h(logState.error)}</span></div>`;
     if (log.trim()) return `${alert}<pre class="console-log">${h(log)}</pre>`;
     return `${alert}<div class="console-message is-failed"><span class="console-message-icon">${uiIcon("warning", 18)}</span><strong>Container logs are unavailable</strong><span>Docker could not return output for this container.</span></div>`;
   }
@@ -1280,7 +1385,7 @@ function restoreConsoleContextState(): void {
 }
 
 function captureConsoleState(): void {
-  const output = document.querySelector<HTMLElement>(".launch-console:not(.docker-console) .console-output");
+  const output = document.querySelector<HTMLElement>(".launch-console:not(.docker-console):not(.docker-service-console) .console-output");
   if (!output) return;
   const taskKey = output.closest<HTMLElement>(".launch-console")?.dataset.consoleTaskKey ?? null;
   if (taskKey !== selectedTaskDomKey()) return;
@@ -1289,19 +1394,19 @@ function captureConsoleState(): void {
 }
 
 function captureServiceConsoleState(): void {
-  const output = document.querySelector<HTMLElement>(".service-console .console-output");
+  const output = document.querySelector<HTMLElement>(".service-console:not(.docker-service-console) .console-output");
   if (!output) return;
-  const serviceId = output.closest<HTMLElement>(".service-console")?.dataset.consoleServiceId || null;
-  if (serviceId !== selectedServiceId) return;
+  const serviceId = output.closest<HTMLElement>(".service-console:not(.docker-service-console)")?.dataset.consoleServiceId || null;
+  if (servicesConsoleTarget?.kind !== "service" || serviceId !== selectedServiceId) return;
   serviceConsoleScrollServiceId = selectedServiceId;
   serviceConsoleScrollTop = output.scrollTop;
 }
 
 function captureServiceContextState(): void {
-  const details = document.querySelector<HTMLElement>(".service-console .console-context-details");
+  const details = document.querySelector<HTMLElement>(".service-console:not(.docker-service-console) .console-context-details");
   if (!details) return;
-  const serviceId = details.closest<HTMLElement>(".service-console")?.dataset.consoleServiceId || null;
-  if (serviceId !== selectedServiceId) return;
+  const serviceId = details.closest<HTMLElement>(".service-console:not(.docker-service-console)")?.dataset.consoleServiceId || null;
+  if (servicesConsoleTarget?.kind !== "service" || serviceId !== selectedServiceId) return;
   serviceConsoleContextState = {
     key: selectedServiceId,
     open: details instanceof HTMLDetailsElement ? details.open : false,
@@ -1310,16 +1415,16 @@ function captureServiceContextState(): void {
 }
 
 function restoreServiceContextState(): void {
-  const details = document.querySelector<HTMLElement>(".service-console .console-context-details");
-  if (!details || serviceConsoleContextState.key !== selectedServiceId) return;
-  const serviceId = details.closest<HTMLElement>(".service-console")?.dataset.consoleServiceId || null;
+  const details = document.querySelector<HTMLElement>(".service-console:not(.docker-service-console) .console-context-details");
+  if (!details || servicesConsoleTarget?.kind !== "service" || serviceConsoleContextState.key !== selectedServiceId) return;
+  const serviceId = details.closest<HTMLElement>(".service-console:not(.docker-service-console)")?.dataset.consoleServiceId || null;
   if (serviceId !== selectedServiceId) return;
   if (details instanceof HTMLDetailsElement) details.open = serviceConsoleContextState.open;
   if (serviceConsoleContextState.focused) details.querySelector<HTMLElement>("summary")?.focus();
 }
 
 function restoreConsoleScroll(): void {
-  const output = document.querySelector<HTMLElement>(".launch-console:not(.docker-console) .console-output");
+  const output = document.querySelector<HTMLElement>(".launch-console:not(.docker-console):not(.docker-service-console) .console-output");
   if (!output) return;
   restoringConsoleScroll = true;
   const savedScrollTop = consoleScrollTaskKey === selectedTaskKey ? consoleScrollTop : 0;
@@ -1330,7 +1435,7 @@ function restoreConsoleScroll(): void {
 }
 
 function restoreServiceConsoleScroll(): void {
-  const output = document.querySelector<HTMLElement>(".service-console .console-output");
+  const output = document.querySelector<HTMLElement>(".service-console:not(.docker-service-console) .console-output");
   if (!output) return;
   restoringServiceConsoleScroll = true;
   const savedScrollTop = serviceConsoleScrollServiceId === selectedServiceId ? serviceConsoleScrollTop : 0;
@@ -1341,44 +1446,56 @@ function restoreServiceConsoleScroll(): void {
 }
 
 function captureDockerConsoleState(): void {
-  const output = document.querySelector<HTMLElement>(".docker-console .console-output");
+  const output = document.querySelector<HTMLElement>(".docker-console .console-output, .docker-service-console .console-output");
   if (!output) return;
-  const containerId = output.closest<HTMLElement>(".docker-console")?.dataset.consoleContainerId || null;
-  if (containerId !== selectedContainerId) return;
-  dockerConsoleScrollContainerId = selectedContainerId;
-  dockerConsoleScrollTop = output.scrollTop;
+  const consoleElement = output.closest<HTMLElement>(".docker-console, .docker-service-console");
+  const tab: ContainerTab = consoleElement?.classList.contains("docker-service-console") ? "services" : "docker";
+  const state = containerViewState(tab);
+  const containerId = consoleElement?.dataset.consoleContainerId || null;
+  if (containerId !== state.selectedContainerId) return;
+  state.consoleScrollContainerId = state.selectedContainerId;
+  state.consoleScrollTop = output.scrollTop;
 }
 
 function captureDockerContextState(): void {
-  const details = document.querySelector<HTMLElement>(".docker-console .console-context-details");
+  const details = document.querySelector<HTMLElement>(".docker-console .console-context-details, .docker-service-console .console-context-details");
   if (!details) return;
-  const containerId = details.closest<HTMLElement>(".docker-console")?.dataset.consoleContainerId || null;
-  if (containerId !== selectedContainerId) return;
-  dockerConsoleContextState = {
-    key: selectedContainerId,
+  const consoleElement = details.closest<HTMLElement>(".docker-console, .docker-service-console");
+  const tab: ContainerTab = consoleElement?.classList.contains("docker-service-console") ? "services" : "docker";
+  const state = containerViewState(tab);
+  const containerId = consoleElement?.dataset.consoleContainerId || null;
+  if (containerId !== state.selectedContainerId) return;
+  state.consoleContextState = {
+    key: state.selectedContainerId,
     open: details instanceof HTMLDetailsElement ? details.open : false,
     focused: document.activeElement === details.querySelector("summary")
   };
 }
 
 function restoreDockerContextState(): void {
-  const details = document.querySelector<HTMLElement>(".docker-console .console-context-details");
-  if (!details || dockerConsoleContextState.key !== selectedContainerId) return;
-  const containerId = details.closest<HTMLElement>(".docker-console")?.dataset.consoleContainerId || null;
-  if (containerId !== selectedContainerId) return;
-  if (details instanceof HTMLDetailsElement) details.open = dockerConsoleContextState.open;
-  if (dockerConsoleContextState.focused) details.querySelector<HTMLElement>("summary")?.focus();
+  const details = document.querySelector<HTMLElement>(".docker-console .console-context-details, .docker-service-console .console-context-details");
+  if (!details) return;
+  const consoleElement = details.closest<HTMLElement>(".docker-console, .docker-service-console");
+  const tab: ContainerTab = consoleElement?.classList.contains("docker-service-console") ? "services" : "docker";
+  const state = containerViewState(tab);
+  const containerId = consoleElement?.dataset.consoleContainerId || null;
+  if (state.consoleContextState.key !== state.selectedContainerId || containerId !== state.selectedContainerId) return;
+  if (details instanceof HTMLDetailsElement) details.open = state.consoleContextState.open;
+  if (state.consoleContextState.focused) details.querySelector<HTMLElement>("summary")?.focus();
 }
 
 function restoreDockerConsoleScroll(): void {
-  const output = document.querySelector<HTMLElement>(".docker-console .console-output");
+  const output = document.querySelector<HTMLElement>(".docker-console .console-output, .docker-service-console .console-output");
   if (!output) return;
-  restoringDockerConsoleScroll = true;
-  const savedScrollTop = dockerConsoleScrollContainerId === selectedContainerId ? dockerConsoleScrollTop : 0;
+  const consoleElement = output.closest<HTMLElement>(".docker-console, .docker-service-console");
+  const tab: ContainerTab = consoleElement?.classList.contains("docker-service-console") ? "services" : "docker";
+  const state = containerViewState(tab);
+  state.restoringConsoleScroll = true;
+  const savedScrollTop = state.consoleScrollContainerId === state.selectedContainerId ? state.consoleScrollTop : 0;
   output.scrollTop = consoleFollow ? output.scrollHeight : Math.min(savedScrollTop, output.scrollHeight);
-  dockerConsoleScrollContainerId = selectedContainerId;
-  dockerConsoleScrollTop = output.scrollTop;
-  window.setTimeout(() => { restoringDockerConsoleScroll = false; }, 0);
+  state.consoleScrollContainerId = state.selectedContainerId;
+  state.consoleScrollTop = output.scrollTop;
+  window.setTimeout(() => { state.restoringConsoleScroll = false; }, 0);
 }
 
 function restoreDockerConsoleState(): void {
@@ -1389,10 +1506,10 @@ function restoreDockerConsoleState(): void {
 function handleConsoleScroll(event: Event): void {
   const target = event.target instanceof Element ? event.target.closest<HTMLElement>(".console-output") : null;
   if (!target) return;
-  const serviceConsole = target.closest<HTMLElement>(".service-console");
+  const serviceConsole = target.closest<HTMLElement>(".service-console:not(.docker-service-console)");
   if (serviceConsole) {
     const serviceId = serviceConsole.dataset.consoleServiceId || null;
-    if (serviceId !== selectedServiceId) return;
+    if (servicesConsoleTarget?.kind !== "service" || serviceId !== selectedServiceId) return;
     serviceConsoleScrollServiceId = selectedServiceId;
     serviceConsoleScrollTop = target.scrollTop;
     if (restoringServiceConsoleScroll) return;
@@ -1401,13 +1518,16 @@ function handleConsoleScroll(event: Event): void {
     updateConsoleControls();
     return;
   }
-  const dockerConsole = target.closest<HTMLElement>(".docker-console");
+  const dockerConsole = target.closest<HTMLElement>(".docker-console, .docker-service-console");
   if (dockerConsole) {
+    const tab: ContainerTab = dockerConsole.classList.contains("docker-service-console") ? "services" : "docker";
+    const state = containerViewState(tab);
     const containerId = dockerConsole.dataset.consoleContainerId || null;
-    if (containerId !== selectedContainerId) return;
-    dockerConsoleScrollContainerId = selectedContainerId;
-    dockerConsoleScrollTop = target.scrollTop;
-    if (restoringDockerConsoleScroll) return;
+    if (dockerConsole.classList.contains("docker-service-console") && servicesConsoleTarget?.kind !== "container") return;
+    if (containerId !== state.selectedContainerId) return;
+    state.consoleScrollContainerId = state.selectedContainerId;
+    state.consoleScrollTop = target.scrollTop;
+    if (state.restoringConsoleScroll) return;
     const distanceFromEnd = target.scrollHeight - target.clientHeight - target.scrollTop;
     consoleFollow = distanceFromEnd <= 18;
     updateConsoleControls();
@@ -1446,7 +1566,9 @@ function selectTask(profileId: string, taskName: string, focus = false): void {
 function selectService(id: string, focus = false): void {
   const service = findService(id);
   if (service.relevance !== "dev") throw new Error("This service is not available in the Services view.");
+  captureServicesConsoleState();
   selectedServiceId = id;
+  servicesConsoleTarget = { kind: "service", id };
   serviceConsoleScrollServiceId = id;
   serviceConsoleScrollTop = 0;
   serviceLogRequestId += 1;
@@ -1485,12 +1607,20 @@ function focusServiceCard(id: string): void {
 
 function selectContainer(id: string, focus = false): void {
   findContainer(id);
-  selectedContainerId = id;
-  dockerConsoleScrollContainerId = id;
-  dockerConsoleScrollTop = 0;
-  dockerLogState = { containerId: id, logs: "", loading: true, error: null };
-  renderDocker(true);
-  void loadContainerLogs(id, true);
+  const tab = activeContainerTab();
+  if (activeTab === "services") captureServicesConsoleState();
+  const state = containerViewState(tab);
+  state.selectedContainerId = id;
+  if (tab === "services") {
+    servicesConsoleTarget = { kind: "container", id };
+    serviceLogRequestId += 1;
+  }
+  state.consoleScrollContainerId = id;
+  state.consoleScrollTop = 0;
+  state.logState = { containerId: id, logs: "", loading: true, error: null };
+  if (activeTab === "services") renderServices(true);
+  else renderDocker(true);
+  void loadContainerLogs(id, true, tab);
   if (focus) focusContainerCard(id);
 }
 
@@ -1522,7 +1652,7 @@ async function handleClick(event: Event): Promise<void> {
     activeTab = tab;
     document.querySelectorAll<HTMLElement>("[data-tab]").forEach((item) => item.classList.toggle("is-active", item.dataset.tab === tab));
     render(true);
-    if (tab === "services") void refreshSelectedServiceLogs();
+    if (tab === "services" && servicesConsoleTarget?.kind === "service") void refreshSelectedServiceLogs();
     if (tab === "services" || tab === "docker") await refreshContainers(true);
     if (tab === "launch") await refreshLaunch(true);
     return;
@@ -1753,7 +1883,14 @@ async function operateContainer(id: string, start: boolean): Promise<void> {
   const key = `container:${id}`;
   if (operations.has(key)) return;
   operations.add(key);
-    if (activeTab === "docker") updateDockerConsoleDom();
+  if (activeTab === "docker") {
+    updateDockerContainerStatuses();
+    updateDockerConsoleDom();
+  }
+  else if (activeTab === "services") {
+    updateDockerContainerStatuses();
+    updateServiceConsoleDom();
+  }
   try {
     const result = start ? await api.startContainer(id) : await api.stopContainer(id);
     toast(result.message, !result.success);
@@ -1764,7 +1901,8 @@ async function operateContainer(id: string, start: boolean): Promise<void> {
       await refreshContainers(true);
     } finally {
       operations.delete(key);
-    if (activeTab === "docker") updateDockerConsoleDom();
+      if (activeTab === "docker") renderDocker(true);
+      else if (activeTab === "services") renderServices(true);
     }
   }
 }
