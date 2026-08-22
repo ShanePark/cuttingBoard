@@ -1,4 +1,6 @@
-use crate::models::{ContainerInfo, ContainerListing};
+use crate::models::{
+    ContainerActionResult, ContainerInfo, ContainerListing, ContainerLogSnapshot,
+};
 use std::{
     collections::BTreeSet,
     env,
@@ -107,6 +109,142 @@ pub fn list_containers(demo: bool) -> ContainerListing {
         containers,
         message: None,
     }
+}
+
+pub fn container_logs(container_id: &str, demo: bool) -> Result<ContainerLogSnapshot, String> {
+    validate_container_id(container_id)?;
+    if demo {
+        return Ok(ContainerLogSnapshot {
+            logs: demo_container_logs(container_id).unwrap_or_default().into(),
+        });
+    }
+
+    let Some(executable) = resolve_docker_executable() else {
+        return Err("Docker CLI was not found in PATH or standard macOS locations.".into());
+    };
+    let output = Command::new(executable)
+        .args(["logs", "--tail", "200", "--timestamps", container_id])
+        .output()
+        .map_err(|error| {
+            format!("Could not run Docker logs for container {container_id}: {error}")
+        })?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if detail.is_empty() {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if stdout.is_empty() {
+                output.status.code().map_or_else(
+                    || "Docker exited without a status code.".into(),
+                    |code| format!("Docker exited with status code {code}."),
+                )
+            } else {
+                stdout
+            }
+        } else {
+            detail
+        };
+        return Err(format!(
+            "Could not read logs for container {container_id}: {detail}"
+        ));
+    }
+
+    Ok(ContainerLogSnapshot {
+        logs: String::from_utf8_lossy(&output.stdout).into_owned(),
+    })
+}
+
+fn demo_container_logs(container_id: &str) -> Option<&'static str> {
+    match container_id {
+        "4d2a92d5c814" => Some(
+            "2026-01-01T00:00:00.000000000Z database system is ready to accept connections\n",
+        ),
+        "e9396d773a34" => Some(
+            "2026-01-01T00:00:00.000000000Z [INFO] mailpit listening on :8025\n",
+        ),
+        "91fd0fb2d381" => Some(
+            "2025-12-29T00:00:00.000000000Z Ready to accept connections\n",
+        ),
+        _ => None,
+    }
+}
+
+pub fn start_container(container_id: &str) -> ContainerActionResult {
+    run_container_action(container_id, "start", "Started")
+}
+
+pub fn stop_container(container_id: &str) -> ContainerActionResult {
+    run_container_action(container_id, "stop", "Stopped")
+}
+
+fn run_container_action(
+    container_id: &str,
+    action: &str,
+    success_verb: &str,
+) -> ContainerActionResult {
+    if let Err(message) = validate_container_id(container_id) {
+        return ContainerActionResult {
+            success: false,
+            message,
+        };
+    }
+    let Some(executable) = resolve_docker_executable() else {
+        return ContainerActionResult {
+            success: false,
+            message: "Docker CLI was not found in PATH or standard macOS locations.".into(),
+        };
+    };
+    let output = match Command::new(executable)
+        .args([action, container_id])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            return ContainerActionResult {
+                success: false,
+                message: format!(
+                    "Could not run Docker {action} for container {container_id}: {error}"
+                ),
+            };
+        }
+    };
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if detail.is_empty() {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if stdout.is_empty() {
+                output.status.code().map_or_else(
+                    || "Docker exited without a status code.".into(),
+                    |code| format!("Docker exited with status code {code}."),
+                )
+            } else {
+                stdout
+            }
+        } else {
+            detail
+        };
+        return ContainerActionResult {
+            success: false,
+            message: format!("Could not {action} container {container_id}: {detail}"),
+        };
+    }
+    ContainerActionResult {
+        success: true,
+        message: format!("{success_verb} container {container_id}."),
+    }
+}
+
+fn validate_container_id(container_id: &str) -> Result<(), String> {
+    if container_id.trim().is_empty() {
+        return Err("Container ID cannot be empty.".into());
+    }
+    if !(12..=64).contains(&container_id.len())
+        || !container_id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err("Container ID must be 12-64 lowercase hexadecimal characters.".into());
+    }
+    Ok(())
 }
 
 fn parse_container_line(line: &str) -> Option<ContainerInfo> {
@@ -258,5 +396,40 @@ mod tests {
         assert_eq!(candidates[0], PathBuf::from("/tmp/custom-bin/docker"));
         assert_eq!(candidates[1], PathBuf::from("/tmp/another-bin/docker"));
         assert_eq!(candidates[2], PathBuf::from("/opt/homebrew/bin/docker"));
+    }
+
+    #[test]
+    fn validates_container_ids() {
+        assert!(validate_container_id("4d2a92d5c814").is_ok());
+        assert!(validate_container_id(&"a".repeat(64)).is_ok());
+        assert_eq!(
+            validate_container_id("   ").unwrap_err(),
+            "Container ID cannot be empty."
+        );
+        assert!(validate_container_id("4d2a92d5c81").is_err());
+        assert!(validate_container_id(&"a".repeat(65)).is_err());
+        assert!(validate_container_id("4d2a92d5c814\necho").is_err());
+        assert!(validate_container_id("4D2A92D5C814").is_err());
+    }
+
+    #[test]
+    fn returns_deterministic_demo_logs_for_known_containers() {
+        let postgres_logs = container_logs("4d2a92d5c814", true).unwrap();
+        assert_eq!(
+            postgres_logs.logs,
+            "2026-01-01T00:00:00.000000000Z database system is ready to accept connections\n"
+        );
+
+        let mailpit_logs = container_logs("e9396d773a34", true).unwrap();
+        assert_eq!(
+            mailpit_logs.logs,
+            "2026-01-01T00:00:00.000000000Z [INFO] mailpit listening on :8025\n"
+        );
+    }
+
+    #[test]
+    fn returns_empty_demo_logs_for_unknown_valid_container() {
+        let snapshot = container_logs("0123456789ab", true).unwrap();
+        assert!(snapshot.logs.is_empty());
     }
 }

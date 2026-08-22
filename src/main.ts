@@ -68,7 +68,8 @@ let settings: UiSettings = {
   window_width: 1080,
   window_height: 720,
   window_x: null,
-  window_y: null
+  window_y: null,
+  window_geometry_logical: false
 };
 let workspace: WorkspaceSnapshot | null = null;
 let containerListing: ContainerListing | null = null;
@@ -94,6 +95,18 @@ let consoleFollow = true;
 let consoleScrollTop = 0;
 let consoleScrollTaskKey: string | null = null;
 let restoringConsoleScroll = false;
+type DockerLogState = {
+  containerId: string | null;
+  logs: string;
+  loading: boolean;
+  error: string | null;
+};
+let selectedContainerId: string | null = null;
+let dockerLogState: DockerLogState = { containerId: null, logs: "", loading: false, error: null };
+let dockerLogRequestId = 0;
+let dockerConsoleScrollTop = 0;
+let dockerConsoleScrollContainerId: string | null = null;
+let restoringDockerConsoleScroll = false;
 
 root.addEventListener("click", (event) => void handleClick(event));
 root.addEventListener("keydown", handleKeyboard);
@@ -174,15 +187,58 @@ async function refreshContainers(force = false): Promise<void> {
   dockerBusy = true;
   try {
     containerListing = await api.containers();
+    syncSelectedContainer();
     renderHeaderCounts();
+    if (activeTab === "docker") await refreshSelectedContainerLogs();
     if (activeTab === "docker") renderDocker(force);
     if (activeTab === "services") renderServices(force);
   } catch (error) {
     containerListing = { available: false, containers: [], message: messageOf(error) };
+    clearDockerSelection();
     if (activeTab === "docker") renderDocker(true);
     if (activeTab === "services") renderServices(true);
   } finally {
     dockerBusy = false;
+  }
+}
+
+function syncSelectedContainer(): void {
+  if (!selectedContainerId) return;
+  const stillAvailable = containerListing?.available && containerListing.containers.some((container) => container.id === selectedContainerId);
+  if (!stillAvailable) clearDockerSelection();
+}
+
+function clearDockerSelection(): void {
+  selectedContainerId = null;
+  dockerLogRequestId += 1;
+  dockerLogState = { containerId: null, logs: "", loading: false, error: null };
+  dockerConsoleScrollContainerId = null;
+  dockerConsoleScrollTop = 0;
+}
+
+async function refreshSelectedContainerLogs(): Promise<void> {
+  if (!selectedContainerId || !containerListing?.available) return;
+  if (dockerLogState.containerId === selectedContainerId && dockerLogState.loading) return;
+  await loadContainerLogs(selectedContainerId);
+}
+
+async function loadContainerLogs(containerId: string, showLoading = false): Promise<void> {
+  if (selectedContainerId !== containerId) return;
+  if (!showLoading && dockerLogState.containerId === containerId && dockerLogState.loading) return;
+  const requestId = ++dockerLogRequestId;
+  if (showLoading) {
+    dockerLogState = { containerId, logs: "", loading: true, error: null };
+    if (activeTab === "docker") renderDocker(true);
+  }
+  try {
+    const result = await api.containerLogs(containerId);
+    if (requestId !== dockerLogRequestId || selectedContainerId !== containerId) return;
+    dockerLogState = { containerId, logs: result.logs ?? "", loading: false, error: null };
+    if (activeTab === "docker") renderDocker(true);
+  } catch (error) {
+    if (requestId !== dockerLogRequestId || selectedContainerId !== containerId) return;
+    dockerLogState = { ...dockerLogState, containerId, loading: false, error: messageOf(error) };
+    if (activeTab === "docker") renderDocker(true);
   }
 }
 
@@ -271,6 +327,19 @@ function renderServices(force = false): void {
   updateLiveMetrics();
 }
 
+function renderGroupTitle(title: string, itemCount: number, action: string, attributes: string, displayTitle = title, actionTitle = "View group details"): string {
+  const escapedTitle = h(title);
+  return itemCount > 1
+    ? `<button class="group-title-button" type="button" data-action="${h(action)}" ${attributes} aria-label="View ${escapedTitle} details" title="${h(actionTitle)}">${h(displayTitle)}</button>`
+    : h(displayTitle);
+}
+
+function renderServiceGroupTiles(group: ReturnType<typeof groupServices>[number] & { containers: ContainerInfo[] }): string {
+  const total = group.services.length + group.containers.length;
+  const ordinalTotal = total > 1 ? total : undefined;
+  return `${group.services.map((service, index) => renderServiceTile(service, ordinalTotal ? index + 1 : undefined, ordinalTotal)).join("")}${group.containers.map((container, index) => renderContainerTile(container, ordinalTotal ? group.services.length + index + 1 : undefined, ordinalTotal, false)).join("")}`;
+}
+
 function renderGroupActions(group: ReturnType<typeof groupServices>[number]): string {
   const saveBusy = operations.has(`group-save:${group.id}`);
   const stopBusy = operations.has(`group-stop:${group.id}`);
@@ -318,7 +387,7 @@ function validateGroupProfile(group: ReturnType<typeof groupServices>[number]): 
   return generatedTasksForGroup(group.services);
 }
 
-function renderServiceTile(service: ServiceSnapshot): string {
+function renderServiceTile(service: ServiceSnapshot, ordinal?: number, ordinalTotal?: number): string {
   const busy = operations.has(`stop:${service.id}`);
   const uptime = currentUptime(service);
   const pip = busy ? "busy" : uptime === null ? "idle" : service.status === "limited" ? "limited" : "running";
@@ -327,6 +396,7 @@ function renderServiceTile(service: ServiceSnapshot): string {
     <article class="service-tile category-${service.category}${busy ? " is-busy" : ""}" data-metrics-id="${h(service.id)}" aria-label="${h(service.display_name)} service">
       <button class="tile-details-button" type="button" data-tile-action data-action="service-details" data-service-id="${h(service.id)}" aria-label="View ${h(service.display_name)} details" title="View details"></button>
       <div class="tile-top">
+        ${renderTileOrdinal(ordinal, ordinalTotal)}
         <span class="icon-well" aria-hidden="true">${techIcon(service.tech, 44)}<span class="status-pip state-${pip}"></span></span>
         ${renderTileHeading(serviceTitle(service), techLabel(service.tech), `${originBadge(service.origin_kind, service.origin_label)}${profileBadges}`)}
         <span class="details-hint" aria-hidden="true">${uiIcon("details", 14)}</span>
@@ -340,6 +410,11 @@ function renderServiceTile(service: ServiceSnapshot): string {
         ? `<button type="button" class="service-link" data-tile-action data-action="open-service" data-service-id="${h(service.id)}" aria-label="Open ${h(service.display_name)} in the browser" title="${h(service.browser_url)}"><span>${h(browserLinkLabel(service.browser_url))}</span>${uiIcon("external", 12)}</button>`
         : "")}
     </article>`;
+}
+
+function renderTileOrdinal(ordinal?: number, total?: number): string {
+  if (!ordinal || !total || total < 2) return "";
+  return `<span class="tile-ordinal" title="Item ${ordinal} of ${total}" aria-label="Item ${ordinal} of ${total}">${ordinal}</span>`;
 }
 
 // The subtitle carries the technology once: skip the label when the title already says it.
@@ -393,8 +468,16 @@ function uptimeText(service: ServiceSnapshot, busy: boolean): string {
 }
 
 function renderDocker(force = false): void {
+  captureDockerConsoleState();
   const fallback = workspace?.services.filter((service) => service.relevance === "container") ?? [];
-  const signature = JSON.stringify([containerListing, fallback.map((service) => [service.id, uniquePorts(service)])]);
+  const containerActions = containerListing?.containers.map((container) => [container.id, containerOperationBusy(container.id)]) ?? [];
+  const signature = JSON.stringify([
+    containerListing,
+    containerActions,
+    selectedContainerId,
+    dockerLogState,
+    fallback.map((service) => [service.id, uniquePorts(service)])
+  ]);
   if (!force && signature === dockerSignature && workspaceElement.dataset.view === "docker") return;
   dockerSignature = signature;
   workspaceElement.dataset.view = "docker";
@@ -407,22 +490,26 @@ function renderDocker(force = false): void {
     if (fallback.length) {
       workspaceElement.innerHTML = `<div class="inline-notice"><strong>Docker could not be queried.</strong><span>${h(containerListing.message ?? "Docker is unavailable.")}</span></div><div class="board"><section class="service-section" data-tiles="${fallback.length}"><header class="section-header"><span class="section-accent accent-container"></span><h2>CONTAINER LISTENERS</h2><span class="section-count">${fallback.length}</span></header><div class="tile-grid">${fallback.map(renderServiceTile).join("")}</div></section></div>`;
       applyBoardLayout();
+      restoreDockerConsoleScroll();
       return;
     }
-    workspaceElement.innerHTML = emptyState("Docker is unavailable", containerListing.message ?? "The Docker CLI could not be queried.");
+    workspaceElement.innerHTML = `<div class="docker-view">${emptyState("Docker is unavailable", containerListing.message ?? "The Docker CLI could not be queried.")}${renderDockerConsole()}</div>`;
+    restoreDockerConsoleScroll();
     return;
   }
   if (containerListing.containers.length === 0) {
-    workspaceElement.innerHTML = emptyState("No containers found", containerListing.message ?? "Docker returned an empty list.");
+    workspaceElement.innerHTML = `<div class="docker-view">${emptyState("No containers found", containerListing.message ?? "Docker returned an empty list.")}${renderDockerConsole()}</div>`;
+    restoreDockerConsoleScroll();
     return;
   }
   const groups = groupContainers(containerListing.containers);
-  workspaceElement.innerHTML = `<div class="board">${groups.map((group) => `
-    <section class="service-section" data-tiles="${group.containers.length}">
-      <header class="section-header"><span class="section-accent accent-container"></span><h2>${h(group.name.toUpperCase())}</h2><span class="section-count" aria-label="${group.containers.length} containers">${group.containers.length}</span></header>
-      <div class="tile-grid">${group.containers.map(renderContainerTile).join("")}</div>
-    </section>`).join("")}</div>`;
+  workspaceElement.innerHTML = `<div class="docker-view"><div class="board">${groups.map((group) => `
+    <section class="service-section" data-tiles="${group.containers.length}" aria-labelledby="container-group-${h(encodeURIComponent(group.name))}">
+      <header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-group-${h(encodeURIComponent(group.name))}">${renderGroupTitle(group.name, group.containers.length, "container-group-details", `data-group-name="${h(group.name)}"`, group.name.toUpperCase())}</h2></header>
+      <div class="tile-grid">${group.containers.map((container, index) => renderContainerTile(container, index + 1, group.containers.length, true)).join("")}</div>
+    </section>`).join("")}</div>${renderDockerConsole()}</div>`;
   applyBoardLayout();
+  restoreDockerConsoleScroll();
 }
 
 function groupContainers(containers: ContainerInfo[]): Array<{ name: string; containers: ContainerInfo[] }> {
@@ -439,22 +526,102 @@ function groupContainers(containers: ContainerInfo[]): Array<{ name: string; con
   })).sort((a, b) => a.name === "Standalone containers" ? 1 : b.name === "Standalone containers" ? -1 : a.name.localeCompare(b.name));
 }
 
-function renderContainerTile(container: ContainerInfo): string {
+function renderContainerTile(container: ContainerInfo, ordinal?: number, ordinalTotal?: number, showActions = false): string {
   const running = container.state === "running";
-  const stateText = container.status || (running ? "Running" : "Stopped");
+  const busy = showActions && containerOperationBusy(container.id);
+  const selected = showActions && selectedContainerId === container.id;
+  const action = running ? "stop-container" : "start-container";
+  const actionLabel = busy ? (running ? "Stopping" : "Starting") : running ? "Stop" : "Start";
+  const stateText = busy ? `${actionLabel}…` : container.status || (running ? "Running" : "Stopped");
+  const actionButton = showActions
+    ? running
+      ? `<button type="button" class="stop-button container-action" data-tile-action data-action="${action}" data-container-id="${h(container.id)}" aria-label="${actionLabel} ${h(container.name)}" title="${actionLabel} container" ${busy ? "disabled aria-busy=\"true\"" : ""}><span class="stop-glyph" aria-hidden="true"></span></button>`
+      : `<button type="button" class="start-action icon-only-button container-action" data-tile-action data-action="${action}" data-container-id="${h(container.id)}" aria-label="${actionLabel} ${h(container.name)}" title="${actionLabel} container" ${busy ? "disabled aria-busy=\"true\"" : ""}>${uiIcon(busy ? "refresh" : "play", 16)}</button>`
+    : "";
+  const detailsButton = showActions
+    ? `<button type="button" class="info-button icon-only-button container-details-button" data-tile-action data-action="container-details" data-container-id="${h(container.id)}" aria-label="View ${h(container.name)} details" title="View container details">${uiIcon("info", 15)}</button>`
+    : `<button class="tile-details-button" type="button" data-tile-action data-action="container-details" data-container-id="${h(container.id)}" aria-label="View ${h(container.name)} details" title="View details"></button>`;
+  const selectionAttributes = showActions
+    ? ` data-action="select-container" data-container-id="${h(container.id)}" tabindex="0" role="button" aria-pressed="${selected ? "true" : "false"}"`
+    : "";
   return `
-    <article class="service-tile container-tile ${running ? "is-running" : "is-stopped"}" aria-label="${h(container.name)} container">
-      <button class="tile-details-button" type="button" data-tile-action data-action="container-details" data-container-id="${h(container.id)}" aria-label="View ${h(container.name)} details" title="View details"></button>
+    <article class="service-tile container-tile ${running ? "is-running" : "is-stopped"}${selected ? " is-selected" : ""}${busy ? " is-busy" : ""}" aria-label="${h(container.name)} container"${selectionAttributes}${busy ? " aria-busy=\"true\"" : ""}>
+      ${showActions ? "" : detailsButton}
       <div class="tile-top">
-        <span class="icon-well" aria-hidden="true">${techIcon(imageTech(container.image), 44)}<span class="status-pip state-${running ? "running" : "idle"}"></span></span>
-        ${renderTileHeading(container.name, container.compose_service ? `${container.compose_project ?? "compose"} · ${container.compose_service}` : "Standalone container", "")}
-        <span class="details-hint" aria-hidden="true">${uiIcon("details", 14)}</span>
+        ${renderTileOrdinal(ordinal, ordinalTotal)}
+        <span class="icon-well" aria-hidden="true">${techIcon(imageTech(container.image), 44)}<span class="status-pip state-${busy ? "busy" : running ? "running" : "idle"}"></span></span>
+        ${renderTileHeading(container.name, "", "")}
+        ${showActions ? detailsButton : ""}
+        ${actionButton}
       </div>
       <div class="tile-metrics">
-        <span class="metric metric-state ${running ? "is-running" : "is-stopped"}">${uiIcon("docker", 13)}<span class="sr-only">State </span>${h(ellipsis(stateText, 30))}</span>
+        <span class="metric metric-state ${busy ? "is-busy" : running ? "is-running" : "is-stopped"}" title="Container state">${uiIcon("docker", 13)}<span class="sr-only">State </span>${h(ellipsis(stateText, 30))}</span>
       </div>
       ${renderTileFoot(container.ports, "No published ports", `<span class="image-label" title="Container image: ${h(container.image)}">${h(ellipsis(container.image, 24))}</span>`)}
     </article>`;
+}
+
+function containerOperationBusy(id: string): boolean {
+  return operations.has(`container:${id}`);
+}
+
+function renderDockerConsole(): string {
+  const container = selectedContainerId
+    ? containerListing?.containers.find((item) => item.id === selectedContainerId) ?? null
+    : null;
+  const stateClass = container ? containerStateClass(container) : "idle";
+  const statusText = container ? containerStateText(container) : "No container selected";
+  const title = container?.name ?? "Container console";
+  const subtitle = container ? container.image : "Select a container to view its recent logs";
+  const logMeta = !container
+    ? ""
+    : dockerLogState.loading
+      ? `<span class="console-meta-item" title="Loading recent logs">${uiIcon("refresh", 12)}<span>Loading logs</span></span>`
+      : dockerLogState.error
+        ? `<span class="console-meta-item console-meta-error" title="${h(dockerLogState.error)}">${uiIcon("warning", 12)}<span>Logs unavailable</span></span>`
+        : `<span class="console-meta-item" title="The backend returns the most recent 200 lines">${uiIcon("log", 12)}<span>Last 200 lines</span></span>`;
+  const context = container
+    ? `<details class="console-context-details"><summary aria-label="Show container details" title="Show container details">${uiIcon("info", 14)}<span class="sr-only">Container details</span></summary><div class="console-context" aria-label="Container context"><div class="console-context-item"><span>CONTAINER ID</span><code title="${h(container.id)}">${h(container.id)}</code></div><div class="console-context-item"><span>IMAGE</span><code title="${h(container.image)}">${h(middleEllipsis(container.image, 240))}</code></div><div class="console-context-item"><span>COMPOSE SERVICE</span><code title="${h(container.compose_service ?? "Standalone container")}">${h(container.compose_service ?? "Standalone container")}</code></div><div class="console-context-item"><span>COMPOSE PROJECT</span><code title="${h(container.compose_project ?? "—")}">${h(container.compose_project ?? "—")}</code></div></div></details>`
+    : "";
+  const disabled = container ? "" : " disabled";
+  const outputLabel = container ? `Logs for ${h(container.name)}` : "Docker container logs";
+  return `<section class="launch-console docker-console${container ? ` state-${stateClass}` : " launch-console-empty"}" aria-labelledby="docker-console-title" data-console-container-id="${h(container?.id ?? "")}">
+    <header class="console-header">
+      <div class="console-title"><span class="console-icon state-${stateClass}" aria-hidden="true">${uiIcon("docker", 16)}</span><div><h2 id="docker-console-title">${h(title)}</h2><p>${h(subtitle)}</p></div></div>
+      <div class="console-meta" aria-label="Container status"><span class="console-state state-${stateClass}"><span class="task-state-dot" aria-hidden="true"></span>${h(statusText)}</span>${container ? `<span class="console-meta-item" title="Container ID"><span class="sr-only">Container ID </span>${uiIcon("docker", 12)}<code>${h(middleEllipsis(container.id, 16))}</code></span>` : ""}${logMeta}</div>
+    </header>
+    ${context}
+    <div class="console-toolbar"><span class="console-toolbar-label" title="Recent logs">${uiIcon("log", 14)}<span>Recent logs</span></span><div class="console-tools"><button class="console-tool icon-only-button${consoleWrap ? " is-active" : ""}" type="button" data-action="toggle-log-wrap" aria-pressed="${consoleWrap ? "true" : "false"}" aria-label="${consoleWrap ? "Disable line wrapping" : "Wrap long lines"}" title="${consoleWrap ? "Disable line wrapping" : "Wrap long lines"}"${disabled}>${uiIcon("chevronDown", 13)}</button><button class="console-tool icon-only-button${consoleFollow ? " is-active" : ""}" type="button" data-action="toggle-log-follow" aria-pressed="${consoleFollow ? "true" : "false"}" aria-label="${consoleFollow ? "Pause following new output" : "Follow new output"}" title="${consoleFollow ? "Pause following new output" : "Follow new output"}"${disabled}>${uiIcon(consoleFollow ? "refresh" : "play", 13)}<span class="sr-only" data-console-follow-label>${consoleFollow ? "Following" : "Follow output"}</span></button></div></div>
+    <div class="console-output${consoleWrap ? " is-wrapped" : ""} docker-console-output" tabindex="0" role="log" aria-live="polite" aria-label="${outputLabel}">${renderDockerLogOutput(container)}</div>
+  </section>`;
+}
+
+function renderDockerLogOutput(container: ContainerInfo | null): string {
+  if (!container) {
+    return `<div class="console-message"><span class="console-message-icon">${uiIcon("docker", 18)}</span><strong>No container selected</strong><span>Select a Docker container card to view its recent logs.</span></div>`;
+  }
+  const log = dockerLogState.containerId === container.id ? dockerLogState.logs : "";
+  if (dockerLogState.loading) {
+    return `<div class="console-message"><span class="console-message-icon">${uiIcon("refresh", 18)}</span><strong>Loading container logs</strong><span>Fetching the most recent output from Docker…</span></div>`;
+  }
+  if (dockerLogState.error) {
+    const alert = `<div class="console-alert">${uiIcon("warning", 14)}<span>${h(dockerLogState.error)}</span></div>`;
+    if (log.trim()) return `${alert}<pre class="console-log">${h(log)}</pre>`;
+    return `${alert}<div class="console-message is-failed"><span class="console-message-icon">${uiIcon("warning", 18)}</span><strong>Container logs are unavailable</strong><span>Docker could not return output for this container.</span></div>`;
+  }
+  if (log.trim()) return `<pre class="console-log">${h(log)}</pre>`;
+  return `<div class="console-message"><span class="console-message-icon">${uiIcon("log", 18)}</span><strong>No logs available</strong><span>This container has not produced any output yet.</span></div>`;
+}
+
+function containerStateClass(container: ContainerInfo): "running" | "starting" | "stopped" {
+  const state = container.state.trim().toLowerCase();
+  if (state === "running") return "running";
+  if (["created", "restarting", "paused"].includes(state)) return "starting";
+  return "stopped";
+}
+
+function containerStateText(container: ContainerInfo): string {
+  return container.status.trim() || (container.state.trim() ? container.state : "Unknown");
 }
 
 function renderLaunch(force = false): void {
@@ -470,7 +637,7 @@ function renderLaunch(force = false): void {
     return;
   }
   const selected = ensureSelectedTask();
-  workspaceElement.innerHTML = `${header}<div class="launch-list">${profiles.map(renderProfile).join("")}</div>${renderLaunchConsole(selected)}`;
+  workspaceElement.innerHTML = `<div class="launch-view">${header}<div class="launch-list">${profiles.map(renderProfile).join("")}</div>${renderLaunchConsole(selected)}</div>`;
   restoreConsoleScroll();
 }
 
@@ -607,7 +774,7 @@ function renderConsoleOutput(snapshot: ManagedTaskSnapshot | undefined, state: L
 }
 
 function captureConsoleState(): void {
-  const output = document.querySelector<HTMLElement>(".console-output");
+  const output = document.querySelector<HTMLElement>(".launch-console:not(.docker-console) .console-output");
   if (!output) return;
   const taskKey = output.closest<HTMLElement>(".launch-console")?.dataset.consoleTaskKey ?? null;
   if (taskKey !== selectedTaskDomKey()) return;
@@ -616,7 +783,7 @@ function captureConsoleState(): void {
 }
 
 function restoreConsoleScroll(): void {
-  const output = document.querySelector<HTMLElement>(".console-output");
+  const output = document.querySelector<HTMLElement>(".launch-console:not(.docker-console) .console-output");
   if (!output) return;
   restoringConsoleScroll = true;
   const savedScrollTop = consoleScrollTaskKey === selectedTaskKey ? consoleScrollTop : 0;
@@ -626,9 +793,41 @@ function restoreConsoleScroll(): void {
   window.setTimeout(() => { restoringConsoleScroll = false; }, 0);
 }
 
+function captureDockerConsoleState(): void {
+  const output = document.querySelector<HTMLElement>(".docker-console .console-output");
+  if (!output) return;
+  const containerId = output.closest<HTMLElement>(".docker-console")?.dataset.consoleContainerId || null;
+  if (containerId !== selectedContainerId) return;
+  dockerConsoleScrollContainerId = selectedContainerId;
+  dockerConsoleScrollTop = output.scrollTop;
+}
+
+function restoreDockerConsoleScroll(): void {
+  const output = document.querySelector<HTMLElement>(".docker-console .console-output");
+  if (!output) return;
+  restoringDockerConsoleScroll = true;
+  const savedScrollTop = dockerConsoleScrollContainerId === selectedContainerId ? dockerConsoleScrollTop : 0;
+  output.scrollTop = consoleFollow ? output.scrollHeight : Math.min(savedScrollTop, output.scrollHeight);
+  dockerConsoleScrollContainerId = selectedContainerId;
+  dockerConsoleScrollTop = output.scrollTop;
+  window.setTimeout(() => { restoringDockerConsoleScroll = false; }, 0);
+}
+
 function handleConsoleScroll(event: Event): void {
   const target = event.target instanceof Element ? event.target.closest<HTMLElement>(".console-output") : null;
   if (!target) return;
+  const dockerConsole = target.closest<HTMLElement>(".docker-console");
+  if (dockerConsole) {
+    const containerId = dockerConsole.dataset.consoleContainerId || null;
+    if (containerId !== selectedContainerId) return;
+    dockerConsoleScrollContainerId = selectedContainerId;
+    dockerConsoleScrollTop = target.scrollTop;
+    if (restoringDockerConsoleScroll) return;
+    const distanceFromEnd = target.scrollHeight - target.clientHeight - target.scrollTop;
+    consoleFollow = distanceFromEnd <= 18;
+    updateConsoleControls();
+    return;
+  }
   const taskKey = target.closest<HTMLElement>(".launch-console")?.dataset.consoleTaskKey ?? null;
   if (taskKey !== selectedTaskDomKey()) return;
   consoleScrollTaskKey = selectedTaskKey;
@@ -645,6 +844,8 @@ function updateConsoleControls(): void {
   button.classList.toggle("is-active", consoleFollow);
   button.setAttribute("aria-pressed", String(consoleFollow));
   button.title = consoleFollow ? "Pause following new output" : "Follow new output";
+  const icon = button.querySelector<HTMLElement>(".ui-icon");
+  if (icon) icon.outerHTML = uiIcon(consoleFollow ? "refresh" : "play", 13);
   const label = button.querySelector<HTMLElement>("[data-console-follow-label]");
   if (label) label.textContent = consoleFollow ? "Following" : "Follow output";
 }
@@ -668,6 +869,23 @@ function setSelectedTask(profileId: string, taskName: string): void {
 function focusTaskRow(profileId: string, taskName: string): void {
   const row = [...document.querySelectorAll<HTMLElement>(".task-row")].find((item) => item.dataset.profileId === profileId && item.dataset.taskName === taskName);
   row?.focus();
+}
+
+function selectContainer(id: string, focus = false): void {
+  findContainer(id);
+  selectedContainerId = id;
+  dockerConsoleScrollContainerId = id;
+  dockerConsoleScrollTop = 0;
+  dockerLogState = { containerId: id, logs: "", loading: true, error: null };
+  renderDocker(true);
+  void loadContainerLogs(id, true);
+  if (focus) focusContainerCard(id);
+}
+
+function focusContainerCard(id: string): void {
+  const card = [...document.querySelectorAll<HTMLElement>(".container-tile[data-action='select-container']")]
+    .find((item) => item.dataset.containerId === id);
+  card?.focus();
 }
 
 async function handleClick(event: Event): Promise<void> {
@@ -699,6 +917,11 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "confirm-save-service-group") await confirmSaveGroup(required(target.dataset.groupId));
     else if (action === "stop-service-group") requestStopGroup(required(target.dataset.groupId));
     else if (action === "confirm-stop-service-group") await confirmStopGroup(required(target.dataset.groupId));
+    else if (action === "group-details") showGroupDetails(groupForId(required(target.dataset.groupId)));
+    else if (action === "container-group-details") showContainerGroupDetails(required(target.dataset.groupName));
+    else if (action === "select-container") selectContainer(required(target.dataset.containerId), false);
+    else if (action === "start-container") await operateContainer(required(target.dataset.containerId), true);
+    else if (action === "stop-container") await operateContainer(required(target.dataset.containerId), false);
     else if (action === "container-details") showContainerDetails(findContainer(required(target.dataset.containerId)));
     else if (action === "settings") showSettings();
     else if (action === "close-modal") closeModal();
@@ -716,11 +939,13 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "stop-task") await runTask(required(target.dataset.profileId), required(target.dataset.taskName), false);
     else if (action === "toggle-log-wrap") {
       consoleWrap = !consoleWrap;
-      renderLaunch(true);
+      if (activeTab === "docker") renderDocker(true);
+      else if (activeTab === "launch") renderLaunch(true);
     }
     else if (action === "toggle-log-follow") {
       consoleFollow = !consoleFollow;
-      renderLaunch(true);
+      if (activeTab === "docker") renderDocker(true);
+      else if (activeTab === "launch") renderLaunch(true);
     }
     else if (action === "choose-root") await chooseProfileRoot();
     else if (action === "add-task-row") addTaskRow();
@@ -746,6 +971,14 @@ function handleKeyboard(event: KeyboardEvent): void {
       event.preventDefault();
       return;
     }
+  }
+  const containerTile = event.target instanceof HTMLElement
+    ? event.target.closest<HTMLElement>(".container-tile[data-action='select-container']")
+    : null;
+  if (containerTile && event.target === containerTile && (event.key === "Enter" || event.key === " ")) {
+    event.preventDefault();
+    selectContainer(required(containerTile.dataset.containerId), true);
+    return;
   }
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
   const current = event.target instanceof HTMLElement ? event.target.closest<HTMLButtonElement>("[data-tile-action]") : null;
@@ -888,6 +1121,27 @@ async function stopService(id: string): Promise<void> {
   }
 }
 
+async function operateContainer(id: string, start: boolean): Promise<void> {
+  findContainer(id);
+  const key = `container:${id}`;
+  if (operations.has(key)) return;
+  operations.add(key);
+  if (activeTab === "docker") renderDocker(true);
+  try {
+    const result = start ? await api.startContainer(id) : await api.stopContainer(id);
+    toast(result.message, !result.success);
+  } catch (error) {
+    toast(messageOf(error), true);
+  } finally {
+    try {
+      await refreshContainers(true);
+    } finally {
+      operations.delete(key);
+      if (activeTab === "docker") renderDocker(true);
+    }
+  }
+}
+
 async function startProfile(id: string): Promise<void> {
   const profile = findProfile(id);
   const firstStartable = profile.tasks.find((task) => !["starting", "running", "stopping", "external"].includes(snapshotFor(id, task.name)?.state ?? "stopped"));
@@ -924,6 +1178,43 @@ function mergeSnapshots(current: ManagedTaskSnapshot[], next: ManagedTaskSnapsho
   const map = new Map(current.map((snapshot) => [`${snapshot.profile_id}\0${snapshot.task_name}`, snapshot]));
   for (const snapshot of next) map.set(`${snapshot.profile_id}\0${snapshot.task_name}`, snapshot);
   return [...map.values()];
+}
+
+function showGroupDetails(group: ReturnType<typeof groupServices>[number]): void {
+  const serviceItems = group.services.map((service) => `<li><strong>${h(serviceTitle(service) || service.display_name)}</strong><span>${h(techLabel(service.tech))}</span></li>`).join("");
+  const containerItems = relatedContainersForGroup(group.services, containerListing?.available ? containerListing.containers : [])
+    .map((container) => `<li><strong>${h(container.name)}</strong><span>${h(container.status || container.state)}</span></li>`).join("");
+  openModal(group.name, `<div class="info-modal-copy"><p>Workspace details for this service group.</p>${group.path ? `<dl class="detail-grid"><dt>Project root</dt><dd class="mono">${h(group.path)}</dd></dl>` : ""}<h3 class="detail-heading">Services</h3><ul class="detail-list">${serviceItems || "<li><span>No services available</span></li>"}</ul>${containerItems ? `<h3 class="detail-heading">Docker</h3><ul class="detail-list">${containerItems}</ul>` : ""}</div><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+}
+
+function showContainerGroupDetails(groupName: string): void {
+  const containers = containerListing?.containers.filter((container) => (container.compose_project ?? "Standalone containers") === groupName) ?? [];
+  openModal(groupName, `<div class="info-modal-copy"><p>Docker containers in this group.</p><ul class="detail-list">${containers.map((container) => `<li><strong>${h(container.name)}</strong><span>${h(container.status || container.state)}</span></li>`).join("") || "<li><span>No containers available</span></li>"}</ul></div><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+}
+
+function showProfileDetails(profile: LaunchProfile): void {
+  const taskItems = profile.tasks.map((task) => `<li><strong>${h(task.name)}</strong><span class="profile-task-meta"><code class="mono">${h(task.command || "No command configured")}</code>${task.expected_port ? `<span>Port ${task.expected_port}</span>` : ""}</span></li>`).join("");
+  openModal(profile.name, `<div class="info-modal-copy"><p>Saved commands and project context for this launch profile.</p><dl class="detail-grid"><dt>Project root</dt><dd class="mono">${h(profile.project_root)}</dd><dt>Tasks</dt><dd>${profile.tasks.length}</dd></dl><h3 class="detail-heading">Commands</h3><ul class="detail-list">${taskItems || "<li><span>No tasks configured</span></li>"}</ul></div><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+}
+
+function showInfo(kind: string): void {
+  const copy: Record<string, { title: string; message: string }> = {
+    launch: { title: "Launch Profiles", message: "Group related commands into one place. Select a task to view its output, then use the play and stop icons to control it." },
+    appearance: { title: "Appearance", message: "Choose whether Cutting Board follows the system theme or always uses a light or dark appearance." },
+    scanning: { title: "Scanning", message: "This controls how often Cutting Board refreshes the list of running local services. A longer interval uses less CPU." },
+    privacy: { title: "Privacy", message: "Settings are stored locally on this device. Cutting Board does not collect telemetry or start automatically at login." }
+  };
+  const selected = copy[kind] ?? { title: "Information", message: "More information is available here." };
+  openModal(selected.title, `<div class="info-modal-copy"><p>${h(selected.message)}</p></div><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+}
+
+function toggleSettingsInfo(button: HTMLElement): void {
+  const targetId = required(button.dataset.infoTarget);
+  const info = document.getElementById(targetId);
+  if (!info) throw new Error("The settings explanation is unavailable.");
+  const expanded = info.hidden;
+  info.hidden = !expanded;
+  button.setAttribute("aria-expanded", String(expanded));
 }
 
 function showServiceDetails(service: ServiceSnapshot): void {

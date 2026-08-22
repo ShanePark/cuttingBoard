@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
+  ContainerActionResult,
+  ContainerLogSnapshot,
   ContainerListing,
   LaunchProfile,
   ManagedTaskSnapshot,
@@ -13,6 +15,12 @@ export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
   scan: () => invoke<WorkspaceSnapshot>("scan_workspace"),
   containers: () => invoke<ContainerListing>("list_containers"),
+  containerLogs: (containerId: string) =>
+    invoke<ContainerLogSnapshot>("container_logs", { request: { container_id: containerId } }),
+  startContainer: (containerId: string) =>
+    invoke<ContainerActionResult>("start_container", { request: { container_id: containerId } }),
+  stopContainer: (containerId: string) =>
+    invoke<ContainerActionResult>("stop_container", { request: { container_id: containerId } }),
   loadSettings: () => invoke<UiSettings>("load_settings"),
   saveSettings: (settings: UiSettings) => invoke<UiSettings>("save_settings", { settings }),
   terminate: (serviceId: string) => invoke<TerminationResult>("terminate_service", { request: { service_id: serviceId } }),

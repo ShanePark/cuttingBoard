@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn settings_are_clamped() {
-        let value = UiSettings { theme_mode: "invalid".into(), scan_interval_ms: 1, window_width: 1, window_height: 1, window_x: None, window_y: None }.normalized();
+        let value = UiSettings { theme_mode: "invalid".into(), scan_interval_ms: 1, window_width: 1, window_height: 1, window_x: None, window_y: None, window_geometry_logical: false }.normalized();
         assert_eq!(value.theme_mode, "dark");
         assert_eq!(value.scan_interval_ms, 500);
         assert_eq!(value.window_width, 560);

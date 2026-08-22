@@ -90,6 +90,22 @@ pub struct ContainerListing {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerRequest {
+    pub container_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerActionResult {
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerLogSnapshot {
+    pub logs: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiSettings {
     pub theme_mode: String,
     pub scan_interval_ms: u64,
@@ -97,6 +113,8 @@ pub struct UiSettings {
     pub window_height: u32,
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
+    #[serde(default)]
+    pub window_geometry_logical: bool,
 }
 
 impl Default for UiSettings {
@@ -108,6 +126,7 @@ impl Default for UiSettings {
             window_height: 720,
             window_x: None,
             window_y: None,
+            window_geometry_logical: false,
         }
     }
 }

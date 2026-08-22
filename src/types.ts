@@ -79,6 +79,15 @@ export interface ContainerListing {
   message: string | null;
 }
 
+export interface ContainerActionResult {
+  success: boolean;
+  message: string;
+}
+
+export interface ContainerLogSnapshot {
+  logs: string;
+}
+
 export interface UiSettings {
   theme_mode: ThemeMode;
   scan_interval_ms: number;
@@ -86,6 +95,7 @@ export interface UiSettings {
   window_height: number;
   window_x: number | null;
   window_y: number | null;
+  window_geometry_logical: boolean;
 }
 
 export interface LaunchTask {

@@ -7,8 +7,9 @@ mod storage;
 use crate::{
     launch::LaunchManager,
     models::{
-        AppInfo, ContainerListing, LaunchProfile, ManagedTaskSnapshot, ServiceIdentity,
-        TaskRequest, TerminateRequest, TerminationResult, UiSettings, WorkspaceSnapshot,
+        AppInfo, ContainerActionResult, ContainerListing, ContainerLogSnapshot, ContainerRequest,
+        LaunchProfile, ManagedTaskSnapshot, ServiceIdentity, TaskRequest, TerminateRequest,
+        TerminationResult, UiSettings, WorkspaceSnapshot,
     },
     storage::{
         delete_profile as remove_profile, demo_profiles, load_profiles as read_profiles,
@@ -24,7 +25,7 @@ use std::{
     time::Duration,
 };
 use sysinfo::{Pid, System};
-use tauri::{Manager, State};
+use tauri::{Manager, PhysicalSize, State};
 
 #[derive(Clone)]
 struct AppState(Arc<AppStateInner>);
@@ -76,6 +77,42 @@ async fn list_containers(state: State<'_, AppState>) -> Result<ContainerListing,
     tauri::async_runtime::spawn_blocking(move || Ok(docker::list_containers(demo)))
         .await
         .map_err(|error| format!("Docker task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn container_logs(
+    state: State<'_, AppState>,
+    request: ContainerRequest,
+) -> Result<ContainerLogSnapshot, String> {
+    let demo = state.0.demo;
+    let container_id = request.container_id;
+    tauri::async_runtime::spawn_blocking(move || docker::container_logs(&container_id, demo))
+        .await
+        .map_err(|error| format!("Docker logs task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn start_container(
+    state: State<'_, AppState>,
+    request: ContainerRequest,
+) -> Result<ContainerActionResult, String> {
+    reject_demo(&state)?;
+    let container_id = request.container_id;
+    tauri::async_runtime::spawn_blocking(move || Ok(docker::start_container(&container_id)))
+        .await
+        .map_err(|error| format!("Docker start task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn stop_container(
+    state: State<'_, AppState>,
+    request: ContainerRequest,
+) -> Result<ContainerActionResult, String> {
+    reject_demo(&state)?;
+    let container_id = request.container_id;
+    tauri::async_runtime::spawn_blocking(move || Ok(docker::stop_container(&container_id)))
+        .await
+        .map_err(|error| format!("Docker stop task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -201,20 +238,64 @@ fn shutdown(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 fn persist_window_geometry<R: tauri::Runtime>(window: &tauri::Window<R>, state: &AppState) {
-    let (Ok(size), Ok(position)) = (window.inner_size(), window.outer_position()) else {
+    let (Ok(size), Ok(position), Ok(scale_factor)) = (
+        window.inner_size(),
+        window.outer_position(),
+        window.scale_factor(),
+    ) else {
         return;
     };
+    let logical_size = size.to_logical::<u32>(scale_factor);
     let settings = read_settings(&state.0.settings_path).unwrap_or_default();
     let updated = UiSettings {
-        window_width: size.width.max(560),
-        window_height: size.height.max(420),
+        window_width: logical_size.width.max(560),
+        window_height: logical_size.height.max(420),
         window_x: Some(position.x),
         window_y: Some(position.y),
+        window_geometry_logical: true,
         ..settings
     };
     if let Err(error) = persist_settings(&state.0.settings_path, updated) {
         eprintln!("Could not persist window geometry: {error}");
     }
+}
+
+fn migrate_legacy_window_size(
+    mut settings: UiSettings,
+    scale_factor: f64,
+) -> Option<UiSettings> {
+    if settings.window_geometry_logical
+        || settings.window_x.is_none()
+        || settings.window_y.is_none()
+        || !scale_factor.is_finite()
+        || scale_factor <= 1.0
+    {
+        return None;
+    }
+
+    let logical_size = PhysicalSize::new(settings.window_width, settings.window_height)
+        .to_logical::<u32>(scale_factor);
+    settings.window_width = logical_size.width.max(560);
+    settings.window_height = logical_size.height.max(420);
+    settings.window_geometry_logical = true;
+    Some(settings)
+}
+
+fn migrate_startup_window_settings<R: tauri::Runtime>(
+    window: &tauri::Window<R>,
+    settings_path: &std::path::Path,
+    settings: UiSettings,
+) -> UiSettings {
+    let Ok(scale_factor) = window.scale_factor() else {
+        return settings;
+    };
+    let Some(migrated) = migrate_legacy_window_size(settings.clone(), scale_factor) else {
+        return settings;
+    };
+    if let Err(error) = persist_settings(settings_path, migrated.clone()) {
+        eprintln!("Could not persist migrated window geometry: {error}");
+    }
+    migrated
 }
 
 fn stop_managed_tasks(state: &AppState) {
@@ -406,9 +487,15 @@ pub fn run() {
             let settings_path = config_dir.join("settings.json");
             let profiles_path = config_dir.join("launch-profiles.json");
             let logs_dir = config_dir.join("logs");
-            let settings = read_settings(&settings_path).unwrap_or_default();
+            let mut settings = read_settings(&settings_path).unwrap_or_default();
             let window_icon = app.default_window_icon().cloned();
             if let Some(window) = app.get_webview_window("main") {
+                let main_window = window.as_ref().window();
+                settings = migrate_startup_window_settings(
+                    &main_window,
+                    &settings_path,
+                    settings,
+                );
                 if let Some(icon) = window_icon {
                     window.set_icon(icon).map_err(|error| {
                         format!("Could not set the application window icon: {error}")
@@ -445,6 +532,9 @@ pub fn run() {
         .on_window_event(|window, event| {
             let state = window.app_handle().state::<AppState>();
             match event {
+                tauri::WindowEvent::Resized { .. } | tauri::WindowEvent::Moved { .. } => {
+                    persist_window_geometry(window, state.inner());
+                }
                 tauri::WindowEvent::CloseRequested { .. } => {
                     persist_window_geometry(window, state.inner());
                     stop_managed_tasks(state.inner());
@@ -457,6 +547,9 @@ pub fn run() {
             app_info,
             scan_workspace,
             list_containers,
+            container_logs,
+            start_container,
+            stop_container,
             load_settings,
             save_settings,
             load_profiles,
@@ -486,6 +579,44 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persists_inner_size_in_logical_pixels() {
+        let logical_size = PhysicalSize::new(2_160, 1_440).to_logical::<u32>(2.0);
+
+        assert_eq!(logical_size.width, 1_080);
+        assert_eq!(logical_size.height, 720);
+    }
+
+    #[test]
+    fn migrates_unmarked_legacy_physical_window_size() {
+        let settings = UiSettings {
+            window_width: 2_160,
+            window_height: 1_440,
+            window_x: Some(40),
+            window_y: Some(78),
+            ..UiSettings::default()
+        };
+        let migrated = migrate_legacy_window_size(settings, 2.0)
+            .expect("legacy physical size should migrate");
+
+        assert_eq!(migrated.window_width, 1_080);
+        assert_eq!(migrated.window_height, 720);
+    }
+
+    #[test]
+    fn does_not_migrate_a_valid_logical_size() {
+        let settings = UiSettings {
+            window_width: 1_200,
+            window_height: 800,
+            window_x: Some(40),
+            window_y: Some(78),
+            window_geometry_logical: true,
+            ..UiSettings::default()
+        };
+
+        assert!(migrate_legacy_window_size(settings, 2.0).is_none());
+    }
 
     #[test]
     fn parses_auto_close_option() {
