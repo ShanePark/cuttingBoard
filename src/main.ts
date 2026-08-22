@@ -46,7 +46,7 @@ root.innerHTML = `
       <nav class="tabs" aria-label="Workspace">
         <button class="tab is-active" type="button" data-tab="services" aria-label="Services" title="Services">${uiIcon("power", 18)}<span class="tab-label">Services</span><span class="tab-count" id="services-count">0</span></button>
         <button class="tab" type="button" data-tab="docker" aria-label="Docker" title="Docker">${uiIcon("docker", 18)}<span class="tab-label">Docker</span><span class="tab-count" id="docker-count">0</span></button>
-        <button class="tab" type="button" data-tab="launch" aria-label="Launch Profiles" title="Launch Profiles">${uiIcon("play", 18)}<span class="tab-label">Launch Profiles</span><span class="tab-count" id="launch-count">0</span></button>
+        <button class="tab" type="button" data-tab="launch" aria-label="Launch" title="Launch">${uiIcon("play", 18)}<span class="tab-label">Launch</span><span class="tab-count" id="launch-count">0</span></button>
       </nav>
       <button class="gear-button" type="button" data-action="settings" aria-label="Settings" title="Settings">${uiIcon("settings", 18)}</button>
     </header>
@@ -1160,17 +1160,33 @@ function renderLaunch(force = false): void {
   }
   launchSignature = signature;
   workspaceElement.dataset.view = "launch";
-  const header = `<div class="launch-heading"><div class="launch-heading-actions"><button class="info-button icon-only-button launch-help-button" type="button" data-action="show-info" data-info-kind="launch" aria-label="About Launch Profiles" title="About Launch Profiles">${uiIcon("info", 15)}</button><button class="primary-button icon-only-button" type="button" data-action="add-profile" aria-label="Add launch profile" title="Add launch profile" ${appInfo?.demo ? "disabled" : ""}>${uiIcon("plus", 16)}</button></div></div>`;
   if (profiles.length === 0) {
     selectedTaskKey = null;
-    workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list">${header}<div class="launch-empty"><h2>No launch profiles yet</h2><p>Add a project and run commands to start and stop them together without an IDE.</p><button class="secondary-button icon-only-button" type="button" data-action="add-profile" aria-label="Add first launch profile" title="Add first launch profile" ${appInfo?.demo ? "disabled" : ""}>${uiIcon("plus", 16)}</button></div></div>${renderLaunchConsole(null)}</div>`;
+    workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list"><div class="launch-list board">${renderLaunchAddCard(true)}</div></div>${renderLaunchConsole(null)}</div>`;
+    applyBoardLayout();
     return;
   }
   const selected = ensureSelectedTask();
-  workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list">${header}<div class="launch-list board">${profiles.map(renderProfile).join("")}</div></div>${renderLaunchConsole(selected)}</div>`;
+  workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list"><div class="launch-list board">${profiles.map(renderProfile).join("")}${renderLaunchAddCard(false)}</div></div>${renderLaunchConsole(selected)}</div>`;
   applyBoardLayout();
   restoreConsoleContextState();
   restoreConsoleScroll();
+}
+
+function renderLaunchAddCard(empty: boolean): string {
+  const copy = empty
+    ? "Create a profile to run related tasks together."
+    : "Group related tasks and run them together.";
+  const note = appInfo?.demo ? "Demo mode is read-only." : "";
+  return `<article class="launch-add-card" aria-labelledby="launch-add-title">
+    <button class="launch-add-action" type="button" data-action="add-profile" aria-label="Add launch profile" title="Add launch profile" ${appInfo?.demo ? "disabled" : ""}>
+      <span class="launch-add-icon" aria-hidden="true">${uiIcon("plus", 24)}</span>
+      <strong id="launch-add-title">Add profile</strong>
+      <span class="launch-add-copy">${copy}</span>
+      ${note ? `<span class="launch-add-note">${note}</span>` : ""}
+    </button>
+    <button class="info-button icon-only-button launch-add-info" type="button" data-action="show-info" data-info-kind="launch" aria-label="About launch profiles" title="About launch profiles">${uiIcon("info", 15)}</button>
+  </article>`;
 }
 
 function bulkActionIcon(name: "play" | "stop"): string {
