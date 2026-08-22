@@ -42,7 +42,7 @@ const UI_CATALOG = {
   log: ["lucide", "file-text"], theme: ["lucide", "palette"], scan: ["lucide", "scan"],
   scanning: ["lucide", "scan"], link: ["lucide", "link"], external: ["lucide", "external-link"],
   ide: ["lucide", "square-terminal"], terminal: ["lucide", "terminal"], docker: ["lucide", "box"],
-  refresh: ["lucide", "refresh-cw"], chevronDown: ["lucide", "chevron-down"], folder: ["lucide", "folder"],
+  refresh: ["lucide", "refresh-cw"], chevronDown: ["lucide", "chevron-down"], folder: ["lucide", "folder"], save: ["lucide", "save"], trash: ["lucide", "trash-2"],
   clock: ["lucide", "clock"], cpu: ["lucide", "cpu"], memory: ["lucide", "memory-stick"],
   port: ["lucide", "ethernet-port"], warning: ["lucide", "triangle-alert"], check: ["lucide", "check"],
   bot: ["lucide", "bot"], claude: ["simple-icons", "claude"], copilot: ["simple-icons", "githubcopilot"],

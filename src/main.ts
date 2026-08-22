@@ -3,10 +3,8 @@ import { open as choosePath } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
 import { techIcon, uiIcon } from "./icons";
-import type { UiIconName } from "./icons";
 import {
   FRESH_UPTIME_SECONDS,
-  browserLinkLabel,
   currentUptime,
   formatBytes,
   formatUptimeCompact,
@@ -17,7 +15,6 @@ import {
   portBadgeLabels,
   relatedContainersForGroup,
   serviceTitle,
-  shortenPath,
   techLabel,
   uniquePorts
 } from "./presentation";
@@ -46,9 +43,9 @@ root.innerHTML = `
   <div class="app-shell">
     <header class="toolbar">
       <nav class="tabs" aria-label="Workspace">
-        <button class="tab is-active" type="button" data-tab="services">${uiIcon("power", 14)}<span>Services</span><span class="tab-count" id="services-count">0</span></button>
-        <button class="tab" type="button" data-tab="docker">${uiIcon("docker", 14)}<span>Docker</span><span class="tab-count" id="docker-count">0</span></button>
-        <button class="tab" type="button" data-tab="launch">${uiIcon("play", 14)}<span>Launch Profiles</span><span class="tab-count" id="launch-count">0</span></button>
+        <button class="tab is-active" type="button" data-tab="services" aria-label="Services" title="Services">${uiIcon("power", 18)}<span class="tab-label">Services</span><span class="tab-count" id="services-count">0</span></button>
+        <button class="tab" type="button" data-tab="docker" aria-label="Docker" title="Docker">${uiIcon("docker", 18)}<span class="tab-label">Docker</span><span class="tab-count" id="docker-count">0</span></button>
+        <button class="tab" type="button" data-tab="launch" aria-label="Launch Profiles" title="Launch Profiles">${uiIcon("play", 18)}<span class="tab-label">Launch Profiles</span><span class="tab-count" id="launch-count">0</span></button>
       </nav>
       <button class="gear-button" type="button" data-action="settings" aria-label="Settings" title="Settings">${uiIcon("settings", 18)}</button>
     </header>
@@ -316,12 +313,10 @@ function renderServices(force = false): void {
     <section class="service-section" data-tiles="${group.services.length + group.containers.length}" aria-labelledby="group-${h(encodeURIComponent(group.id))}">
       <header class="section-header">
         <span class="section-accent accent-${h(group.accent)}"></span>
-        <h2 id="group-${h(encodeURIComponent(group.id))}">${h(group.name.toUpperCase())}</h2>
-        ${group.path ? `<p title="${h(group.path)}">${h(shortenPath(group.path))}</p>` : ""}
-        <span class="section-count" aria-label="${group.services.length} services${group.containers.length ? ` and ${group.containers.length} Docker containers` : ""}">${group.services.length + group.containers.length}</span>
+        <h2 id="group-${h(encodeURIComponent(group.id))}">${renderGroupTitle(group.name, group.services.length, "group-details", `data-group-id="${h(group.id)}"`, group.name.toUpperCase())}</h2>
         ${renderGroupActions(group)}
       </header>
-      <div class="tile-grid">${group.services.map((service) => renderServiceTile(service)).join("")}${group.containers.map((container) => renderContainerTile(container)).join("")}</div>
+      <div class="tile-grid">${renderServiceGroupTiles(group)}</div>
     </section>`).join("")}</div>`;
   applyBoardLayout();
   updateLiveMetrics();
@@ -346,10 +341,11 @@ function renderGroupActions(group: ReturnType<typeof groupServices>[number]): st
   const profilePresent = profileForGroup(group) !== undefined;
   const saveAction = profilePresent
     ? `<span class="group-profile-saved" title="Launch profile saved" aria-label="Launch profile saved">${uiIcon("check", 14)}</span>`
-    : `<button class="section-action save-group-action icon-button-label" type="button" data-action="save-service-group" data-group-id="${h(group.id)}" title="Save launch profile" aria-label="${saveBusy ? "Saving" : "Save"} launch profile for ${h(group.name)}" ${saveBusy ? "disabled" : ""}>${uiIcon("folder", 13)}<span>${saveBusy ? "Saving…" : "Save"}</span></button>`;
+    : `<button class="section-action icon-only-button save-group-action" type="button" data-action="save-service-group" data-group-id="${h(group.id)}" title="${saveBusy ? "Saving launch profile" : "Save launch profile"}" aria-label="${saveBusy ? "Saving" : "Save"} launch profile for ${h(group.name)}" ${saveBusy ? "disabled" : ""}>${uiIcon(saveBusy ? "refresh" : "save", 17)}</button>`;
+  if (group.services.length === 1) return `<div class="section-actions">${saveAction}</div>`;
   const terminableCount = group.services.filter((service) => service.can_terminate).length;
   const stopDisabled = !terminableCount || stopBusy;
-  return `<div class="section-actions">${saveAction}<button class="section-action stop-group-action icon-button-label" type="button" data-action="stop-service-group" data-group-id="${h(group.id)}" title="${terminableCount ? "Stop all stoppable services" : "No services can be stopped safely"}" aria-label="${stopBusy ? "Stopping" : terminableCount ? "Stop all" : "No stoppable"} services in ${h(group.name)}" ${stopDisabled ? "disabled" : ""}>${uiIcon("stop", 13)}<span>${stopBusy ? "Stopping…" : "Stop All"}</span></button></div>`;
+  return `<div class="section-actions">${saveAction}<button class="section-action icon-only-button stop-group-action" type="button" data-action="stop-service-group" data-group-id="${h(group.id)}" title="${stopBusy ? "Stopping services" : terminableCount ? "Stop all stoppable services" : "No services can be stopped safely"}" aria-label="${stopBusy ? "Stopping" : terminableCount ? "Stop all" : "No stoppable"} services in ${h(group.name)}" ${stopDisabled ? "disabled" : ""}>${uiIcon(stopBusy ? "refresh" : "stop", 15)}</button></div>`;
 }
 
 function generatedTasksForGroup(services: ServiceSnapshot[]): LaunchTask[] {
@@ -391,23 +387,21 @@ function renderServiceTile(service: ServiceSnapshot, ordinal?: number, ordinalTo
   const busy = operations.has(`stop:${service.id}`);
   const uptime = currentUptime(service);
   const pip = busy ? "busy" : uptime === null ? "idle" : service.status === "limited" ? "limited" : "running";
-  const profileBadges = springProfileBadges(service);
   return `
     <article class="service-tile category-${service.category}${busy ? " is-busy" : ""}" data-metrics-id="${h(service.id)}" aria-label="${h(service.display_name)} service">
       <button class="tile-details-button" type="button" data-tile-action data-action="service-details" data-service-id="${h(service.id)}" aria-label="View ${h(service.display_name)} details" title="View details"></button>
       <div class="tile-top">
         ${renderTileOrdinal(ordinal, ordinalTotal)}
         <span class="icon-well" aria-hidden="true">${techIcon(service.tech, 44)}<span class="status-pip state-${pip}"></span></span>
-        ${renderTileHeading(serviceTitle(service), techLabel(service.tech), `${originBadge(service.origin_kind, service.origin_label)}${profileBadges}`)}
-        <span class="details-hint" aria-hidden="true">${uiIcon("details", 14)}</span>
+        ${renderTileHeading(serviceTitle(service), "", "")}
         ${service.can_terminate ? `<button type="button" class="stop-button" data-tile-action data-action="stop-service" data-service-id="${h(service.id)}" aria-label="${busy ? "Stopping" : "Stop"} ${h(service.display_name)}" title="${busy ? "Stopping process" : "Stop process"}" ${busy ? "disabled" : ""}><span class="stop-glyph" aria-hidden="true"></span></button>` : ""}
       </div>
       <div class="tile-metrics">
-        <span class="metric metric-uptime${uptime !== null && uptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(uptimeText(service, busy))}</span></span>
-        <span class="metric metric-memory" data-metric="memory">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(service.process?.memory_bytes ?? null))}</span></span>
+        <span class="metric metric-uptime${uptime !== null && uptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(uptimeText(service, busy))}</span></span>
+        <span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(service.process?.memory_bytes ?? null))}</span></span>
       </div>
       ${renderTileFoot(uniquePorts(service), "No port information", service.browser_url
-        ? `<button type="button" class="service-link" data-tile-action data-action="open-service" data-service-id="${h(service.id)}" aria-label="Open ${h(service.display_name)} in the browser" title="${h(service.browser_url)}"><span>${h(browserLinkLabel(service.browser_url))}</span>${uiIcon("external", 12)}</button>`
+        ? `<button type="button" class="service-link icon-only-button" data-tile-action data-action="open-service" data-service-id="${h(service.id)}" aria-label="Open ${h(service.display_name)} in the browser" title="Open ${h(service.browser_url)}">${uiIcon("external", 15)}</button>`
         : "")}
     </article>`;
 }
@@ -419,35 +413,12 @@ function renderTileOrdinal(ordinal?: number, total?: number): string {
 
 // The subtitle carries the technology once: skip the label when the title already says it.
 function renderTileHeading(title: string, label: string, badge: string): string {
-  const tech = label.toLowerCase() === title.trim().toLowerCase() ? "" : `<span class="tech-label">${h(label)}</span>`;
+  const trimmedLabel = label.trim();
+  const tech = trimmedLabel && trimmedLabel.toLowerCase() !== title.trim().toLowerCase() ? `<span class="tech-label">${h(trimmedLabel)}</span>` : "";
   return `<div class="tile-heading">
         <h3 class="tile-name" title="${h(title)}">${h(title)}</h3>
         ${tech || badge ? `<p class="tile-subtitle">${tech}${badge}</p>` : ""}
       </div>`;
-}
-
-function originBadge(kind: string, label: string | null): string {
-  if (!label || kind === "system" || kind === "unknown") return "";
-  return `<span class="origin-badge origin-${h(kind)}" title="Started from ${h(label)}" aria-label="Started from ${h(label)}">${uiIcon(originIcon(kind, label), 12)}${h(label)}</span>`;
-}
-
-function springProfileBadges(service: ServiceSnapshot): string {
-  if (service.tech.trim().toLowerCase() !== "spring") return "";
-  return service.active_profiles
-    .map((profile) => profile.trim())
-    .filter(Boolean)
-    .map((profile) => `<span class="profile-badge" title="Active Spring profile: ${h(profile)}" aria-label="Active Spring profile: ${h(profile)}">${h(profile)}</span>`)
-    .join("");
-}
-
-function originIcon(kind: string, label: string): UiIconName {
-  const value = label.toLowerCase();
-  if (value.includes("claude")) return "claude";
-  if (value.includes("copilot")) return "copilot";
-  if (value.includes("cursor")) return "cursor";
-  if (["intellij", "pycharm", "webstorm", "rider", "goland", "jetbrains"].some((name) => value.includes(name))) return "jetbrains";
-  if (kind === "agent") return "bot";
-  return kind === "ide" ? "ide" : "terminal";
 }
 
 function renderTileFoot(ports: number[], emptyLabel: string, trailing: string): string {
@@ -455,7 +426,7 @@ function renderTileFoot(ports: number[], emptyLabel: string, trailing: string): 
   return `<div class="tile-foot">
         <div class="port-row">
           ${labels.map((label) => `<span class="port-chip${label.startsWith("+") ? " port-overflow" : ""}" title="${h(portChipDescription(label, ports))}" aria-label="${h(portChipDescription(label, ports))}">${h(label)}</span>`).join("")}
-          ${ports.length === 0 ? `<span class="no-port-label">${h(emptyLabel)}</span>` : ""}
+          ${ports.length === 0 ? `<span class="no-port-label port-empty-icon" title="${h(emptyLabel)}" aria-label="${h(emptyLabel)}">${uiIcon("port", 14)}</span>` : ""}
         </div>
         ${trailing}
       </div>`;
@@ -488,7 +459,7 @@ function renderDocker(force = false): void {
   }
   if (!containerListing.available) {
     if (fallback.length) {
-      workspaceElement.innerHTML = `<div class="inline-notice"><strong>Docker could not be queried.</strong><span>${h(containerListing.message ?? "Docker is unavailable.")}</span></div><div class="board"><section class="service-section" data-tiles="${fallback.length}"><header class="section-header"><span class="section-accent accent-container"></span><h2>CONTAINER LISTENERS</h2><span class="section-count">${fallback.length}</span></header><div class="tile-grid">${fallback.map(renderServiceTile).join("")}</div></section></div>`;
+      workspaceElement.innerHTML = `<div class="docker-view"><div class="inline-notice"><strong>Docker could not be queried.</strong><span>${h(containerListing.message ?? "Docker is unavailable.")}</span></div><div class="board"><section class="service-section" data-tiles="${fallback.length}" aria-labelledby="container-listeners-title"><header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-listeners-title">CONTAINER LISTENERS</h2></header><div class="tile-grid">${fallback.map((service, index) => renderServiceTile(service, index + 1, fallback.length)).join("")}</div></section></div>${renderDockerConsole()}</div>`;
       applyBoardLayout();
       restoreDockerConsoleScroll();
       return;
@@ -557,7 +528,7 @@ function renderContainerTile(container: ContainerInfo, ordinal?: number, ordinal
       <div class="tile-metrics">
         <span class="metric metric-state ${busy ? "is-busy" : running ? "is-running" : "is-stopped"}" title="Container state">${uiIcon("docker", 13)}<span class="sr-only">State </span>${h(ellipsis(stateText, 30))}</span>
       </div>
-      ${renderTileFoot(container.ports, "No published ports", `<span class="image-label" title="Container image: ${h(container.image)}">${h(ellipsis(container.image, 24))}</span>`)}
+      ${renderTileFoot(container.ports, "No published ports", "")}
     </article>`;
 }
 
@@ -630,10 +601,10 @@ function renderLaunch(force = false): void {
   if (!force && signature === launchSignature && workspaceElement.dataset.view === "launch") return;
   launchSignature = signature;
   workspaceElement.dataset.view = "launch";
-  const header = `<div class="launch-heading"><div><h1>Launch Profiles</h1><p>Run backend, frontend, and auto-build tasks together.</p></div><button class="primary-button icon-button-label" type="button" data-action="add-profile" ${appInfo?.demo ? "disabled" : ""}>${uiIcon("plus", 14)} Add</button></div>`;
+  const header = `<div class="launch-heading"><div class="launch-heading-actions"><button class="info-button icon-only-button launch-help-button" type="button" data-action="show-info" data-info-kind="launch" aria-label="About Launch Profiles" title="About Launch Profiles">${uiIcon("info", 15)}</button><button class="primary-button icon-only-button" type="button" data-action="add-profile" aria-label="Add launch profile" title="Add launch profile" ${appInfo?.demo ? "disabled" : ""}>${uiIcon("plus", 16)}</button></div></div>`;
   if (profiles.length === 0) {
     selectedTaskKey = null;
-    workspaceElement.innerHTML = `${header}<div class="launch-empty"><h2>No launch profiles yet</h2><p>Add a project and run commands to start and stop them together without an IDE.</p><button class="secondary-button" type="button" data-action="add-profile" ${appInfo?.demo ? "disabled" : ""}>Add First Profile</button></div>`;
+    workspaceElement.innerHTML = `${header}<div class="launch-empty"><h2>No launch profiles yet</h2><p>Add a project and run commands to start and stop them together without an IDE.</p><button class="secondary-button icon-only-button" type="button" data-action="add-profile" aria-label="Add first launch profile" title="Add first launch profile" ${appInfo?.demo ? "disabled" : ""}>${uiIcon("plus", 16)}</button></div>`;
     return;
   }
   const selected = ensureSelectedTask();
@@ -650,19 +621,18 @@ function renderProfile(profile: LaunchProfile): string {
   const failedCount = snapshots.filter((snapshot) => snapshot?.state === "failed").length;
   const profileStatus = failedCount > 0 ? `${failedCount} failed` : activeCount > 0 ? `${activeCount} active` : externalCount > 0 ? `${externalCount} external` : "Ready";
   const profileStatusClass = failedCount > 0 ? "is-failed" : activeCount > 0 || externalCount > 0 ? "is-active" : "is-idle";
-  const primary = canStart
-    ? `<button class="primary-button icon-button-label" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}">${uiIcon("play", 14)} ${canStop ? "Start Remaining" : "Start All"}</button>`
-    : canStop ? `<button class="secondary-button warning-action icon-button-label" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}">${uiIcon("stop", 14)} Stop All</button>` : "";
+  const primary = profile.tasks.length > 1 && canStart
+    ? `<button class="primary-button icon-only-button" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}" aria-label="${canStop ? "Start remaining tasks" : "Start all tasks"}" title="${canStop ? "Start remaining tasks" : "Start all tasks"}">${uiIcon("play", 16)}</button>`
+    : profile.tasks.length > 1 && canStop ? `<button class="secondary-button warning-action icon-only-button" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}" aria-label="Stop all tasks" title="Stop all tasks">${uiIcon("stop", 16)}</button>` : "";
   return `<section class="launch-profile service-section" aria-labelledby="launch-profile-${h(profile.id)}">
     <header class="section-header launch-profile-header">
       <span class="section-accent accent-runtime" aria-hidden="true"></span>
-      <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${h(profile.name)}</h2><p title="${h(profile.project_root)}">${h(shortenPath(profile.project_root))}</p></div>
-      <span class="launch-profile-status ${profileStatusClass}" aria-label="Profile status: ${h(profileStatus)}">${h(profileStatus)}</span>
+      <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name, "View profile details")}</h2></div>
+      <span class="launch-profile-status ${profileStatusClass}" role="img" aria-label="Profile status: ${h(profileStatus)}" title="${h(profileStatus)}">${profileStatusIcon(profileStatusClass)}<span class="sr-only">Profile status: ${h(profileStatus)}</span></span>
       <span class="section-count" aria-label="${profile.tasks.length} ${profile.tasks.length === 1 ? "task" : "tasks"}">${profile.tasks.length}</span>
       <div class="section-actions launch-profile-actions">
         ${primary}
-        <button class="section-action" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" ${appInfo?.demo || canStop ? "disabled" : ""}>Edit</button>
-        <button class="section-action danger-button" type="button" data-action="delete-profile" data-profile-id="${h(profile.id)}" ${appInfo?.demo || canStop ? "disabled" : ""}>Delete</button>
+        <button class="section-action icon-only-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" aria-label="Edit ${h(profile.name)}" title="Edit profile" ${appInfo?.demo || canStop ? "disabled" : ""}>${uiIcon("settings", 15)}</button>
       </div>
     </header>
     <div class="task-list" role="list" aria-label="Tasks in ${h(profile.name)}">${profile.tasks.map((task) => renderTask(profile, task)).join("")}</div>
@@ -676,9 +646,14 @@ function renderTask(profile: LaunchProfile, task: LaunchTask): string {
   const external = state === "external";
   const busy = operations.has(`task:${profile.id}:${task.name}`);
   const selected = selectedTaskKey === launchTaskKey(profile.id, task.name);
+  const stopUnavailable = !active || external;
+  const startAction = !active && !external
+    ? `<button class="quiet-button start-action icon-only-button" type="button" data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="Start ${h(task.name)}" title="Start task" ${busy ? "disabled" : ""}>${uiIcon(busy ? "refresh" : "play", 15)}</button>`
+    : "";
+  const stopAction = `<button class="stop-button task-stop-button${stopUnavailable ? " is-unavailable" : ""}" type="button" data-action="stop-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="Stop ${h(task.name)}" title="${active ? busy ? "Stopping task" : "Stop task" : external ? "Cannot stop an externally managed task" : "Task is not running"}" ${stopUnavailable || busy ? "disabled" : ""}><span class="stop-glyph" aria-hidden="true"></span></button>`;
   return `<article class="task-row state-${state}${selected ? " is-selected" : ""}" data-action="select-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" tabindex="0" role="listitem" aria-current="${selected ? "true" : "false"}" aria-label="${h(`${profile.name} · ${task.name}, ${stateLabel(state)}${task.expected_port ? `, port ${task.expected_port}` : ""}`)}"><div class="task-copy">
     <div class="task-heading-line"><h3>${h(middleEllipsis(task.name, 72))}</h3><span class="task-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span></div>
-    <div class="task-actions-row"><div class="task-port-group">${task.expected_port ? `<span class="task-port">localhost:${task.expected_port}</span>` : ""}</div><div>${active ? `<button class="quiet-button warning-action icon-button-label" type="button" data-action="stop-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>${uiIcon("stop", 13)} Stop</button>` : !external ? `<button class="quiet-button start-action icon-button-label" type="button" data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" ${busy ? "disabled" : ""}>${uiIcon("play", 13)} Start</button>` : ""}</div></div>
+    <div class="task-actions-row"><div class="task-port-group">${task.expected_port ? `<span class="task-port" title="Expected port">${uiIcon("port", 12)}<span class="sr-only">Port </span>localhost:${task.expected_port}</span>` : ""}</div><div class="task-action-buttons">${startAction}${stopAction}</div></div>
   </div></article>`;
 }
 
@@ -738,10 +713,10 @@ function renderLaunchConsole(ref: LaunchTaskRef | null): string {
   return `<section class="launch-console state-${state}" aria-labelledby="launch-console-title" data-console-task-key="${h(launchTaskDomKey(profile.id, task.name))}">
     <header class="console-header">
       <div class="console-title"><span class="console-icon state-${state}" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">${h(task.name)}</h2><p>${h(profile.name)}</p></div></div>
-      <div class="console-meta" aria-label="Task status"><span class="console-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span>${pid !== null ? `<span class="console-meta-item"><span>PID</span><code>${pid}</code></span>` : ""}${port ? `<span class="console-meta-item"><span>PORT</span><code>localhost:${port}</code></span>` : ""}${externalLogPath ? `<span class="console-meta-item console-meta-source" title="External log source: ${h(externalLogPath)}"><span>LOG</span><code>${h(middleEllipsis(externalLogPath, 52))}</code></span>` : ""}</div>
+      <div class="console-meta" aria-label="Task status"><span class="console-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span>${pid !== null ? `<span class="console-meta-item" title="Process ID"><span class="sr-only">PID </span>${uiIcon("terminal", 12)}<code>${pid}</code></span>` : ""}${port ? `<span class="console-meta-item" title="Port"><span class="sr-only">Port </span>${uiIcon("port", 12)}<code>localhost:${port}</code></span>` : ""}${externalLogPath ? `<span class="console-meta-item console-meta-source" title="External log source: ${h(externalLogPath)}"><span class="sr-only">Log source </span>${uiIcon("log", 12)}<code>${h(middleEllipsis(externalLogPath, 52))}</code></span>` : ""}</div>
     </header>
-    <details class="console-context-details"><summary>${uiIcon("details", 13)} Task details</summary><div class="console-context" aria-label="Task context"><div class="console-context-item"><span>COMMAND</span><code title="${h(task.command)}">${h(middleEllipsis(command, 240))}</code></div><div class="console-context-item"><span>WORKING DIRECTORY</span><code title="${h(cwd)}">${h(middleEllipsis(cwd, 240))}</code></div></div></details>
-    <div class="console-toolbar"><span class="console-toolbar-label">${uiIcon("log", 13)} Output</span><div class="console-tools"><button class="console-tool${consoleWrap ? " is-active" : ""}" type="button" data-action="toggle-log-wrap" aria-pressed="${consoleWrap ? "true" : "false"}" title="${consoleWrap ? "Disable line wrapping" : "Wrap long lines"}">${uiIcon("chevronDown", 12)}<span>Wrap</span></button><button class="console-tool${consoleFollow ? " is-active" : ""}" type="button" data-action="toggle-log-follow" aria-pressed="${consoleFollow ? "true" : "false"}" title="${consoleFollow ? "Pause following new output" : "Follow new output"}">${uiIcon(consoleFollow ? "refresh" : "play", 12)}<span data-console-follow-label>${consoleFollow ? "Following" : "Follow output"}</span></button></div></div>
+    <details class="console-context-details"><summary aria-label="Show task details" title="Show task details">${uiIcon("info", 14)}<span class="sr-only">Task details</span></summary><div class="console-context" aria-label="Task context"><div class="console-context-item"><span>COMMAND</span><code title="${h(task.command)}">${h(middleEllipsis(command, 240))}</code></div><div class="console-context-item"><span>WORKING DIRECTORY</span><code title="${h(cwd)}">${h(middleEllipsis(cwd, 240))}</code></div></div></details>
+    <div class="console-toolbar"><span class="console-toolbar-label" title="Output">${uiIcon("log", 14)}<span class="sr-only">Output</span></span><div class="console-tools"><button class="console-tool icon-only-button${consoleWrap ? " is-active" : ""}" type="button" data-action="toggle-log-wrap" aria-pressed="${consoleWrap ? "true" : "false"}" aria-label="${consoleWrap ? "Disable line wrapping" : "Wrap long lines"}" title="${consoleWrap ? "Disable line wrapping" : "Wrap long lines"}">${uiIcon("chevronDown", 13)}</button><button class="console-tool icon-only-button${consoleFollow ? " is-active" : ""}" type="button" data-action="toggle-log-follow" aria-pressed="${consoleFollow ? "true" : "false"}" aria-label="${consoleFollow ? "Pause following new output" : "Follow new output"}" title="${consoleFollow ? "Pause following new output" : "Follow new output"}">${uiIcon(consoleFollow ? "refresh" : "play", 13)}<span class="sr-only" data-console-follow-label>${consoleFollow ? "Following" : "Follow output"}</span></button></div></div>
     <div class="console-output${consoleWrap ? " is-wrapped" : ""}" tabindex="0" role="log" aria-live="polite" aria-label="Output for ${h(task.name)}">${renderConsoleOutput(snapshot, state)}</div>
   </section>`;
 }
@@ -890,7 +865,7 @@ function focusContainerCard(id: string): void {
 
 async function handleClick(event: Event): Promise<void> {
   const eventElement = event.target instanceof Element ? event.target : null;
-  if (eventElement instanceof HTMLElement && eventElement.matches(".modal-backdrop[data-dismiss-on-backdrop='true']")) {
+  if (eventElement?.matches(".modal-backdrop")) {
     closeModal();
     return;
   }
@@ -924,6 +899,9 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "stop-container") await operateContainer(required(target.dataset.containerId), false);
     else if (action === "container-details") showContainerDetails(findContainer(required(target.dataset.containerId)));
     else if (action === "settings") showSettings();
+    else if (action === "toggle-settings-info") toggleSettingsInfo(target);
+    else if (action === "show-info") showInfo(required(target.dataset.infoKind));
+    else if (action === "profile-details") showProfileDetails(findProfile(required(target.dataset.profileId)));
     else if (action === "close-modal") closeModal();
     else if (action === "save-settings") await saveSettingsFromModal();
     else if (action === "open-source") await openUrl(SOURCE_URL);
@@ -1003,7 +981,7 @@ function requestStopService(id: string): void {
   const service = findService(id);
   if (!service.can_terminate) throw new Error("This process cannot be stopped safely.");
   pendingServiceStopId = id;
-  openModal("Stop service?", `<p class="confirm-copy">Stop <strong>${h(service.display_name)}</strong>? This will terminate process PID <span class="mono">${service.process?.pid ?? "unknown"}</span>.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-stop-service" data-service-id="${h(id)}">${uiIcon("stop", 13)} Stop</button></div>`, { dismissOnBackdrop: false });
+  openModal("Stop service?", `<p class="confirm-copy">Stop <strong>${h(service.display_name)}</strong>? This will terminate process PID <span class="mono">${service.process?.pid ?? "unknown"}</span>.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-stop-service" data-service-id="${h(id)}">${uiIcon("stop", 13)} Stop</button></div>`);
 }
 
 function requestSaveGroup(id: string): void {
@@ -1012,7 +990,7 @@ function requestSaveGroup(id: string): void {
   const tasks = validateGroupProfile(group);
   if (profileForGroup(group)) return;
   pendingGroupSaveId = id;
-  openModal("Save launch profile?", `<p class="confirm-copy">Save <strong>${h(group.name)}</strong> as a launch profile with ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}?</p><p class="form-note mono">${h(group.path)}</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button icon-button-label" type="button" data-action="confirm-save-service-group" data-group-id="${h(id)}">${uiIcon("folder", 13)} Save Profile</button></div>`, { dismissOnBackdrop: false });
+  openModal("Save launch profile?", `<p class="confirm-copy">Save <strong>${h(group.name)}</strong> as a launch profile with ${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}?</p><p class="form-note mono">${h(group.path)}</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button icon-button-label" type="button" data-action="confirm-save-service-group" data-group-id="${h(id)}">${uiIcon("save", 15)} Save Profile</button></div>`);
 }
 
 async function confirmSaveGroup(id: string): Promise<void> {
@@ -1050,7 +1028,7 @@ function requestStopGroup(id: string): void {
   const candidates = group.services.filter((service) => service.can_terminate);
   if (!candidates.length) throw new Error("No services in this group can be stopped safely.");
   pendingGroupStopId = id;
-  openModal("Stop all services?", `<p class="confirm-copy">Stop <strong>${candidates.length} stoppable ${candidates.length === 1 ? "service" : "services"}</strong> in ${h(group.name)}? Services that cannot be terminated safely will remain untouched.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-stop-service-group" data-group-id="${h(id)}">${uiIcon("stop", 13)} Stop All</button></div>`, { dismissOnBackdrop: false });
+  openModal("Stop all services?", `<p class="confirm-copy">Stop <strong>${candidates.length} stoppable ${candidates.length === 1 ? "service" : "services"}</strong> in ${h(group.name)}? Services that cannot be terminated safely will remain untouched.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-stop-service-group" data-group-id="${h(id)}">${uiIcon("stop", 13)} Stop All</button></div>`);
 }
 
 async function confirmStopGroup(id: string): Promise<void> {
@@ -1090,7 +1068,7 @@ function requestDeleteProfile(id: string): void {
   if (pendingProfileDeleteId !== null) return;
   const profile = findProfile(id);
   pendingProfileDeleteId = id;
-  openModal("Delete launch profile?", `<p class="confirm-copy">Delete <strong>${h(profile.name)}</strong>? This removes its saved commands.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button" type="button" data-action="confirm-delete-profile" data-profile-id="${h(id)}">Delete</button></div>`, { dismissOnBackdrop: false });
+  openModal("Delete launch profile?", `<p class="confirm-copy">Delete <strong>${h(profile.name)}</strong>? This removes its saved commands.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button" type="button" data-action="confirm-delete-profile" data-profile-id="${h(id)}">Delete</button></div>`);
 }
 
 async function confirmDeleteProfile(id: string): Promise<void> {
@@ -1244,19 +1222,21 @@ function showSettings(): void {
   const intervalChoices = [...new Set([1000, 2000, 5000, 10000, 30000, settings.scan_interval_ms])].sort((a, b) => a - b);
   openModal("Settings", `<form id="settings-form" class="settings-form" onsubmit="return false">
     <section class="settings-section" aria-labelledby="appearance-heading">
-      <div class="settings-section-heading"><span class="settings-heading-icon">${uiIcon("theme", 18)}</span><div><h3 id="appearance-heading">Appearance</h3><p>Choose how Cutting Board looks on this device.</p></div></div>
+      <div class="settings-section-heading"><span class="settings-heading-icon">${uiIcon("theme", 20)}</span><div class="settings-heading-copy"><h3 id="appearance-heading">Appearance</h3></div><button class="info-button icon-only-button settings-info-button" type="button" data-action="toggle-settings-info" data-info-kind="appearance" data-info-target="settings-info-appearance" aria-expanded="false" aria-controls="settings-info-appearance" aria-label="About appearance settings" title="About appearance settings">${uiIcon("info", 16)}</button></div>
+      <p id="settings-info-appearance" class="settings-inline-info" hidden>Choose whether Cutting Board follows the system theme or always uses a light or dark appearance.</p>
       <fieldset class="choice-fieldset"><legend class="sr-only">Theme</legend><div class="theme-options">
         ${themeChoice("system", "System", "Follow your device")}${themeChoice("light", "Light", "Bright and clear")}${themeChoice("dark", "Dark", "Easy on the eyes")}
       </div></fieldset>
     </section>
     <section class="settings-section" aria-labelledby="scanning-heading">
-      <div class="settings-section-heading"><span class="settings-heading-icon">${uiIcon("scan", 18)}</span><div class="settings-heading-copy"><h3 id="scanning-heading">Scanning</h3><p>How often running local services are refreshed.</p></div><fieldset class="choice-fieldset interval-control"><legend class="sr-only">Scan interval</legend><div class="interval-options">
+      <div class="settings-section-heading"><span class="settings-heading-icon">${uiIcon("scan", 20)}</span><div class="settings-heading-copy"><h3 id="scanning-heading">Scanning</h3></div><button class="info-button icon-only-button settings-info-button" type="button" data-action="toggle-settings-info" data-info-kind="scanning" data-info-target="settings-info-scanning" aria-expanded="false" aria-controls="settings-info-scanning" aria-label="About scanning settings" title="About scanning settings">${uiIcon("info", 16)}</button></div>
+      <p id="settings-info-scanning" class="settings-inline-info" hidden>This controls how often Cutting Board refreshes the list of running local services. A longer interval uses less CPU.</p>
+      <fieldset class="choice-fieldset interval-control"><legend class="sr-only">Scan interval</legend><div class="interval-options">
           ${intervalChoices.map((value) => `<label class="interval-choice"><input type="radio" name="scan_interval_ms" value="${value}" ${settings.scan_interval_ms === value ? "checked" : ""}><span>${h(formatInterval(value))}</span></label>`).join("")}
-        </div></fieldset></div>
-      <p class="settings-help">Short intervals update quickly but use slightly more CPU. Two seconds is a good default.</p>
+        </div></fieldset>
     </section>
-    <button class="source-link" type="button" data-action="open-source" aria-label="View Cutting Board source code on GitHub">${uiIcon("github", 20)}<span><strong>Open source on GitHub</strong><small>github.com/ShanePark/cuttingBoard</small></span>${uiIcon("external", 16)}</button>
-    <p class="form-note settings-privacy">Settings stay on this device. Cutting Board does not collect telemetry or start at login.</p>
+    <div class="settings-links"><button class="source-link icon-only-button" type="button" data-action="open-source" aria-label="View Cutting Board source code on GitHub" title="Open source on GitHub">${uiIcon("github", 20)}<span class="sr-only">Open source on GitHub</span>${uiIcon("external", 16)}</button><button class="info-button icon-only-button settings-info-button" type="button" data-action="toggle-settings-info" data-info-kind="privacy" data-info-target="settings-info-privacy" aria-expanded="false" aria-controls="settings-info-privacy" aria-label="About privacy" title="About privacy">${uiIcon("info", 16)}</button></div>
+    <p id="settings-info-privacy" class="settings-inline-info" hidden>Settings are stored locally on this device. Cutting Board does not collect telemetry or start automatically at login.</p>
     <div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button" type="button" data-action="save-settings">Save</button></div>
   </form>`);
 }
@@ -1277,17 +1257,21 @@ async function saveSettingsFromModal(): Promise<void> {
 
 function showProfileEditor(profile: LaunchProfile | null): void {
   const tasks = profile?.tasks.length ? profile.tasks : [{ name: "Backend", cwd: ".", command: "", expected_port: null }];
+  const active = profile?.tasks.some((task) => ["starting", "running", "stopping"].includes(snapshotFor(profile.id, task.name)?.state ?? "stopped")) ?? false;
+  const deleteAction = profile
+    ? `<button class="secondary-button danger-button icon-button-label profile-delete-action" type="button" data-action="delete-profile" data-profile-id="${h(profile.id)}" aria-label="Delete ${h(profile.name)}" title="Delete profile" ${appInfo?.demo || active ? "disabled" : ""}>${uiIcon("trash", 15)} Delete</button>`
+    : "";
   openModal(profile ? "Edit Launch Profile" : "Add Launch Profile", `<form id="profile-form" class="form-stack" onsubmit="return false">
     <label>Profile name<input name="name" required maxlength="80" value="${h(profile?.name ?? "")}"></label>
     <label>Project root<div class="field-with-button"><input id="project-root" name="project_root" required value="${h(profile?.project_root ?? "")}"><button class="secondary-button" type="button" data-action="choose-root">Choose</button></div></label>
     <div class="task-editor-heading"><strong>Tasks</strong><button class="quiet-button icon-button-label" type="button" data-action="add-task-row">${uiIcon("plus", 13)} Add task</button></div>
     <div id="task-editors">${tasks.map(renderTaskEditor).join("")}</div>
-    <div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button" type="button" data-action="save-profile" ${profile ? `data-profile-id="${h(profile.id)}"` : ""}>Save</button></div>
-  </form>`, { dismissOnBackdrop: false });
+    <div class="modal-actions">${deleteAction}<button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button" type="button" data-action="save-profile" ${profile ? `data-profile-id="${h(profile.id)}"` : ""}>Save</button></div>
+  </form>`);
 }
 
 function renderTaskEditor(task: LaunchTask): string {
-  return `<fieldset class="task-editor"><button class="remove-task" type="button" data-action="remove-task-row" aria-label="Remove task">${uiIcon("close", 15)}</button><label>Name<input data-task-field="name" required value="${h(task.name)}"></label><label>Working directory<input data-task-field="cwd" required value="${h(task.cwd)}"></label><label>Command<input data-task-field="command" required value="${h(task.command)}"></label><label>Expected port (optional)<input data-task-field="expected_port" type="number" min="1" max="65535" value="${task.expected_port ?? ""}"></label></fieldset>`;
+  return `<fieldset class="task-editor"><button class="remove-task" type="button" data-action="remove-task-row" aria-label="Remove task" title="Remove task">${uiIcon("trash", 15)}</button><label>Name<input data-task-field="name" required value="${h(task.name)}"></label><label>Working directory<input data-task-field="cwd" required value="${h(task.cwd)}"></label><label>Command<input data-task-field="command" required value="${h(task.command)}"></label><label>Expected port (optional)<input data-task-field="expected_port" type="number" min="1" max="65535" value="${task.expected_port ?? ""}"></label></fieldset>`;
 }
 
 function addTaskRow(): void {
@@ -1333,11 +1317,10 @@ async function deleteProfile(id: string): Promise<void> {
   toast("Launch profile deleted.");
 }
 
-function openModal(title: string, body: string, options: { dismissOnBackdrop?: boolean } = {}): void {
-  const dismissOnBackdrop = options.dismissOnBackdrop ?? true;
+function openModal(title: string, body: string): void {
   const activeElement = document.activeElement;
   modalFocusReturn = activeElement instanceof HTMLElement && activeElement !== document.body ? activeElement : null;
-  byId("modal-root").innerHTML = `<div class="modal-backdrop" data-dismiss-on-backdrop="${dismissOnBackdrop}" role="presentation"><section class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header class="modal-header"><h2 id="modal-title">${h(title)}</h2><button type="button" class="modal-close" data-action="close-modal" aria-label="Close">${uiIcon("close", 18)}</button></header><div class="modal-body">${body}</div></section></div>`;
+  byId("modal-root").innerHTML = `<div class="modal-backdrop" role="presentation"><section class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header class="modal-header"><h2 id="modal-title">${h(title)}</h2><button type="button" class="modal-close" data-action="close-modal" aria-label="Close">${uiIcon("close", 18)}</button></header><div class="modal-body">${body}</div></section></div>`;
   document.querySelector<HTMLElement>(".modal button, .modal input, .modal select")?.focus();
   const appShell = document.querySelector<HTMLElement>(".app-shell");
   appShell?.setAttribute("inert", "");
@@ -1433,8 +1416,14 @@ function stateLabel(state: LaunchState): string {
   return ({ stopped: "Stopped", starting: "Starting", running: "Running", stopping: "Stopping", failed: "Failed", external: "Running externally" })[state];
 }
 
+function profileStatusIcon(statusClass: string): string {
+  if (statusClass === "is-failed") return uiIcon("warning", 14);
+  if (statusClass === "is-active") return uiIcon("play", 14);
+  return uiIcon("check", 14);
+}
+
 function themeChoice(value: ThemeMode, label: string, description: string): string {
-  return `<label class="theme-choice"><input type="radio" name="theme_mode" value="${value}" ${settings.theme_mode === value ? "checked" : ""}><span class="theme-preview theme-preview-${value}" aria-hidden="true"><i></i><i></i><i></i></span><span class="theme-copy"><strong>${label}</strong><small>${description}</small></span><span class="choice-check">${uiIcon("check", 14)}</span></label>`;
+  return `<label class="theme-choice" title="${h(description)}"><input type="radio" name="theme_mode" value="${value}" ${settings.theme_mode === value ? "checked" : ""}><span class="theme-preview theme-preview-${value}" aria-hidden="true"><i></i><i></i><i></i></span><span class="theme-copy"><strong>${label}</strong></span><span class="choice-check">${uiIcon("check", 14)}</span></label>`;
 }
 
 function formatInterval(milliseconds: number): string {
@@ -1448,7 +1437,7 @@ function portChipDescription(label: string, ports: number[]): string {
 }
 
 function loadingState(message: string): string { return `<div class="empty-state"><span class="spinner"></span><p>${h(message)}</p></div>`; }
-function emptyState(title: string, message: string): string { return `<div class="empty-state"><h2>${h(title)}</h2><p>${h(message)}</p><button class="secondary-button" type="button" onclick="location.reload()">Refresh</button></div>`; }
+function emptyState(title: string, message: string): string { return `<div class="empty-state"><h2>${h(title)}</h2><p>${h(message)}</p><button class="secondary-button icon-only-button" type="button" onclick="location.reload()" aria-label="Refresh" title="Refresh">${uiIcon("refresh", 16)}</button></div>`; }
 function byId(id: string): HTMLElement { const value = document.getElementById(id); if (!value) throw new Error(`Missing #${id}`); return value; }
 function required(value: string | undefined): string { if (!value) throw new Error("Missing action identifier."); return value; }
 function ellipsis(value: string, limit: number): string { return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`; }
