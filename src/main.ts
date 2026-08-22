@@ -85,6 +85,10 @@ let pendingServiceStopId: string | null = null;
 let pendingGroupSaveId: string | null = null;
 let pendingGroupStopId: string | null = null;
 let pendingProfileDeleteId: string | null = null;
+type PendingLaunchAction =
+  | { kind: "task"; direction: "start" | "stop"; profileId: string; taskName: string }
+  | { kind: "profile"; direction: "start" | "stop"; profileId: string };
+let pendingLaunchAction: PendingLaunchAction | null = null;
 const operations = new Set<string>();
 type LaunchTaskRef = { profile: LaunchProfile; task: LaunchTask };
 let selectedTaskKey: string | null = null;
@@ -1162,28 +1166,22 @@ function renderLaunch(force = false): void {
   workspaceElement.dataset.view = "launch";
   if (profiles.length === 0) {
     selectedTaskKey = null;
-    workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list"><div class="launch-list board">${renderLaunchAddCard(true)}</div></div>${renderLaunchConsole(null)}</div>`;
+    workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list"><div class="launch-list board">${renderLaunchAddCard()}</div></div>${renderLaunchConsole(null)}</div>`;
     applyBoardLayout();
     return;
   }
   const selected = ensureSelectedTask();
-  workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list"><div class="launch-list board">${profiles.map(renderProfile).join("")}${renderLaunchAddCard(false)}</div></div>${renderLaunchConsole(selected)}</div>`;
+  workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list"><div class="launch-list board">${profiles.map(renderProfile).join("")}${renderLaunchAddCard()}</div></div>${renderLaunchConsole(selected)}</div>`;
   applyBoardLayout();
   restoreConsoleContextState();
   restoreConsoleScroll();
 }
 
-function renderLaunchAddCard(empty: boolean): string {
-  const copy = empty
-    ? "Create a profile to run related tasks together."
-    : "Group related tasks and run them together.";
-  const note = appInfo?.demo ? "Demo mode is read-only." : "";
+function renderLaunchAddCard(): string {
   return `<article class="launch-add-card" aria-labelledby="launch-add-title">
     <button class="launch-add-action" type="button" data-action="add-profile" aria-label="Add launch profile" title="Add launch profile" ${appInfo?.demo ? "disabled" : ""}>
       <span class="launch-add-icon" aria-hidden="true">${uiIcon("plus", 24)}</span>
       <strong id="launch-add-title">Add profile</strong>
-      <span class="launch-add-copy">${copy}</span>
-      ${note ? `<span class="launch-add-note">${note}</span>` : ""}
     </button>
     <button class="info-button icon-only-button launch-add-info" type="button" data-action="show-info" data-info-kind="launch" aria-label="About launch profiles" title="About launch profiles">${uiIcon("info", 15)}</button>
   </article>`;
@@ -1197,22 +1195,17 @@ function renderProfile(profile: LaunchProfile): string {
   const snapshots = profile.tasks.map((task) => snapshotFor(profile.id, task.name));
   const canStop = snapshots.some((snapshot) => snapshot && ["starting", "running", "stopping"].includes(snapshot.state));
   const canStart = profile.tasks.some((task) => !["starting", "running", "stopping", "external"].includes(snapshotFor(profile.id, task.name)?.state ?? "stopped"));
-  const activeCount = snapshots.filter((snapshot) => snapshot && ["starting", "running", "stopping"].includes(snapshot.state)).length;
-  const externalCount = snapshots.filter((snapshot) => snapshot?.state === "external").length;
-  const failedCount = snapshots.filter((snapshot) => snapshot?.state === "failed").length;
-  const profileStatus = failedCount > 0 ? `${failedCount} failed` : activeCount > 0 ? `${activeCount} active` : externalCount > 0 ? `${externalCount} external` : "Ready";
-  const profileStatusClass = failedCount > 0 ? "is-failed" : activeCount > 0 || externalCount > 0 ? "is-active" : "is-idle";
+  const profileBusy = operations.has(launchProfileOperationKey(profile.id)) || launchProfileHasTaskOperation(profile);
   const runAll = profile.tasks.length > 1 && canStart
-    ? `<button class="primary-button icon-only-button bulk-action-button" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}" aria-label="${canStop ? "Start remaining tasks" : "Run all tasks"}" title="${canStop ? "Start remaining tasks" : "Run all tasks"}">${bulkActionIcon("play")}</button>`
+    ? `<button class="primary-button icon-only-button bulk-action-button" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}" aria-label="${canStop ? "Start remaining tasks" : "Run all tasks"}" title="${profileBusy ? "Starting tasks" : canStop ? "Start remaining tasks" : "Run all tasks"}" ${profileBusy ? "disabled" : ""}>${bulkActionIcon("play")}</button>`
     : "";
   const stopAll = profile.tasks.length > 1 && canStop
-    ? `<button class="secondary-button danger-button icon-only-button bulk-action-button" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}" aria-label="Stop all tasks" title="Stop all tasks">${bulkActionIcon("stop")}</button>`
+    ? `<button class="secondary-button danger-button icon-only-button bulk-action-button" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}" aria-label="Stop all tasks" title="${profileBusy ? "Stopping tasks" : "Stop all tasks"}" ${profileBusy ? "disabled" : ""}>${bulkActionIcon("stop")}</button>`
     : "";
   return `<section class="launch-profile service-section" data-tiles="${profile.tasks.length}" aria-labelledby="launch-profile-${h(profile.id)}">
     <header class="section-header launch-profile-header">
       <span class="section-accent accent-runtime" aria-hidden="true"></span>
       <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name.toUpperCase(), "View profile details")}</h2></div>
-      <span class="launch-profile-status ${profileStatusClass}" role="img" aria-label="Profile status: ${h(profileStatus)}" title="${h(profileStatus)}">${profileStatusIcon(profileStatusClass)}<span class="sr-only">Profile status: ${h(profileStatus)}</span></span>
       <div class="section-actions launch-profile-actions">
         ${runAll}${stopAll}
         <button class="section-action icon-only-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" aria-label="Edit ${h(profile.name)}" title="Edit profile" ${appInfo?.demo || canStop ? "disabled" : ""}>${uiIcon("settings", 15)}</button>
@@ -1253,7 +1246,8 @@ function renderTask(profile: LaunchProfile, task: LaunchTask): string {
   const matchedService = matchedServiceForTask(profile, task);
   const taskOperation = operations.has(`task:${profile.id}:${task.name}`);
   const serviceOperation = matchedService ? operations.has(`stop:${matchedService.id}`) : false;
-  const busy = taskOperation || serviceOperation;
+  const profileOperation = operations.has(launchProfileOperationKey(profile.id));
+  const busy = taskOperation || serviceOperation || profileOperation;
   const selected = selectedTaskKey === launchTaskKey(profile.id, task.name);
   const externalCanStop = external && Boolean(matchedService?.can_terminate);
   const stopUnavailable = external ? !externalCanStop : !active;
@@ -1708,11 +1702,12 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "save-profile") await saveProfileFromModal(target.dataset.profileId ?? null);
     else if (action === "delete-profile") requestDeleteProfile(required(target.dataset.profileId));
     else if (action === "confirm-delete-profile") await confirmDeleteProfile(required(target.dataset.profileId));
-    else if (action === "start-profile") await startProfile(required(target.dataset.profileId));
-    else if (action === "stop-profile") await stopProfile(required(target.dataset.profileId));
+    else if (action === "start-profile") requestLaunchAction({ kind: "profile", direction: "start", profileId: required(target.dataset.profileId) });
+    else if (action === "stop-profile") requestLaunchAction({ kind: "profile", direction: "stop", profileId: required(target.dataset.profileId) });
     else if (action === "select-task") selectTask(required(target.dataset.profileId), required(target.dataset.taskName), true);
-    else if (action === "start-task") await runTask(required(target.dataset.profileId), required(target.dataset.taskName), true);
-    else if (action === "stop-task") await runTask(required(target.dataset.profileId), required(target.dataset.taskName), false);
+    else if (action === "start-task") requestLaunchAction({ kind: "task", direction: "start", profileId: required(target.dataset.profileId), taskName: required(target.dataset.taskName) });
+    else if (action === "stop-task") requestLaunchAction({ kind: "task", direction: "stop", profileId: required(target.dataset.profileId), taskName: required(target.dataset.taskName) });
+    else if (action === "confirm-launch-action") await confirmLaunchAction();
     else if (action === "toggle-log-wrap") {
       consoleWrap = !consoleWrap;
       if (activeTab === "services") renderServices(true);
@@ -1774,6 +1769,91 @@ async function openService(id: string): Promise<void> {
   const service = findService(id);
   if (!service.browser_url) throw new Error("This service has no browser destination.");
   await openUrl(service.browser_url);
+}
+
+function launchTaskIsActive(state: LaunchState): boolean {
+  return ["starting", "running", "stopping"].includes(state);
+}
+
+function launchProfileOperationKey(profileId: string): string {
+  return `profile:${profileId}`;
+}
+
+function launchProfileHasTaskOperation(profile: LaunchProfile): boolean {
+  return profile.tasks.some((task) => operations.has(`task:${profile.id}:${task.name}`));
+}
+
+function requestLaunchAction(action: PendingLaunchAction): void {
+  if (pendingLaunchAction !== null) return;
+  const profile = findProfile(action.profileId);
+  if (operations.has(launchProfileOperationKey(profile.id))) return;
+  if (action.kind === "task") {
+    const task = profile.tasks.find((item) => item.name === action.taskName);
+    if (!task) throw new Error("The launch task no longer exists.");
+    const state = snapshotFor(profile.id, task.name)?.state ?? "stopped";
+    if (operations.has(`task:${profile.id}:${task.name}`)) return;
+    if (action.direction === "start" && (launchTaskIsActive(state) || state === "external")) return;
+    if (action.direction === "stop" && !launchTaskIsActive(state)) return;
+    pendingLaunchAction = action;
+    const title = action.direction === "start" ? "Start task?" : "Stop task?";
+    const description = action.direction === "start"
+      ? `Start <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will launch the task process.`
+      : `Stop <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will terminate the task process.`;
+    const button = action.direction === "start"
+      ? `<button class="primary-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("play", 13)} Start</button>`
+      : `<button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("stop", 13)} Stop</button>`;
+    openModal(title, `<p class="confirm-copy">${description}</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button>${button}</div>`);
+    return;
+  }
+
+  if (launchProfileHasTaskOperation(profile)) return;
+  const canStart = profile.tasks.some((task) => {
+    const state = snapshotFor(profile.id, task.name)?.state ?? "stopped";
+    return !launchTaskIsActive(state) && state !== "external";
+  });
+  const canStop = profile.tasks.some((task) => launchTaskIsActive(snapshotFor(profile.id, task.name)?.state ?? "stopped"));
+  if (action.direction === "start" && !canStart) return;
+  if (action.direction === "stop" && !canStop) return;
+  pendingLaunchAction = action;
+  const title = action.direction === "start" ? "Run all tasks?" : "Stop all tasks?";
+  const description = action.direction === "start"
+    ? `Run all tasks in <strong>${h(profile.name)}</strong>? Stopped tasks will be started; tasks that are already running will be left unchanged.`
+    : `Stop all tasks? This will terminate all running or starting task processes in <strong>${h(profile.name)}</strong>.`;
+  const button = action.direction === "start"
+    ? `<button class="primary-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("play", 13)} Run All</button>`
+    : `<button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("stop", 13)} Stop All</button>`;
+  openModal(title, `<p class="confirm-copy">${description}</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button>${button}</div>`);
+}
+
+async function confirmLaunchAction(): Promise<void> {
+  const action = pendingLaunchAction;
+  if (!action) return;
+  closeModal();
+  const profile = findProfile(action.profileId);
+  if (action.kind === "task") {
+    const task = profile.tasks.find((item) => item.name === action.taskName);
+    if (!task) {
+      throw new Error("The launch task is no longer available.");
+    }
+    const state = snapshotFor(profile.id, task.name)?.state ?? "stopped";
+    if (operations.has(launchProfileOperationKey(profile.id)) || operations.has(`task:${profile.id}:${task.name}`) || (action.direction === "start" && (launchTaskIsActive(state) || state === "external")) || (action.direction === "stop" && !launchTaskIsActive(state))) {
+      return;
+    }
+    await runTask(profile.id, task.name, action.direction === "start");
+    return;
+  }
+
+  if (operations.has(launchProfileOperationKey(profile.id)) || launchProfileHasTaskOperation(profile)) return;
+  const canStart = profile.tasks.some((task) => {
+    const state = snapshotFor(profile.id, task.name)?.state ?? "stopped";
+    return !launchTaskIsActive(state) && state !== "external";
+  });
+  const canStop = profile.tasks.some((task) => launchTaskIsActive(snapshotFor(profile.id, task.name)?.state ?? "stopped"));
+  if ((action.direction === "start" && !canStart) || (action.direction === "stop" && !canStop)) {
+    return;
+  }
+  if (action.direction === "start") await startProfile(profile.id);
+  else await stopProfile(profile.id);
 }
 
 function requestStopService(id: string): void {
@@ -1930,18 +2010,40 @@ async function operateContainer(id: string, start: boolean): Promise<void> {
 
 async function startProfile(id: string): Promise<void> {
   const profile = findProfile(id);
+  const operationKey = launchProfileOperationKey(id);
+  if (operations.has(operationKey) || launchProfileHasTaskOperation(profile)) return;
   const firstStartable = profile.tasks.find((task) => !["starting", "running", "stopping", "external"].includes(snapshotFor(id, task.name)?.state ?? "stopped"));
-  if (firstStartable) setSelectedTask(id, firstStartable.name);
-  for (const task of profile.tasks) {
-    const state = snapshotFor(id, task.name)?.state ?? "stopped";
-    if (!["starting", "running", "stopping", "external"].includes(state)) await runTask(id, task.name, true, false, false);
+  if (!firstStartable) return;
+  operations.add(operationKey);
+  renderLaunch(true);
+  try {
+    setSelectedTask(id, firstStartable.name);
+    for (const task of profile.tasks) {
+      const state = snapshotFor(id, task.name)?.state ?? "stopped";
+      if (!["starting", "running", "stopping", "external"].includes(state)) await runTask(id, task.name, true, false, false);
+    }
+    await refreshLaunch(true);
+  } finally {
+    operations.delete(operationKey);
+    renderLaunch(true);
   }
-  await refreshLaunch(true);
 }
 
 async function stopProfile(id: string): Promise<void> {
-  taskSnapshots = mergeSnapshots(taskSnapshots, await api.stopProfile(id));
-  await refreshLaunch(true);
+  const profile = findProfile(id);
+  const operationKey = launchProfileOperationKey(id);
+  if (operations.has(operationKey) || launchProfileHasTaskOperation(profile)) return;
+  const canStop = profile.tasks.some((task) => launchTaskIsActive(snapshotFor(id, task.name)?.state ?? "stopped"));
+  if (!canStop) return;
+  operations.add(operationKey);
+  renderLaunch(true);
+  try {
+    taskSnapshots = mergeSnapshots(taskSnapshots, await api.stopProfile(id));
+    await refreshLaunch(true);
+  } finally {
+    operations.delete(operationKey);
+    renderLaunch(true);
+  }
 }
 
 async function runTask(profileId: string, taskName: string, start: boolean, refresh = true, select = true): Promise<void> {
@@ -2140,6 +2242,7 @@ function closeModal(): void {
   pendingGroupSaveId = null;
   pendingGroupStopId = null;
   pendingProfileDeleteId = null;
+  pendingLaunchAction = null;
   if (!document.querySelector(".modal-backdrop")) return;
   byId("modal-root").replaceChildren();
   const appShell = document.querySelector<HTMLElement>(".app-shell");
@@ -2222,12 +2325,6 @@ function findProfile(id: string): LaunchProfile {
 
 function stateLabel(state: LaunchState): string {
   return ({ stopped: "Stopped", starting: "Starting", running: "Running", stopping: "Stopping", failed: "Failed", external: "Running externally" })[state];
-}
-
-function profileStatusIcon(statusClass: string): string {
-  if (statusClass === "is-failed") return uiIcon("warning", 14);
-  if (statusClass === "is-active") return uiIcon("play", 14);
-  return uiIcon("check", 14);
 }
 
 function themeChoice(value: ThemeMode, label: string, description: string): string {

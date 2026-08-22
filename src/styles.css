@@ -540,8 +540,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .launch-add-card {
   position: relative;
   grid-column: span 1;
+  align-self: stretch;
   min-width: 0;
-  min-height: 218px;
+  min-height: 0;
   display: grid;
   place-items: stretch;
   border: 1px dashed var(--border);
@@ -549,6 +550,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   background: color-mix(in srgb, var(--panel) 68%, var(--surface));
   transition: border-color 130ms ease, background 130ms ease, box-shadow 130ms ease, transform 130ms ease;
 }
+.launch-add-card:only-child { min-height: 218px; }
 .launch-add-card:hover { border-color: color-mix(in srgb, var(--accent) 58%, var(--border)); background: color-mix(in srgb, var(--accent) 5%, var(--panel)); box-shadow: 0 8px 20px var(--shadow); transform: translateY(-1px); }
 .launch-add-card:has(.launch-add-action:focus-visible), .launch-add-card:has(.launch-add-info:focus-visible) { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 36%, transparent); outline: none; }
 .launch-add-action { min-width: 0; display: grid; place-items: center; align-content: center; gap: 9px; padding: 32px 22px; border: 0; border-radius: inherit; background: transparent; color: var(--text-muted); text-align: center; cursor: pointer; }
@@ -556,17 +558,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .launch-add-action:disabled { cursor: default; }
 .launch-add-icon { width: 52px; height: 52px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--hairline)); border-radius: 15px; background: color-mix(in srgb, var(--accent) 10%, var(--surface-alt)); color: var(--accent); }
 .launch-add-action strong { color: var(--text); font-size: 14px; }
-.launch-add-copy, .launch-add-note { max-width: 220px; color: var(--text-dim); font-size: 11px; line-height: 1.45; }
-.launch-add-note { color: var(--warning); }
 .launch-add-info { position: absolute; z-index: 1; top: 12px; right: 12px; }
 .launch-profile { padding: 16px; }
 .launch-profile-header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; margin-bottom: 14px; }
 .launch-profile-heading { min-width: 0; flex: 1 1 220px; display: flex; align-items: center; gap: 8px; }
 .launch-profile-heading h2 { min-width: 0; flex: 1 1 auto; margin: 0; overflow: hidden; color: var(--text); font-size: 12px; line-height: 1; font-weight: 700; letter-spacing: .055em; text-overflow: ellipsis; white-space: nowrap; }
 .launch-profile-heading p { max-width: min(34vw, 320px); }
-.launch-profile-status { flex: 0 0 auto; min-width: 36px; min-height: 26px; display: inline-flex; align-items: center; justify-content: center; padding: 0 7px; border-radius: 999px; background: var(--surface-alt); color: var(--text-dim); font-size: 11px; font-weight: 700; white-space: nowrap; }
-.launch-profile-status.is-active { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
-.launch-profile-status.is-failed { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 .launch-profile-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 6px; margin-left: auto; }
 .launch-profile-actions .primary-button, .launch-profile-actions .secondary-button { min-height: 36px; padding: 7px 10px; border-radius: 9px; font-size: 11px; }
 .launch-profile-actions .section-action { white-space: nowrap; }
@@ -855,13 +852,12 @@ button:disabled { opacity: .45; cursor: default; }
   .launch-profile-header { align-items: flex-start; flex-wrap: wrap; row-gap: 8px; }
   .launch-profile-heading { flex: 1 1 200px; }
   .launch-profile-heading p { max-width: 44vw; }
-  .launch-profile-status { margin-left: auto; }
   .launch-profile-actions { flex: 1 1 100%; justify-content: flex-end; margin-left: 0; }
   .task-editor { grid-template-columns: 1fr; }
   .task-editor label:nth-of-type(3) { grid-column: auto; }
   .detail-grid { grid-template-columns: 110px minmax(0, 1fr); }
   .launch-list { padding-bottom: 12px; }
-  .launch-add-card { min-height: 190px; }
+  .launch-add-card:only-child { min-height: 190px; }
   .launch-add-action { padding: 28px 18px; }
   .launch-add-info { top: 10px; right: 10px; }
   .launch-console { margin: 0 12px; border-radius: 15px 15px 0 0; }
