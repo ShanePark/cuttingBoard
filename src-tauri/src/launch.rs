@@ -32,6 +32,8 @@ struct RuntimeTask {
 #[derive(Debug)]
 struct ExternalTaskInfo {
     pid: Option<u32>,
+    started_at: Option<u64>,
+    uid: Option<u32>,
     working_directory: Option<String>,
     log_path: Option<PathBuf>,
     log_tail: String,
@@ -47,6 +49,7 @@ impl LaunchManager {
         &mut self,
         profiles: &[LaunchProfile],
         workspace: Option<&WorkspaceSnapshot>,
+        logs_dir: &Path,
     ) -> Vec<ManagedTaskSnapshot> {
         self.refresh();
         let mut snapshots = Vec::new();
@@ -55,7 +58,15 @@ impl LaunchManager {
                 let key = task_key(&profile.id, &task.name);
                 if let Some(runtime) = self.tasks.get(&key) {
                     snapshots.push(snapshot_from(&profile.id, &task.name, runtime));
-                } else if let Some(external) = external_task_info(profile, task, workspace) {
+                } else if let Some(mut external) = external_task_info(profile, task, workspace) {
+                    recover_external_task_log(
+                        &mut external,
+                        logs_dir,
+                        profiles,
+                        profile,
+                        task,
+                        workspace,
+                    );
                     snapshots.push(external_snapshot(&profile.id, &task.name, external));
                 } else {
                     snapshots.push(ManagedTaskSnapshot {
@@ -267,29 +278,33 @@ impl LaunchManager {
         &mut self,
         profiles: &[LaunchProfile],
         request: &TaskRequest,
+        workspace: Option<&WorkspaceSnapshot>,
     ) -> Result<ManagedTaskSnapshot, String> {
         self.refresh();
         let (profile, task) = find_task(profiles, request)?;
         let key = task_key(&profile.id, &task.name);
-        let runtime = self
-            .tasks
-            .get_mut(&key)
-            .ok_or_else(|| format!("{} is not owned by Cutting Board.", task.name))?;
-        if !is_active(&runtime.state) {
+        if let Some(runtime) = self.tasks.get_mut(&key) {
+            if !is_active(&runtime.state) {
+                return Ok(snapshot_from(&profile.id, &task.name, runtime));
+            }
+            runtime.state = "stopping".into();
+            runtime.message = Some(format!("Stopping {}…", task.name));
+            terminate_runtime(runtime)?;
+            runtime.state = "stopped".into();
+            runtime.message = Some(format!("Stopped {}.", task.name));
             return Ok(snapshot_from(&profile.id, &task.name, runtime));
         }
-        runtime.state = "stopping".into();
-        runtime.message = Some(format!("Stopping {}…", task.name));
-        terminate_runtime(runtime)?;
-        runtime.state = "stopped".into();
-        runtime.message = Some(format!("Stopped {}.", task.name));
-        Ok(snapshot_from(&profile.id, &task.name, runtime))
+
+        let external = external_task_info(profile, task, workspace)
+            .ok_or_else(|| format!("{} is not running.", task.name))?;
+        stop_external_task(&profile.id, &task.name, external)
     }
 
     pub fn stop_profile(
         &mut self,
         profiles: &[LaunchProfile],
         profile_id: &str,
+        workspace: Option<&WorkspaceSnapshot>,
     ) -> Result<Vec<ManagedTaskSnapshot>, String> {
         let profile = profiles
             .iter()
@@ -310,19 +325,41 @@ impl LaunchManager {
                 .tasks
                 .get(&key)
                 .is_some_and(|runtime| is_active(&runtime.state))
+                || profile
+                    .tasks
+                    .iter()
+                    .find(|task| task.name == request.task_name)
+                    .and_then(|task| external_task_info(profile, task, workspace))
+                    .is_some()
             {
-                snapshots.push(self.stop_task(profiles, &request)?);
+                snapshots.push(self.stop_task(profiles, &request, workspace)?);
             }
         }
         Ok(snapshots)
     }
 
-    pub fn profile_is_active(&mut self, profile_id: &str) -> bool {
+    pub fn profile_is_active(
+        &mut self,
+        profiles: &[LaunchProfile],
+        profile_id: &str,
+        workspace: Option<&WorkspaceSnapshot>,
+    ) -> bool {
         self.refresh();
         let prefix = format!("{profile_id}\0");
-        self.tasks
+        if self
+            .tasks
             .iter()
             .any(|(key, runtime)| key.starts_with(&prefix) && is_active(&runtime.state))
+        {
+            return true;
+        }
+        let Some(profile) = profiles.iter().find(|profile| profile.id == profile_id) else {
+            return false;
+        };
+        profile
+            .tasks
+            .iter()
+            .any(|task| external_task_info(profile, task, workspace).is_some())
     }
 
     pub fn stop_all(&mut self) {
@@ -510,6 +547,157 @@ fn terminate_runtime(runtime: &mut RuntimeTask) -> Result<(), String> {
     Ok(())
 }
 
+fn stop_external_task(
+    profile_id: &str,
+    task_name: &str,
+    external: ExternalTaskInfo,
+) -> Result<ManagedTaskSnapshot, String> {
+    let pid = external
+        .pid
+        .ok_or_else(|| format!("{task_name} has no current process identity."))?;
+    let started_at = external
+        .started_at
+        .ok_or_else(|| format!("{task_name} has no current process start time."))?;
+    validate_external_process_identity(pid, started_at, external.uid)?;
+
+    send_external_signal(pid, external_term_signal())?;
+    for _ in 0..25 {
+        thread::sleep(Duration::from_millis(80));
+        if !external_process_is_current(pid, started_at)? {
+            return Ok(external_stopped_snapshot(
+                profile_id,
+                task_name,
+                started_at,
+                external.log_tail,
+            ));
+        }
+    }
+
+    // Revalidate immediately before escalating. A reused PID must never receive
+    // a signal belonging to the previous launch task.
+    validate_external_process_identity(pid, started_at, external.uid)?;
+    send_external_signal(pid, external_kill_signal())?;
+    for _ in 0..10 {
+        thread::sleep(Duration::from_millis(60));
+        if !external_process_is_current(pid, started_at)? {
+            return Ok(external_stopped_snapshot(
+                profile_id,
+                task_name,
+                started_at,
+                external.log_tail,
+            ));
+        }
+    }
+
+    Err(format!("{task_name} did not stop."))
+}
+
+fn external_stopped_snapshot(
+    profile_id: &str,
+    task_name: &str,
+    started_at: u64,
+    log_tail: String,
+) -> ManagedTaskSnapshot {
+    ManagedTaskSnapshot {
+        profile_id: profile_id.into(),
+        task_name: task_name.into(),
+        state: "stopped".into(),
+        main_pid: None,
+        started_at: Some(started_at),
+        message: Some(format!("Stopped {task_name}.")),
+        log_tail,
+        external_pid: None,
+        external_working_directory: None,
+        external_log_path: None,
+    }
+}
+
+fn validate_external_process_identity(
+    pid: u32,
+    started_at: u64,
+    uid: Option<u32>,
+) -> Result<(), String> {
+    if pid <= 1 || pid == std::process::id() {
+        return Err("Cutting Board refused to stop that process.".into());
+    }
+    let current_uid = effective_uid();
+    if uid.is_some() && current_uid.is_some() && uid != current_uid {
+        return Err("Cutting Board only stops processes owned by the current user.".into());
+    }
+    let system = System::new_all();
+    let process = system
+        .process(Pid::from_u32(pid))
+        .ok_or_else(|| "The process already exited. Refresh and try again.".to_string())?;
+    if process.start_time() != started_at {
+        return Err("The PID was reused by another process. Refresh before stopping it.".into());
+    }
+    Ok(())
+}
+
+fn external_process_is_current(pid: u32, started_at: u64) -> Result<bool, String> {
+    let system = System::new_all();
+    let Some(process) = system.process(Pid::from_u32(pid)) else {
+        return Ok(false);
+    };
+    if process.start_time() != started_at {
+        return Err("The PID was reused by another process. Refresh before stopping it.".into());
+    }
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn external_term_signal() -> i32 {
+    libc::SIGTERM
+}
+
+#[cfg(not(unix))]
+fn external_term_signal() {}
+
+#[cfg(unix)]
+fn external_kill_signal() -> i32 {
+    libc::SIGKILL
+}
+
+#[cfg(not(unix))]
+fn external_kill_signal() {}
+
+#[cfg(unix)]
+fn send_external_signal(pid: u32, signal: i32) -> Result<(), String> {
+    let result = unsafe { libc::kill(pid as i32, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(format!("Could not signal PID {pid}: {error}"))
+    }
+}
+
+#[cfg(not(unix))]
+fn send_external_signal(pid: u32, _signal: ()) -> Result<(), String> {
+    let system = System::new_all();
+    let process = system
+        .process(Pid::from_u32(pid))
+        .ok_or_else(|| "The process already exited.".to_string())?;
+    if process.kill() {
+        Ok(())
+    } else {
+        Err(format!("Could not stop PID {pid}."))
+    }
+}
+
+#[cfg(unix)]
+fn effective_uid() -> Option<u32> {
+    Some(unsafe { libc::geteuid() })
+}
+
+#[cfg(not(unix))]
+fn effective_uid() -> Option<u32> {
+    None
+}
+
 fn snapshot_from(profile_id: &str, task_name: &str, runtime: &RuntimeTask) -> ManagedTaskSnapshot {
     ManagedTaskSnapshot {
         profile_id: profile_id.into(),
@@ -530,20 +718,13 @@ fn external_snapshot(
     task_name: &str,
     external: ExternalTaskInfo,
 ) -> ManagedTaskSnapshot {
-    let message = match external.log_path.as_ref() {
-        Some(path) => format!(
-            "This process is running externally and cannot be stopped by Cutting Board. Reading output from {}.",
-            path.display()
-        ),
-        None => "This process is running externally and cannot be stopped by Cutting Board. Output is unavailable because stdout and stderr are not connected to a readable regular file.".into(),
-    };
     ManagedTaskSnapshot {
         profile_id: profile_id.into(),
         task_name: task_name.into(),
-        state: "external".into(),
+        state: "running".into(),
         main_pid: external.pid,
-        started_at: None,
-        message: Some(message),
+        started_at: external.started_at,
+        message: None,
         log_tail: external.log_tail,
         external_pid: external.pid,
         external_working_directory: external.working_directory,
@@ -551,6 +732,38 @@ fn external_snapshot(
             .log_path
             .map(|path| path.to_string_lossy().into_owned()),
     }
+}
+
+fn recover_external_task_log(
+    external: &mut ExternalTaskInfo,
+    logs_dir: &Path,
+    profiles: &[LaunchProfile],
+    profile: &LaunchProfile,
+    task: &LaunchTask,
+    workspace: Option<&WorkspaceSnapshot>,
+) {
+    if external.log_path.is_some() {
+        return;
+    }
+    let Some(process_start) = external.started_at else {
+        return;
+    };
+    let Some(service) = workspace.and_then(|snapshot| {
+        snapshot
+            .services
+            .iter()
+            .find(|service| task_matches_service(profile, task, service))
+    }) else {
+        return;
+    };
+    let Some(path) = recovered_managed_log_path(logs_dir, profiles, service, process_start) else {
+        return;
+    };
+    let Ok(logs) = read_log_tail(&path) else {
+        return;
+    };
+    external.log_path = Some(path);
+    external.log_tail = logs;
 }
 
 fn read_log_tail(path: &Path) -> io::Result<String> {
@@ -648,8 +861,22 @@ fn recovered_managed_log_path(
 
 fn read_log_start_markers(path: &Path) -> io::Result<Vec<LogStartMarker>> {
     let file = OpenOptions::new().read(true).open(path)?;
+    let file_length = file.metadata()?.len();
+    let scan_start = file_length.saturating_sub(LOG_MARKER_SCAN_BYTES);
     let mut reader = BufReader::new(file);
-    let mut bytes_read = 0;
+    reader.seek(SeekFrom::Start(scan_start))?;
+    let mut bytes_read: u64 = 0;
+    if scan_start > 0 {
+        reader.seek(SeekFrom::Start(scan_start - 1))?;
+        let mut previous = [0_u8; 1];
+        reader.read_exact(&mut previous)?;
+        reader.seek(SeekFrom::Start(scan_start))?;
+        if previous[0] != b'\n' {
+            let mut partial_line = Vec::new();
+            bytes_read =
+                bytes_read.saturating_add(reader.read_until(b'\n', &mut partial_line)? as u64);
+        }
+    }
     let mut line = String::new();
     let mut markers = Vec::new();
     while bytes_read < LOG_MARKER_SCAN_BYTES {
@@ -828,15 +1055,18 @@ fn external_task_info(
             .iter()
             .find(|service| task_matches_service(profile, task, service))
     })?;
-    let process = service.process.as_ref();
-    let pid = process.map(|process| process.pid);
-    let working_directory = process.and_then(|process| process.working_directory.clone());
-    let (log_path, log_tail) = pid
-        .and_then(external_log_path)
+    let process = service.process.as_ref()?;
+    let pid = Some(process.pid);
+    let started_at = Some(process.create_time);
+    let uid = process.uid;
+    let working_directory = process.working_directory.clone();
+    let (log_path, log_tail) = external_log_path(process.pid)
         .and_then(|path| read_log_tail(&path).ok().map(|tail| (Some(path), tail)))
         .unwrap_or_else(|| (None, String::new()));
     Some(ExternalTaskInfo {
         pid,
+        started_at,
+        uid,
         working_directory,
         log_path,
         log_tail,
@@ -1141,7 +1371,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_task_is_external_when_service_project_matches_task_cwd() {
+    fn task_without_process_is_not_marked_running() {
         let temporary = tempfile::tempdir().unwrap();
         let frontend = temporary.path().join("frontend");
         fs::create_dir(&frontend).unwrap();
@@ -1158,9 +1388,10 @@ mod tests {
         };
         let workspace = workspace_with_project(5173, &frontend);
 
-        let snapshots = LaunchManager::default().snapshots(&[profile], Some(&workspace));
+        let snapshots =
+            LaunchManager::default().snapshots(&[profile], Some(&workspace), temporary.path());
 
-        assert_eq!(snapshots[0].state, "external");
+        assert_eq!(snapshots[0].state, "stopped");
     }
 
     #[test]
@@ -1195,15 +1426,56 @@ mod tests {
             uid: None,
         });
 
-        let snapshots = LaunchManager::default().snapshots(&[profile], Some(&workspace));
+        let snapshots =
+            LaunchManager::default().snapshots(&[profile], Some(&workspace), temporary.path());
 
-        assert_eq!(snapshots[0].state, "external");
+        assert_eq!(snapshots[0].state, "running");
         assert_eq!(snapshots[0].main_pid, Some(123));
+        assert_eq!(snapshots[0].started_at, Some(0));
         assert_eq!(snapshots[0].external_pid, Some(123));
         assert_eq!(
             snapshots[0].external_working_directory.as_deref(),
             Some(frontend.to_string_lossy().as_ref())
         );
+    }
+
+    #[test]
+    fn externally_running_task_counts_as_active_profile() {
+        let temporary = tempfile::tempdir().unwrap();
+        let frontend = temporary.path().join("frontend");
+        fs::create_dir(&frontend).unwrap();
+        let profile = LaunchProfile {
+            id: "profile".into(),
+            name: "dutypark".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "frontend".into(),
+                cwd: "frontend".into(),
+                command: "npm run dev".into(),
+                expected_port: Some(5173),
+            }],
+        };
+        let mut workspace = workspace_with_project(5173, &frontend);
+        workspace.services[0].process = Some(crate::models::ProcessInfo {
+            pid: 123,
+            parent_pid: None,
+            name: "node".into(),
+            executable: None,
+            working_directory: Some(frontend.to_string_lossy().into_owned()),
+            command: "node vite".into(),
+            launch_command: None,
+            create_time: 1,
+            uptime_seconds: 1,
+            cpu_percent: None,
+            memory_bytes: None,
+            uid: None,
+        });
+
+        assert!(LaunchManager::default().profile_is_active(
+            &[profile],
+            "profile",
+            Some(&workspace)
+        ));
     }
 
     #[test]
@@ -1237,7 +1509,7 @@ mod tests {
             )]),
         };
 
-        let snapshots = manager.snapshots(&[profile], Some(&workspace));
+        let snapshots = manager.snapshots(&[profile], Some(&workspace), temporary.path());
 
         assert_eq!(snapshots[0].state, "running");
         assert_eq!(snapshots[0].main_pid, Some(42));
@@ -1316,6 +1588,44 @@ mod tests {
         let path = recovered_managed_log_path(&logs_dir, &[profile], &workspace.services[0], 1005);
 
         assert_eq!(path, Some(logs_dir.join("legacy-profile-frontend.log")));
+    }
+
+    #[test]
+    fn recovered_log_scans_recent_window_for_appended_current_marker() {
+        let temporary = tempfile::tempdir().unwrap();
+        let frontend = temporary.path().join("frontend");
+        let logs_dir = temporary.path().join("logs");
+        fs::create_dir(&frontend).unwrap();
+        fs::create_dir(&logs_dir).unwrap();
+        let profile = LaunchProfile {
+            id: "current-profile".into(),
+            name: "dutypark".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "frontend".into(),
+                cwd: "frontend".into(),
+                command: "npm run dev".into(),
+                expected_port: Some(5173),
+            }],
+        };
+        let workspace = workspace_with_project(5173, &frontend);
+        let metadata = serde_json::json!({
+            "profile_id": "current-profile",
+            "task_name": "frontend",
+            "cwd": frontend.to_string_lossy(),
+        });
+        let mut contents = "legacy output\n"
+            .repeat((LOG_MARKER_SCAN_BYTES as usize / "legacy output\n".len()) + 2_048);
+        contents.push_str(&format!(
+            "=== Cutting Board start 1005 · npm run dev ===\n=== Cutting Board task metadata {metadata} ===\ncurrent output\n"
+        ));
+        let path = logs_dir.join("legacy-profile-frontend.log");
+        fs::write(&path, contents).unwrap();
+
+        assert_eq!(
+            recovered_managed_log_path(&logs_dir, &[profile], &workspace.services[0], 1005),
+            Some(path)
+        );
     }
 
     #[test]

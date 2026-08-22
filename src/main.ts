@@ -12,6 +12,7 @@ import {
   imageTech,
   launchTasksEquivalent,
   middleEllipsis,
+  pathIsEqualOrNested,
   portBadgeLabels,
   relatedContainersForGroup,
   serviceTitle,
@@ -418,14 +419,14 @@ function renderServices(force = false): void {
   serviceSignature = signature;
   workspaceElement.dataset.view = "services";
   if (!workspace) {
-    workspaceElement.innerHTML = loadingState("Finding services");
+    workspaceElement.innerHTML = `<div class="services-view split-view"><div class="split-view-list">${loadingState("Finding services")}</div>${renderServiceConsole()}</div>`;
     return;
   }
   if (services.length === 0) {
-    workspaceElement.innerHTML = emptyState("No development services are running", "Start a local server from a terminal, agent, or IDE.");
+    workspaceElement.innerHTML = `<div class="services-view split-view"><div class="split-view-list">${emptyState("No development services are running", "Start a local server from a terminal, agent, or IDE.")}</div>${renderServiceConsole()}</div>`;
     return;
   }
-  workspaceElement.innerHTML = `<div class="services-view"><div class="board">${groups.map((group) => `
+  workspaceElement.innerHTML = `<div class="services-view split-view"><div class="split-view-list"><div class="board">${groups.map((group) => `
     <section class="service-section" data-tiles="${group.services.length + group.containers.length}" aria-labelledby="group-${h(encodeURIComponent(group.id))}">
       <header class="section-header">
         <span class="section-accent accent-${h(group.accent)}"></span>
@@ -433,7 +434,7 @@ function renderServices(force = false): void {
         ${renderGroupActions(group)}
       </header>
       <div class="tile-grid">${renderServiceGroupTiles(group)}</div>
-    </section>`).join("")}</div>${renderServiceConsole()}</div>`;
+    </section>`).join("")}</div></div>${renderServiceConsole()}</div>`;
   applyBoardLayout();
   restoreServiceContextState();
   restoreServiceConsoleScroll();
@@ -501,36 +502,84 @@ function validateGroupProfile(group: ReturnType<typeof groupServices>[number]): 
   return generatedTasksForGroup(group.services);
 }
 
-function renderServiceTile(service: ServiceSnapshot, ordinal?: number, ordinalTotal?: number, selectable = service.relevance === "dev"): string {
+type ServiceTileActionScope = { select?: boolean; info?: boolean; stop?: boolean; open?: boolean };
+
+type SharedServiceCardOptions = {
+  category: string;
+  cardClass?: string;
+  metricsId?: string;
+  cardAttributes?: string;
+  ariaLabel: string;
+  selected?: boolean;
+  busy?: boolean;
+  ordinal?: number;
+  ordinalTotal?: number;
+  iconMarkup: string;
+  pipClass: string;
+  title: string;
+  overlayMarkup?: string;
+  controlsMarkup?: string;
+  metricsMarkup: string;
+  ports: number[];
+  emptyPortLabel: string;
+  trailingMarkup?: string;
+};
+
+function renderSharedServiceCard(options: SharedServiceCardOptions): string {
+  const cardClasses = `service-tile category-${options.category}${options.cardClass ? ` ${options.cardClass}` : ""}${options.busy ? " is-busy" : ""}${options.selected ? " is-selected" : ""}`;
+  const metricsAttribute = options.metricsId ? ` data-metrics-id="${h(options.metricsId)}"` : "";
+  return `
+    <article class="${cardClasses}"${metricsAttribute}${options.cardAttributes ?? ""} aria-label="${h(options.ariaLabel)}">
+      ${options.overlayMarkup ?? ""}
+      <div class="tile-top">
+        <span class="icon-well service-icon" aria-hidden="true">${renderTileOrdinal(options.ordinal, options.ordinalTotal)}${options.iconMarkup}<span class="status-pip state-${options.pipClass}"></span></span>
+        ${renderTileHeading(options.title, "", "")}
+        ${options.controlsMarkup ? `<div class="service-card-actions">${options.controlsMarkup}</div>` : ""}
+      </div>
+      <div class="tile-metrics">${options.metricsMarkup}</div>
+      ${renderTileFoot(options.ports, options.emptyPortLabel, options.trailingMarkup ?? "")}
+    </article>`;
+}
+
+function renderServiceTile(service: ServiceSnapshot, ordinal?: number, ordinalTotal?: number, actionScope?: ServiceTileActionScope): string {
+  const scope = actionScope ?? { select: service.relevance === "dev", info: true, stop: service.can_terminate, open: Boolean(service.browser_url) };
   const busy = operations.has(`stop:${service.id}`);
   const uptime = currentUptime(service);
   const pip = busy ? "busy" : uptime === null ? "idle" : service.status === "limited" ? "limited" : "running";
-  const selected = selectable && selectedServiceId === service.id;
-  const tileAction = selectable ? "select-service" : "service-details";
-  const tileActionLabel = selectable
+  const selected = Boolean(scope.select) && selectedServiceId === service.id;
+  const tileAction = scope.select ? "select-service" : "service-details";
+  const tileActionLabel = scope.select
     ? `${selected ? "Selected service logs for" : "View logs for"} ${service.display_name}`
     : `View ${service.display_name} details`;
-  const tileActionTitle = selectable
+  const tileActionTitle = scope.select
     ? selected ? "Selected service logs" : "View service logs"
     : "View details";
-  return `
-    <article class="service-tile category-${service.category}${busy ? " is-busy" : ""}${selected ? " is-selected" : ""}" data-metrics-id="${h(service.id)}" aria-label="${h(service.display_name)} service">
-      <button class="tile-details-button${selectable ? " service-select-button" : ""}" type="button" data-tile-action data-action="${tileAction}" data-service-id="${h(service.id)}"${selectable ? ` aria-pressed="${selected ? "true" : "false"}"` : ""} aria-label="${h(tileActionLabel)}" title="${h(tileActionTitle)}"></button>
-      <div class="tile-top">
-        ${renderTileOrdinal(ordinal, ordinalTotal)}
-        <span class="icon-well" aria-hidden="true">${techIcon(service.tech, 44)}<span class="status-pip state-${pip}"></span></span>
-        ${renderTileHeading(serviceTitle(service), "", "")}
-        ${selectable ? `<button type="button" class="info-button icon-only-button service-details-button" data-tile-action data-action="service-details" data-service-id="${h(service.id)}" aria-label="View ${h(service.display_name)} details" title="View service details">${uiIcon("info", 15)}</button>` : ""}
-        ${service.can_terminate ? `<button type="button" class="stop-button" data-tile-action data-action="stop-service" data-service-id="${h(service.id)}" aria-label="${busy ? "Stopping" : "Stop"} ${h(service.display_name)}" title="${busy ? "Stopping process" : "Stop process"}" ${busy ? "disabled" : ""}><span class="stop-glyph" aria-hidden="true"></span></button>` : ""}
-      </div>
-      <div class="tile-metrics">
-        <span class="metric metric-uptime${uptime !== null && uptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(uptimeText(service, busy))}</span></span>
-        <span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(service.process?.memory_bytes ?? null))}</span></span>
-      </div>
-      ${renderTileFoot(uniquePorts(service), "No port information", service.browser_url
-        ? `<button type="button" class="service-link icon-only-button" data-tile-action data-action="open-service" data-service-id="${h(service.id)}" aria-label="Open ${h(service.display_name)} in the browser" title="Open ${h(service.browser_url)}">${uiIcon("external", 15)}</button>`
-        : "")}
-    </article>`;
+  const overlayMarkup = scope.select || !scope.info
+    ? `<button class="tile-details-button${scope.select ? " service-select-button" : ""}" type="button" data-tile-action data-action="${tileAction}" data-service-id="${h(service.id)}"${scope.select ? ` aria-pressed="${selected ? "true" : "false"}"` : ""} aria-label="${h(tileActionLabel)}" title="${h(tileActionTitle)}"></button>`
+    : "";
+  const controlsMarkup = `${scope.info ? `<button type="button" class="info-button icon-only-button service-details-button service-card-control" data-tile-action data-action="service-details" data-service-id="${h(service.id)}" aria-label="View ${h(service.display_name)} details" title="View service details">${uiIcon("info", 15)}</button>` : ""}${scope.stop && service.can_terminate ? `<button type="button" class="stop-button service-card-control" data-tile-action data-action="stop-service" data-service-id="${h(service.id)}" aria-label="${busy ? "Stopping" : "Stop"} ${h(service.display_name)}" title="${busy ? "Stopping process" : "Stop process"}" ${busy ? "disabled" : ""}>${uiIcon("stop", 15)}</button>` : ""}`;
+  const metricsMarkup = `<span class="metric metric-uptime${uptime !== null && uptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(uptimeText(service, busy))}</span></span><span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(service.process?.memory_bytes ?? null))}</span></span>`;
+  const trailingMarkup = scope.open && service.browser_url
+    ? `<button type="button" class="service-link icon-only-button service-card-control" data-tile-action data-action="open-service" data-service-id="${h(service.id)}" aria-label="Open ${h(service.display_name)} in the browser" title="Open ${h(service.browser_url)}">${uiIcon("external", 15)}</button>`
+    : "";
+  return renderSharedServiceCard({
+    category: service.category,
+    metricsId: service.id,
+    ariaLabel: `${service.display_name} service`,
+    selected,
+    busy,
+    ordinal,
+    ordinalTotal,
+    iconMarkup: techIcon(service.tech, 44),
+    pipClass: pip,
+    title: serviceTitle(service),
+    overlayMarkup,
+    controlsMarkup,
+    metricsMarkup,
+    ports: uniquePorts(service),
+    emptyPortLabel: "No port information",
+    trailingMarkup
+  });
 }
 
 function renderTileOrdinal(ordinal?: number, total?: number): string {
@@ -821,32 +870,32 @@ function renderDocker(force = false): void {
   dockerSignature = signature;
   workspaceElement.dataset.view = "docker";
   if (!containerListing) {
-    workspaceElement.innerHTML = loadingState("Reading Docker containers");
+    workspaceElement.innerHTML = `<div class="docker-view split-view"><div class="split-view-list">${loadingState("Reading Docker containers")}</div>${renderDockerConsole()}</div>`;
     void refreshContainers();
     return;
   }
   if (!containerListing.available) {
     if (fallback.length) {
-      workspaceElement.innerHTML = `<div class="docker-view"><div class="inline-notice"><strong>Docker could not be queried.</strong><span>${h(containerListing.message ?? "Docker is unavailable.")}</span></div><div class="board"><section class="service-section" data-tiles="${fallback.length}" aria-labelledby="container-listeners-title"><header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-listeners-title">CONTAINER LISTENERS</h2></header><div class="tile-grid">${fallback.map((service, index) => renderServiceTile(service, index + 1, fallback.length, false)).join("")}</div></section></div>${renderDockerConsole()}</div>`;
+      workspaceElement.innerHTML = `<div class="docker-view split-view"><div class="split-view-list"><div class="inline-notice"><strong>Docker could not be queried.</strong><span>${h(containerListing.message ?? "Docker is unavailable.")}</span></div><div class="board"><section class="service-section" data-tiles="${fallback.length}" aria-labelledby="container-listeners-title"><header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-listeners-title">CONTAINER LISTENERS</h2></header><div class="tile-grid">${fallback.map((service, index) => renderServiceTile(service, index + 1, fallback.length, { info: false, stop: service.can_terminate, open: Boolean(service.browser_url) })).join("")}</div></section></div></div>${renderDockerConsole()}</div>`;
       applyBoardLayout();
       restoreDockerConsoleState();
       return;
     }
-    workspaceElement.innerHTML = `<div class="docker-view">${emptyState("Docker is unavailable", containerListing.message ?? "The Docker CLI could not be queried.")}${renderDockerConsole()}</div>`;
+    workspaceElement.innerHTML = `<div class="docker-view split-view"><div class="split-view-list">${emptyState("Docker is unavailable", containerListing.message ?? "The Docker CLI could not be queried.")}</div>${renderDockerConsole()}</div>`;
     restoreDockerConsoleState();
     return;
   }
   if (containerListing.containers.length === 0) {
-    workspaceElement.innerHTML = `<div class="docker-view">${emptyState("No containers found", containerListing.message ?? "Docker returned an empty list.")}${renderDockerConsole()}</div>`;
+    workspaceElement.innerHTML = `<div class="docker-view split-view"><div class="split-view-list">${emptyState("No containers found", containerListing.message ?? "Docker returned an empty list.")}</div>${renderDockerConsole()}</div>`;
     restoreDockerConsoleState();
     return;
   }
   const groups = groupContainers(containerListing.containers);
-  workspaceElement.innerHTML = `<div class="docker-view"><div class="board">${groups.map((group) => `
+  workspaceElement.innerHTML = `<div class="docker-view split-view"><div class="split-view-list"><div class="board">${groups.map((group) => `
     <section class="service-section" data-tiles="${group.containers.length}" aria-labelledby="container-group-${h(encodeURIComponent(group.name))}">
       <header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-group-${h(encodeURIComponent(group.name))}">${renderGroupTitle(group.name, group.containers.length, "container-group-details", `data-group-name="${h(group.name)}"`, group.name.toUpperCase())}</h2></header>
       <div class="tile-grid">${group.containers.map((container, index) => renderContainerTile(container, index + 1, group.containers.length, true)).join("")}</div>
-    </section>`).join("")}</div>${renderDockerConsole()}</div>`;
+    </section>`).join("")}</div></div>${renderDockerConsole()}</div>`;
   applyBoardLayout();
   restoreDockerConsoleState();
 }
@@ -874,11 +923,11 @@ function renderContainerTile(container: ContainerInfo, ordinal?: number, ordinal
   const stateText = busy ? `${actionLabel}…` : container.status || (running ? "Running" : "Stopped");
   const actionButton = showActions
     ? running
-      ? `<button type="button" class="stop-button container-action" data-tile-action data-action="${action}" data-container-id="${h(container.id)}" aria-label="${actionLabel} ${h(container.name)}" title="${actionLabel} container" ${busy ? "disabled aria-busy=\"true\"" : ""}><span class="stop-glyph" aria-hidden="true"></span></button>`
-      : `<button type="button" class="start-action icon-only-button container-action" data-tile-action data-action="${action}" data-container-id="${h(container.id)}" aria-label="${actionLabel} ${h(container.name)}" title="${actionLabel} container" ${busy ? "disabled aria-busy=\"true\"" : ""}>${uiIcon(busy ? "refresh" : "play", 16)}</button>`
+      ? `<button type="button" class="stop-button service-card-control container-action" data-tile-action data-action="${action}" data-container-id="${h(container.id)}" aria-label="${actionLabel} ${h(container.name)}" title="${actionLabel} container" ${busy ? "disabled aria-busy=\"true\"" : ""}>${uiIcon("stop", 15)}</button>`
+      : `<button type="button" class="start-action icon-only-button service-card-control container-action" data-tile-action data-action="${action}" data-container-id="${h(container.id)}" aria-label="${actionLabel} ${h(container.name)}" title="${actionLabel} container" ${busy ? "disabled aria-busy=\"true\"" : ""}>${uiIcon(busy ? "refresh" : "play", 15)}</button>`
     : "";
   const detailsButton = showActions
-    ? `<button type="button" class="info-button icon-only-button container-details-button" data-tile-action data-action="container-details" data-container-id="${h(container.id)}" aria-label="View ${h(container.name)} details" title="View container details">${uiIcon("info", 15)}</button>`
+    ? `<button type="button" class="info-button icon-only-button service-card-control container-details-button" data-tile-action data-action="container-details" data-container-id="${h(container.id)}" aria-label="View ${h(container.name)} details" title="View container details">${uiIcon("info", 15)}</button>`
     : `<button class="tile-details-button" type="button" data-tile-action data-action="container-details" data-container-id="${h(container.id)}" aria-label="View ${h(container.name)} details" title="View details"></button>`;
   const selectionAttributes = showActions
     ? ` data-action="select-container" tabindex="0" role="button" aria-pressed="${selected ? "true" : "false"}"`
@@ -887,11 +936,9 @@ function renderContainerTile(container: ContainerInfo, ordinal?: number, ordinal
     <article class="service-tile container-tile ${running ? "is-running" : "is-stopped"}${selected ? " is-selected" : ""}${busy ? " is-busy" : ""}" data-container-id="${h(container.id)}" aria-label="${h(container.name)} container"${selectionAttributes}${busy ? " aria-busy=\"true\"" : ""}>
       ${showActions ? "" : detailsButton}
       <div class="tile-top">
-        ${renderTileOrdinal(ordinal, ordinalTotal)}
-        <span class="icon-well" aria-hidden="true">${techIcon(imageTech(container.image), 44)}<span class="status-pip state-${busy ? "busy" : running ? "running" : "idle"}"></span></span>
+        <span class="icon-well service-icon" aria-hidden="true">${renderTileOrdinal(ordinal, ordinalTotal)}${techIcon(imageTech(container.image), 44)}<span class="status-pip state-${busy ? "busy" : running ? "running" : "idle"}"></span></span>
         ${renderTileHeading(container.name, "", "")}
-        ${showActions ? detailsButton : ""}
-        ${actionButton}
+        ${showActions ? `<div class="service-card-actions">${detailsButton}${actionButton}</div>` : actionButton}
       </div>
       <div class="tile-metrics">
         <span class="metric metric-state ${busy ? "is-busy" : running ? "is-running" : "is-stopped"}" title="Container state">${uiIcon("docker", 13)}<span class="sr-only">State </span><span data-container-status-text>${h(ellipsis(stateText, 30))}</span></span>
@@ -1011,11 +1058,11 @@ function renderLaunch(force = false): void {
   const header = `<div class="launch-heading"><div class="launch-heading-actions"><button class="info-button icon-only-button launch-help-button" type="button" data-action="show-info" data-info-kind="launch" aria-label="About Launch Profiles" title="About Launch Profiles">${uiIcon("info", 15)}</button><button class="primary-button icon-only-button" type="button" data-action="add-profile" aria-label="Add launch profile" title="Add launch profile" ${appInfo?.demo ? "disabled" : ""}>${uiIcon("plus", 16)}</button></div></div>`;
   if (profiles.length === 0) {
     selectedTaskKey = null;
-    workspaceElement.innerHTML = `${header}<div class="launch-empty"><h2>No launch profiles yet</h2><p>Add a project and run commands to start and stop them together without an IDE.</p><button class="secondary-button icon-only-button" type="button" data-action="add-profile" aria-label="Add first launch profile" title="Add first launch profile" ${appInfo?.demo ? "disabled" : ""}>${uiIcon("plus", 16)}</button></div>`;
+    workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list">${header}<div class="launch-empty"><h2>No launch profiles yet</h2><p>Add a project and run commands to start and stop them together without an IDE.</p><button class="secondary-button icon-only-button" type="button" data-action="add-profile" aria-label="Add first launch profile" title="Add first launch profile" ${appInfo?.demo ? "disabled" : ""}>${uiIcon("plus", 16)}</button></div></div>${renderLaunchConsole(null)}</div>`;
     return;
   }
   const selected = ensureSelectedTask();
-  workspaceElement.innerHTML = `<div class="launch-view">${header}<div class="launch-list">${profiles.map(renderProfile).join("")}</div>${renderLaunchConsole(selected)}</div>`;
+  workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list">${header}<div class="launch-list">${profiles.map(renderProfile).join("")}</div></div>${renderLaunchConsole(selected)}</div>`;
   restoreConsoleContextState();
   restoreConsoleScroll();
 }
@@ -1029,17 +1076,19 @@ function renderProfile(profile: LaunchProfile): string {
   const failedCount = snapshots.filter((snapshot) => snapshot?.state === "failed").length;
   const profileStatus = failedCount > 0 ? `${failedCount} failed` : activeCount > 0 ? `${activeCount} active` : externalCount > 0 ? `${externalCount} external` : "Ready";
   const profileStatusClass = failedCount > 0 ? "is-failed" : activeCount > 0 || externalCount > 0 ? "is-active" : "is-idle";
-  const primary = profile.tasks.length > 1 && canStart
-    ? `<button class="primary-button icon-only-button" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}" aria-label="${canStop ? "Start remaining tasks" : "Start all tasks"}" title="${canStop ? "Start remaining tasks" : "Start all tasks"}">${uiIcon("play", 16)}</button>`
-    : profile.tasks.length > 1 && canStop ? `<button class="secondary-button warning-action icon-only-button" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}" aria-label="Stop all tasks" title="Stop all tasks">${uiIcon("stop", 16)}</button>` : "";
+  const runAll = profile.tasks.length > 1 && canStart
+    ? `<button class="primary-button icon-only-button" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}" aria-label="${canStop ? "Start remaining tasks" : "Run all tasks"}" title="${canStop ? "Start remaining tasks" : "Run all tasks"}">${uiIcon("play", 16)}</button>`
+    : "";
+  const stopAll = profile.tasks.length > 1 && canStop
+    ? `<button class="secondary-button warning-action icon-only-button" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}" aria-label="Stop all tasks" title="Stop all tasks">${uiIcon("stop", 16)}</button>`
+    : "";
   return `<section class="launch-profile service-section" aria-labelledby="launch-profile-${h(profile.id)}">
     <header class="section-header launch-profile-header">
       <span class="section-accent accent-runtime" aria-hidden="true"></span>
       <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name, "View profile details")}</h2></div>
       <span class="launch-profile-status ${profileStatusClass}" role="img" aria-label="Profile status: ${h(profileStatus)}" title="${h(profileStatus)}">${profileStatusIcon(profileStatusClass)}<span class="sr-only">Profile status: ${h(profileStatus)}</span></span>
-      <span class="section-count" aria-label="${profile.tasks.length} ${profile.tasks.length === 1 ? "task" : "tasks"}">${profile.tasks.length}</span>
       <div class="section-actions launch-profile-actions">
-        ${primary}
+        ${runAll}${stopAll}
         <button class="section-action icon-only-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" aria-label="Edit ${h(profile.name)}" title="Edit profile" ${appInfo?.demo || canStop ? "disabled" : ""}>${uiIcon("settings", 15)}</button>
       </div>
     </header>
@@ -1047,22 +1096,68 @@ function renderProfile(profile: LaunchProfile): string {
   </section>`;
 }
 
+function pathsMatch(left: string | null | undefined, right: string | null | undefined): boolean {
+  const candidate = left?.trim();
+  const parent = right?.trim();
+  if (!candidate || !parent || candidate === "." || parent === ".") return false;
+  return candidate === parent || pathIsEqualOrNested(candidate, parent) || pathIsEqualOrNested(parent, candidate);
+}
+
+function matchedServiceForTask(profile: LaunchProfile, task: LaunchTask): ServiceSnapshot | null {
+  const services = workspace?.services.filter((service) => service.relevance === "dev") ?? [];
+  const expectedPort = task.expected_port;
+  const taskRoots = [task.cwd, profile.project_root];
+  const scored = services.map((service) => {
+    const ports = uniquePorts(service);
+    if (expectedPort !== null && expectedPort !== undefined && !ports.includes(expectedPort)) return { service, score: -1 };
+    const serviceRoots = [service.process?.working_directory, service.project?.root_path];
+    const pathMatch = taskRoots.some((taskRoot) => serviceRoots.some((serviceRoot) => pathsMatch(taskRoot, serviceRoot)));
+    const projectMatch = pathsMatch(profile.project_root, service.project?.root_path);
+    const score = (expectedPort !== null && expectedPort !== undefined ? 4 : 0) + (pathMatch ? 5 : 0) + (projectMatch ? 2 : 0);
+    return { service, score };
+  }).filter(({ score }) => score > 0).sort((left, right) => right.score - left.score || left.service.id.localeCompare(right.service.id));
+  return scored[0]?.service ?? null;
+}
+
 function renderTask(profile: LaunchProfile, task: LaunchTask): string {
   const snapshot = snapshotFor(profile.id, task.name);
   const state: LaunchState = snapshot?.state ?? "stopped";
   const active = ["starting", "running", "stopping"].includes(state);
   const external = state === "external";
-  const busy = operations.has(`task:${profile.id}:${task.name}`);
+  const matchedService = matchedServiceForTask(profile, task);
+  const taskOperation = operations.has(`task:${profile.id}:${task.name}`);
+  const serviceOperation = matchedService ? operations.has(`stop:${matchedService.id}`) : false;
+  const busy = taskOperation || serviceOperation;
   const selected = selectedTaskKey === launchTaskKey(profile.id, task.name);
-  const stopUnavailable = !active || external;
+  const externalCanStop = external && Boolean(matchedService?.can_terminate);
+  const stopUnavailable = external ? !externalCanStop : !active;
   const startAction = !active && !external
-    ? `<button class="quiet-button start-action icon-only-button" type="button" data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="Start ${h(task.name)}" title="Start task" ${busy ? "disabled" : ""}>${uiIcon(busy ? "refresh" : "play", 15)}</button>`
+    ? `<button class="quiet-button start-action icon-only-button service-card-control task-card-action" type="button" data-tile-action data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="Start ${h(task.name)}" title="Start task" ${busy ? "disabled" : ""}>${uiIcon(busy ? "refresh" : "play", 15)}</button>`
     : "";
-  const stopAction = `<button class="stop-button task-stop-button${stopUnavailable ? " is-unavailable" : ""}" type="button" data-action="stop-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="Stop ${h(task.name)}" title="${active ? busy ? "Stopping task" : "Stop task" : external ? "Cannot stop an externally managed task" : "Task is not running"}" ${stopUnavailable || busy ? "disabled" : ""}><span class="stop-glyph" aria-hidden="true"></span></button>`;
-  return `<article class="task-row state-${state}${selected ? " is-selected" : ""}" data-action="select-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" tabindex="0" role="listitem" aria-current="${selected ? "true" : "false"}" aria-label="${h(`${profile.name} · ${task.name}, ${stateLabel(state)}${task.expected_port ? `, port ${task.expected_port}` : ""}`)}"><div class="task-copy">
-    <div class="task-heading-line"><h3>${h(middleEllipsis(task.name, 72))}</h3><span class="task-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span></div>
-    <div class="task-actions-row"><div class="task-port-group">${task.expected_port ? `<span class="task-port" title="Expected port">${uiIcon("port", 12)}<span class="sr-only">Port </span>localhost:${task.expected_port}</span>` : ""}</div><div class="task-action-buttons">${startAction}${stopAction}</div></div>
-  </div></article>`;
+  const stopAction = `<button class="stop-button service-card-control task-card-action${stopUnavailable ? " is-unavailable" : ""}" type="button" data-tile-action data-action="${externalCanStop ? "stop-service" : "stop-task"}"${externalCanStop ? ` data-service-id="${h(matchedService?.id ?? "")}"` : ` data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}"`} aria-label="${externalCanStop ? "Stop externally managed service" : `Stop ${task.name}`}" title="${active ? busy ? "Stopping task" : "Stop task" : externalCanStop ? "Stop externally managed service" : external ? "Cannot stop an externally managed task" : "Task is not running"}" ${stopUnavailable || busy ? "disabled" : ""}>${uiIcon("stop", 15)}</button>`;
+  const matchedUptime = matchedService ? currentUptime(matchedService) : null;
+  const metricsMarkup = matchedService
+    ? `<span class="metric metric-uptime${matchedUptime !== null && matchedUptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(uptimeText(matchedService, serviceOperation))}</span></span><span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(matchedService.process?.memory_bytes ?? null))}</span></span>`
+    : state === "external"
+      ? `<span class="metric metric-state is-external" title="Running externally">${uiIcon("terminal", 13)}<span class="sr-only">Running externally</span></span>`
+      : `<span class="metric metric-state ${busy ? "is-busy" : `state-${state}`}" title="Task state">${uiIcon(state === "running" ? "play" : "terminal", 13)}<span class="sr-only">State </span>${h(stateLabel(state))}</span>`;
+  const cardAttributes = ` data-action="select-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" tabindex="0" role="listitem" aria-current="${selected ? "true" : "false"}"`;
+  return renderSharedServiceCard({
+    category: matchedService?.category ?? "runtime",
+    cardClass: `task-card state-${state}`,
+    metricsId: matchedService?.id,
+    cardAttributes,
+    ariaLabel: `${profile.name} · ${task.name}, ${stateLabel(state)}${task.expected_port ? `, port ${task.expected_port}` : ""}`,
+    selected,
+    busy,
+    iconMarkup: matchedService ? techIcon(matchedService.tech, 44) : uiIcon("terminal", 25),
+    pipClass: busy ? "busy" : state === "external" ? "external" : state === "stopped" || state === "failed" ? "idle" : "running",
+    title: task.name,
+    controlsMarkup: `${startAction}${stopAction}`,
+    metricsMarkup,
+    ports: task.expected_port ? [task.expected_port] : [],
+    emptyPortLabel: "No expected port"
+  });
 }
 
 function launchTaskKey(profileId: string, taskName: string): string {
@@ -1378,7 +1473,7 @@ function setSelectedTask(profileId: string, taskName: string): void {
 }
 
 function focusTaskRow(profileId: string, taskName: string): void {
-  const row = [...document.querySelectorAll<HTMLElement>(".task-row")].find((item) => item.dataset.profileId === profileId && item.dataset.taskName === taskName);
+  const row = [...document.querySelectorAll<HTMLElement>(".task-card")].find((item) => item.dataset.profileId === profileId && item.dataset.taskName === taskName);
   row?.focus();
 }
 
@@ -1488,7 +1583,7 @@ async function handleClick(event: Event): Promise<void> {
 }
 
 function handleKeyboard(event: KeyboardEvent): void {
-  const taskRow = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(".task-row") : null;
+  const taskRow = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(".task-card") : null;
   if (taskRow && event.target === taskRow) {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
@@ -1496,7 +1591,7 @@ function handleKeyboard(event: KeyboardEvent): void {
       return;
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      const rows = [...document.querySelectorAll<HTMLElement>(".task-row")];
+      const rows = [...document.querySelectorAll<HTMLElement>(".task-card")];
       const index = rows.indexOf(taskRow);
       const step = event.key === "ArrowDown" ? 1 : -1;
       rows[(index + step + rows.length) % rows.length]?.focus();

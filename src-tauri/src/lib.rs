@@ -188,7 +188,9 @@ fn save_profile(
     profile: LaunchProfile,
 ) -> Result<Vec<LaunchProfile>, String> {
     reject_demo(&state)?;
-    if lock(&state.0.launch)?.profile_is_active(&profile.id) {
+    let current_profiles = read_profiles(&state.0.profiles_path)?;
+    let workspace = lock(&state.0.last_workspace)?.clone();
+    if lock(&state.0.launch)?.profile_is_active(&current_profiles, &profile.id, workspace.as_ref()) {
         return Err("Stop every task in this profile before editing it.".into());
     }
     persist_profile(&state.0.profiles_path, profile)
@@ -200,7 +202,9 @@ fn delete_profile(
     profile_id: String,
 ) -> Result<Vec<LaunchProfile>, String> {
     reject_demo(&state)?;
-    if lock(&state.0.launch)?.profile_is_active(&profile_id) {
+    let profiles = read_profiles(&state.0.profiles_path)?;
+    let workspace = lock(&state.0.last_workspace)?.clone();
+    if lock(&state.0.launch)?.profile_is_active(&profiles, &profile_id, workspace.as_ref()) {
         return Err("Stop every task in this profile before deleting it.".into());
     }
     remove_profile(&state.0.profiles_path, &profile_id)
@@ -210,7 +214,11 @@ fn delete_profile(
 fn task_snapshots(state: State<'_, AppState>) -> Result<Vec<ManagedTaskSnapshot>, String> {
     let profiles = profiles_for_state(&state)?;
     let workspace = lock(&state.0.last_workspace)?.clone();
-    Ok(lock(&state.0.launch)?.snapshots(&profiles, workspace.as_ref()))
+    Ok(lock(&state.0.launch)?.snapshots(
+        &profiles,
+        workspace.as_ref(),
+        &state.0.logs_dir,
+    ))
 }
 
 #[tauri::command]
@@ -243,7 +251,8 @@ async fn stop_task(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let profiles = read_profiles(&state.0.profiles_path)?;
-        lock(&state.0.launch)?.stop_task(&profiles, &request)
+        let workspace = lock(&state.0.last_workspace)?.clone();
+        lock(&state.0.launch)?.stop_task(&profiles, &request, workspace.as_ref())
     })
     .await
     .map_err(|error| format!("Stop task failed: {error}"))?
@@ -258,7 +267,8 @@ async fn stop_profile(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let profiles = read_profiles(&state.0.profiles_path)?;
-        lock(&state.0.launch)?.stop_profile(&profiles, &profile_id)
+        let workspace = lock(&state.0.last_workspace)?.clone();
+        lock(&state.0.launch)?.stop_profile(&profiles, &profile_id, workspace.as_ref())
     })
     .await
     .map_err(|error| format!("Stop profile failed: {error}"))?
