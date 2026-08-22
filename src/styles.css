@@ -538,14 +538,14 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
 .launch-heading { display: flex; align-items: center; justify-content: flex-end; gap: 18px; min-width: 0; padding: 10px 20px 8px; }
 .launch-heading-actions { display: inline-flex; align-items: center; gap: 8px; }
-.launch-list { display: grid; gap: 16px; padding: 0 20px 18px; }
+.launch-list { display: grid; gap: 14px; padding: 18px 20px 26px; }
 .launch-empty { margin: 4px 20px; padding: 40px 28px; border: 1px solid var(--hairline); border-radius: 18px; background: var(--panel); text-align: center; }
 .launch-empty h2 { margin: 0; font-size: 15px; }
 .launch-empty p { margin: 8px 0 16px; color: var(--text-muted); }
 .launch-profile { padding: 16px; }
 .launch-profile-header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; margin-bottom: 14px; }
 .launch-profile-heading { min-width: 0; flex: 1 1 220px; display: flex; align-items: center; gap: 8px; }
-.launch-profile-heading h2 { min-width: 0; flex: 1 1 auto; margin: 0; overflow: hidden; color: var(--text); font-size: 13px; font-weight: 700; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
+.launch-profile-heading h2 { min-width: 0; flex: 1 1 auto; margin: 0; overflow: hidden; color: var(--text); font-size: 12px; line-height: 1; font-weight: 700; letter-spacing: .055em; text-overflow: ellipsis; white-space: nowrap; }
 .launch-profile-heading p { max-width: min(34vw, 320px); }
 .launch-profile-status { flex: 0 0 auto; min-width: 36px; min-height: 26px; display: inline-flex; align-items: center; justify-content: center; padding: 0 7px; border-radius: 999px; background: var(--surface-alt); color: var(--text-dim); font-size: 11px; font-weight: 700; white-space: nowrap; }
 .launch-profile-status.is-active { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
@@ -553,6 +553,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .launch-profile-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 6px; margin-left: auto; }
 .launch-profile-actions .primary-button, .launch-profile-actions .secondary-button { min-height: 36px; padding: 7px 10px; border-radius: 9px; font-size: 11px; }
 .launch-profile-actions .section-action { white-space: nowrap; }
+.launch-profile-actions .bulk-action-button { width: 38px; min-width: 38px; height: 38px; min-height: 38px; padding: 0; }
+.bulk-action-icon { position: relative; display: inline-block; width: 18px; height: 18px; }
+.bulk-action-icon > .ui-icon { position: absolute; inset: 0; width: 15px; height: 15px; }
+.bulk-action-icon-back { transform: translate(-2px, -1px); opacity: .62; }
+.bulk-action-icon-front { transform: translate(2px, 1px); }
 .profile-card { min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--hairline); border-radius: 18px; background: var(--panel); box-shadow: 0 1px 2px var(--shadow); }
 .profile-content { padding: 0; background: transparent; }
 .profile-title-line { display: flex; align-items: center; gap: 10px; }
@@ -560,7 +565,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .profile-path { margin: 4px 0 0; overflow-wrap: anywhere; color: var(--text-dim); font-family: "SF Mono", Menlo, monospace; font-size: 10px; }
 .profile-actions-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 13px 0 14px; }
 .profile-secondary-actions { display: flex; gap: 8px; }
-.task-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.task-list { display: grid; grid-template-columns: repeat(var(--section-span, 1), minmax(0, 1fr)); gap: 10px; }
 .task-card { cursor: pointer; }
 .task-card:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 38%, transparent), 0 6px 17px var(--shadow); outline: none; }
 .task-card.state-failed.is-selected { border-color: color-mix(in srgb, var(--danger) 72%, var(--border)); box-shadow: inset 3px 0 0 var(--danger), 0 7px 22px var(--shadow); }
@@ -823,6 +828,7 @@ button:disabled { opacity: .45; cursor: default; }
   .board { padding: 14px 12px 20px; }
   .service-section { padding: 12px 11px; border-radius: 16px; }
   .tile-grid { grid-template-columns: minmax(0, 1fr); }
+  .task-list { grid-template-columns: minmax(0, 1fr); }
   .launch-heading { padding: 8px 12px 6px; }
   .settings-section-heading { flex-wrap: wrap; }
   .interval-control { width: 100%; margin: 4px 0 0; }

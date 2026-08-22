@@ -1167,9 +1167,14 @@ function renderLaunch(force = false): void {
     return;
   }
   const selected = ensureSelectedTask();
-  workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list">${header}<div class="launch-list">${profiles.map(renderProfile).join("")}</div></div>${renderLaunchConsole(selected)}</div>`;
+  workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list">${header}<div class="launch-list board">${profiles.map(renderProfile).join("")}</div></div>${renderLaunchConsole(selected)}</div>`;
+  applyBoardLayout();
   restoreConsoleContextState();
   restoreConsoleScroll();
+}
+
+function bulkActionIcon(name: "play" | "stop"): string {
+  return `<span class="bulk-action-icon bulk-action-${name}" aria-hidden="true">${uiIcon(name, 15, "bulk-action-icon-back")}${uiIcon(name, 15, "bulk-action-icon-front")}</span>`;
 }
 
 function renderProfile(profile: LaunchProfile): string {
@@ -1182,15 +1187,15 @@ function renderProfile(profile: LaunchProfile): string {
   const profileStatus = failedCount > 0 ? `${failedCount} failed` : activeCount > 0 ? `${activeCount} active` : externalCount > 0 ? `${externalCount} external` : "Ready";
   const profileStatusClass = failedCount > 0 ? "is-failed" : activeCount > 0 || externalCount > 0 ? "is-active" : "is-idle";
   const runAll = profile.tasks.length > 1 && canStart
-    ? `<button class="primary-button icon-only-button" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}" aria-label="${canStop ? "Start remaining tasks" : "Run all tasks"}" title="${canStop ? "Start remaining tasks" : "Run all tasks"}">${uiIcon("play", 16)}</button>`
+    ? `<button class="primary-button icon-only-button bulk-action-button" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}" aria-label="${canStop ? "Start remaining tasks" : "Run all tasks"}" title="${canStop ? "Start remaining tasks" : "Run all tasks"}">${bulkActionIcon("play")}</button>`
     : "";
   const stopAll = profile.tasks.length > 1 && canStop
-    ? `<button class="secondary-button warning-action icon-only-button" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}" aria-label="Stop all tasks" title="Stop all tasks">${uiIcon("stop", 16)}</button>`
+    ? `<button class="secondary-button danger-button icon-only-button bulk-action-button" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}" aria-label="Stop all tasks" title="Stop all tasks">${bulkActionIcon("stop")}</button>`
     : "";
-  return `<section class="launch-profile service-section" aria-labelledby="launch-profile-${h(profile.id)}">
+  return `<section class="launch-profile service-section" data-tiles="${profile.tasks.length}" aria-labelledby="launch-profile-${h(profile.id)}">
     <header class="section-header launch-profile-header">
       <span class="section-accent accent-runtime" aria-hidden="true"></span>
-      <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name, "View profile details")}</h2></div>
+      <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name.toUpperCase(), "View profile details")}</h2></div>
       <span class="launch-profile-status ${profileStatusClass}" role="img" aria-label="Profile status: ${h(profileStatus)}" title="${h(profileStatus)}">${profileStatusIcon(profileStatusClass)}<span class="sr-only">Profile status: ${h(profileStatus)}</span></span>
       <div class="section-actions launch-profile-actions">
         ${runAll}${stopAll}
