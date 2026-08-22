@@ -88,6 +88,13 @@ export interface ContainerLogSnapshot {
   logs: string;
 }
 
+export interface ServiceLogSnapshot {
+  logs: string;
+  source_path: string | null;
+  available: boolean;
+  message: string | null;
+}
+
 export interface UiSettings {
   theme_mode: ThemeMode;
   scan_interval_ms: number;

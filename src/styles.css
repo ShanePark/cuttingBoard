@@ -312,8 +312,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .service-tile:hover { border-color: color-mix(in srgb, var(--cat) 42%, var(--border)); box-shadow: 0 8px 20px var(--shadow); transform: translateY(-1px); }
 .service-tile:has(.tile-details-button:focus-visible) { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 42%, transparent); }
 .service-tile.is-busy { opacity: .82; }
+.service-tile.is-selected { border-color: color-mix(in srgb, var(--accent) 76%, var(--border)); background-color: color-mix(in srgb, var(--accent) 7%, var(--surface)); box-shadow: inset 3px 0 0 var(--accent), 0 8px 22px var(--shadow); }
+.service-tile.is-selected:hover { border-color: var(--accent); }
 .tile-details-button { position: absolute; z-index: 0; inset: 0; padding: 0; border: 0; border-radius: inherit; background: transparent; cursor: pointer; outline: none; }
 .service-tile > *:not(.tile-details-button) { position: relative; z-index: 1; pointer-events: none; }
+.service-details-button { pointer-events: auto; }
 
 .tile-top { display: flex; align-items: center; gap: 12px; }
 .service-tile:has(.tile-ordinal) .tile-top { padding-left: 32px; }
@@ -577,16 +580,22 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
 .launch-view { min-height: 100%; display: flex; flex-direction: column; }
 .launch-view > .launch-heading, .launch-view > .launch-list { flex: 0 0 auto; width: 100%; }
-.launch-console { position: sticky; z-index: 10; bottom: 0; min-width: 0; margin: auto 20px 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 18px 18px 0 0; background: color-mix(in srgb, var(--surface) 94%, var(--accent)); box-shadow: 0 -12px 34px color-mix(in srgb, var(--shadow) 84%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent); }
+.launch-console { position: sticky; z-index: 10; bottom: 0; min-width: 0; display: flex; flex-direction: column; margin: auto 20px 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 18px 18px 0 0; background: color-mix(in srgb, var(--surface) 94%, var(--accent)); box-shadow: 0 -12px 34px color-mix(in srgb, var(--shadow) 84%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent); }
+.services-view { min-height: 100%; display: flex; flex-direction: column; }
+.services-view > .board { min-height: 0; flex: 0 0 auto; width: 100%; }
 .docker-view { min-height: 100%; display: flex; flex-direction: column; }
 .docker-view > .board { min-height: 0; flex: 0 0 auto; width: 100%; }
+.service-console { border-bottom-color: var(--hairline); }
+.service-console .console-toolbar-label { color: var(--text-muted); }
+.service-console .console-meta-error { border-color: color-mix(in srgb, var(--danger) 36%, var(--hairline)); color: var(--danger); }
+.service-console .console-meta-error span { color: inherit; }
 .docker-console { border-bottom-color: var(--hairline); }
 .docker-console .console-toolbar-label { color: var(--text-muted); }
 .docker-console .console-meta-error { border-color: color-mix(in srgb, var(--danger) 36%, var(--hairline)); color: var(--danger); }
 .docker-console .console-meta-error span { color: inherit; }
 .launch-console-empty { border-color: var(--hairline); }
-.console-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 18px; min-height: 64px; padding: 12px 16px; border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 38%, var(--surface)); }
-.console-title { min-width: 0; flex: 1 1 220px; display: flex; align-items: center; gap: 10px; }
+.console-header { flex: 0 0 64px; height: 64px; min-height: 64px; display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap; gap: 12px 18px; overflow: hidden; padding: 12px 16px; border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 38%, var(--surface)); }
+.console-title { min-width: 0; flex: 1 1 46%; display: flex; align-items: center; gap: 10px; overflow: hidden; }
 .console-icon { width: 34px; height: 34px; display: grid; flex: 0 0 34px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); }
 .console-icon.state-running { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 13%, transparent); }
 .console-icon.state-starting, .console-icon.state-stopping { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, transparent); background: color-mix(in srgb, var(--warning) 13%, transparent); }
@@ -594,8 +603,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .console-icon.state-external { color: var(--violet); border-color: color-mix(in srgb, var(--violet) 35%, transparent); background: color-mix(in srgb, var(--violet) 13%, transparent); }
 .console-title h2 { margin: 0; color: var(--text); font-size: 14px; font-weight: 750; letter-spacing: .01em; }
 .console-title p { min-width: 0; margin: 5px 0 0; overflow: hidden; color: var(--text-dim); font-family: "SF Mono", Menlo, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.console-title > div { min-width: 0; overflow: hidden; }
 .console-title p strong { color: var(--text-muted); font-family: inherit; font-weight: 700; }
-.console-meta { display: flex; min-width: 0; flex: 1 1 240px; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.console-meta { display: flex; min-width: 0; flex: 1 1 54%; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 6px; overflow: hidden; }
 .console-state { min-height: 28px; height: auto; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border-radius: 999px; background: var(--surface-alt); color: var(--text-dim); font-size: 10px; font-weight: 700; white-space: nowrap; }
 .console-state.state-running { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
 .console-state.state-starting, .console-state.state-stopping { background: color-mix(in srgb, var(--warning) 17%, transparent); color: var(--warning); }
@@ -603,9 +613,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .console-state.state-external { background: color-mix(in srgb, var(--violet) 17%, transparent); color: var(--violet); }
 .console-meta-item { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; height: auto; padding: 0 9px; border: 1px solid var(--hairline); border-radius: 8px; color: var(--text-dim); font-size: 10px; font-weight: 700; }
 .console-meta-item code { color: var(--text-muted); font: 10px "SF Mono", Menlo, monospace; }
-.console-meta-source { min-width: 0; max-width: min(280px, 28vw); }
+.console-meta > * { flex: 0 0 auto; }
+.console-meta-source { min-width: 0; max-width: min(280px, 28vw); overflow: hidden; }
 .console-meta-source code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.console-context-details { border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 14%, var(--surface)); }
+.console-context-details { flex: 0 0 39px; height: 39px; min-height: 39px; overflow: hidden; border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 14%, var(--surface)); }
+.console-context-details[open] { flex-basis: auto; height: auto; max-height: none; }
+.console-context-details.is-empty > summary { cursor: default; }
 .console-context-details > summary { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 16px; color: var(--text-dim); font-size: 11px; font-weight: 700; cursor: pointer; list-style: none; }
 .console-context-details > summary::-webkit-details-marker { display: none; }
 .console-context-details > summary:hover, .console-context-details > summary:focus-visible { color: var(--text); }
@@ -614,14 +627,14 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .console-context-item { min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 0 16px; background: color-mix(in srgb, var(--surface-alt) 22%, var(--surface)); }
 .console-context-item > span { flex: 0 0 auto; color: var(--text-dim); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
 .console-context-item code { min-width: 0; overflow: hidden; color: var(--text-muted); font: 10px "SF Mono", Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
-.console-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 6px 12px 6px 16px; border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 14%, var(--surface)); }
+.console-toolbar { flex: 0 0 50px; height: 50px; min-height: 50px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 12px 6px 16px; border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 14%, var(--surface)); }
 .console-toolbar-label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; font-weight: 700; }
 .console-tools { display: inline-flex; align-items: center; gap: 4px; }
 .console-tool { min-width: 36px; min-height: 34px; display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text-dim); font-size: 11px; font-weight: 700; cursor: pointer; }
 .console-tool.icon-only-button { display: inline-grid; flex: 0 0 38px; width: 38px; min-height: 38px; height: 38px; padding: 0; place-items: center; }
 .console-tool:hover, .console-tool:focus-visible { border-color: var(--hairline); background: var(--surface-hover); color: var(--text); }
 .console-tool.is-active { color: var(--accent); }
-.console-output { height: clamp(140px, 24vh, 220px); min-height: 0; max-height: none; overflow: auto; padding: 15px 16px 18px; background: color-mix(in srgb, var(--canvas) 88%, #050608); color: var(--text-muted); scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
+.console-output { flex: 0 0 clamp(140px, 24vh, 220px); height: clamp(140px, 24vh, 220px); min-height: 0; max-height: none; overflow: auto; padding: 15px 16px 18px; background: color-mix(in srgb, var(--canvas) 88%, #050608); color: var(--text-muted); scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
 .console-output::-webkit-scrollbar { width: 9px; height: 9px; }
 .console-output::-webkit-scrollbar-track { background: transparent; }
 .console-output::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 9px; background: var(--border); background-clip: padding-box; }
@@ -825,14 +838,14 @@ button:disabled { opacity: .45; cursor: default; }
   .detail-grid { grid-template-columns: 110px minmax(0, 1fr); }
   .launch-list { padding-bottom: 12px; }
   .launch-console { margin: auto 12px 0; border-radius: 15px 15px 0 0; }
-  .console-header { align-items: flex-start; flex-direction: column; gap: 10px; }
-  .console-title, .console-meta { width: 100%; flex-basis: 100%; }
-  .console-meta { justify-content: flex-start; flex-wrap: wrap; }
+  .console-header { flex: 0 0 96px; height: 96px; min-height: 96px; align-items: flex-start; flex-direction: column; gap: 10px; }
+  .console-title { width: 100%; flex: 0 0 34px; }
+  .console-meta { width: 100%; flex: 0 0 28px; justify-content: flex-start; flex-wrap: nowrap; }
   .console-meta-source { max-width: 100%; }
   .console-context { grid-template-columns: 1fr; }
   .console-context-item { min-height: 42px; padding-inline: 12px; }
   .console-toolbar { padding-left: 11px; }
-  .console-output { height: clamp(150px, 42vh, 300px); min-height: 0; max-height: none; padding: 13px 12px 16px; }
+  .console-output { flex-basis: clamp(150px, 42vh, 300px); height: clamp(150px, 42vh, 300px); min-height: 0; max-height: none; padding: 13px 12px 16px; }
   .modal-backdrop { padding: 10px; }
   .modal { width: min(100%, calc(100vw - 20px)); max-height: calc(100dvh - 20px); border-radius: 16px; }
   .modal-header { min-height: 58px; padding-inline: 16px; }

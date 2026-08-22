@@ -6,6 +6,7 @@ import type {
   ContainerListing,
   LaunchProfile,
   ManagedTaskSnapshot,
+  ServiceLogSnapshot,
   TerminationResult,
   UiSettings,
   WorkspaceSnapshot
@@ -17,6 +18,8 @@ export const api = {
   containers: () => invoke<ContainerListing>("list_containers"),
   containerLogs: (containerId: string) =>
     invoke<ContainerLogSnapshot>("container_logs", { request: { container_id: containerId } }),
+  serviceLogs: (serviceId: string) =>
+    invoke<ServiceLogSnapshot>("service_logs", { request: { service_id: serviceId } }),
   startContainer: (containerId: string) =>
     invoke<ContainerActionResult>("start_container", { request: { container_id: containerId } }),
   stopContainer: (containerId: string) =>

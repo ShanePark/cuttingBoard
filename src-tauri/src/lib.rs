@@ -8,8 +8,9 @@ use crate::{
     launch::LaunchManager,
     models::{
         AppInfo, ContainerActionResult, ContainerListing, ContainerLogSnapshot, ContainerRequest,
-        LaunchProfile, ManagedTaskSnapshot, ServiceIdentity, TaskRequest, TerminateRequest,
-        TerminationResult, UiSettings, WorkspaceSnapshot,
+        LaunchProfile, ManagedTaskSnapshot, ServiceIdentity, ServiceLogSnapshot, ServiceRequest,
+        ServiceSnapshot, TaskRequest, TerminateRequest, TerminationResult, UiSettings,
+        WorkspaceSnapshot,
     },
     storage::{
         delete_profile as remove_profile, demo_profiles, load_profiles as read_profiles,
@@ -92,6 +93,53 @@ async fn container_logs(
 }
 
 #[tauri::command]
+async fn service_logs(
+    state: State<'_, AppState>,
+    request: ServiceRequest,
+) -> Result<ServiceLogSnapshot, String> {
+    let state = state.inner().clone();
+    let service_id = request.service_id;
+    tauri::async_runtime::spawn_blocking(move || read_service_logs(&state, &service_id))
+        .await
+        .map_err(|error| format!("Service log task failed: {error}"))?
+}
+
+fn read_service_logs(state: &AppState, service_id: &str) -> Result<ServiceLogSnapshot, String> {
+    if state.0.demo {
+        return Ok(ServiceLogSnapshot {
+            logs: String::new(),
+            source_path: None,
+            available: false,
+            message: Some("Service logs are unavailable in demonstration mode.".into()),
+        });
+    }
+
+    let workspace = lock(&state.0.last_workspace)?
+        .clone()
+        .ok_or_else(|| "Scan the workspace before requesting service logs.".to_string())?;
+    let service = workspace
+        .services
+        .iter()
+        .find(|service| service.id == service_id)
+        .cloned()
+        .ok_or_else(|| {
+            "The service changed since the last scan. Refresh and try again.".to_string()
+        })?;
+    if service.process.is_none() {
+        return Ok(ServiceLogSnapshot {
+            logs: String::new(),
+            source_path: None,
+            available: false,
+            message: Some("Process details were unavailable during the last scan.".into()),
+        });
+    }
+    let identity = service_identity(&service)?;
+    validate_service_log_identity(&identity)?;
+    let profiles = read_profiles(&state.0.profiles_path)?;
+    lock(&state.0.launch)?.service_logs(&profiles, &service, &state.0.logs_dir)
+}
+
+#[tauri::command]
 async fn start_container(
     state: State<'_, AppState>,
     request: ContainerRequest,
@@ -121,10 +169,7 @@ fn load_settings(state: State<'_, AppState>) -> Result<UiSettings, String> {
 }
 
 #[tauri::command]
-fn save_settings(
-    state: State<'_, AppState>,
-    settings: UiSettings,
-) -> Result<UiSettings, String> {
+fn save_settings(state: State<'_, AppState>, settings: UiSettings) -> Result<UiSettings, String> {
     persist_settings(&state.0.settings_path, settings)
 }
 
@@ -260,10 +305,7 @@ fn persist_window_geometry<R: tauri::Runtime>(window: &tauri::Window<R>, state: 
     }
 }
 
-fn migrate_legacy_window_size(
-    mut settings: UiSettings,
-    scale_factor: f64,
-) -> Option<UiSettings> {
+fn migrate_legacy_window_size(mut settings: UiSettings, scale_factor: f64) -> Option<UiSettings> {
     if settings.window_geometry_logical
         || settings.window_x.is_none()
         || settings.window_y.is_none()
@@ -311,7 +353,9 @@ fn terminate_discovered_service(
     let identity = lock(&state.0.service_index)?
         .get(&request.service_id)
         .cloned()
-        .ok_or_else(|| "The service changed since the last scan. Refresh and try again.".to_string())?;
+        .ok_or_else(|| {
+            "The service changed since the last scan. Refresh and try again.".to_string()
+        })?;
     if identity.pid <= 1 || identity.pid == std::process::id() {
         return Err("Cutting Board refused to stop that process.".into());
     }
@@ -344,7 +388,10 @@ fn terminate_discovered_service(
         if !process_exists(identity.pid) {
             return Ok(TerminationResult {
                 success: true,
-                message: format!("Forced {} to stop after it ignored SIGTERM.", identity.display_name),
+                message: format!(
+                    "Forced {} to stop after it ignored SIGTERM.",
+                    identity.display_name
+                ),
             });
         }
     }
@@ -352,6 +399,41 @@ fn terminate_discovered_service(
         success: false,
         message: format!("{} did not stop.", identity.display_name),
     })
+}
+
+fn service_identity(service: &ServiceSnapshot) -> Result<ServiceIdentity, String> {
+    let process = service.process.as_ref().ok_or_else(|| {
+        "The service has no current process identity. Refresh and try again.".to_string()
+    })?;
+    Ok(ServiceIdentity {
+        pid: process.pid,
+        start_time: process.create_time,
+        uid: process.uid,
+        display_name: service.display_name.clone(),
+    })
+}
+
+fn validate_service_log_identity(identity: &ServiceIdentity) -> Result<(), String> {
+    if identity.pid <= 1 || identity.pid == std::process::id() {
+        return Err("Cutting Board refused to inspect that process.".into());
+    }
+    let current_uid = effective_uid();
+    if identity.uid.is_some() && current_uid.is_some() && identity.uid != current_uid {
+        return Err(
+            "Cutting Board only reads logs from processes owned by the current user.".into(),
+        );
+    }
+
+    let system = System::new_all();
+    let process = system
+        .process(Pid::from_u32(identity.pid))
+        .ok_or_else(|| "The process already exited. Refresh and try again.".to_string())?;
+    if process.start_time() != identity.start_time {
+        return Err(
+            "The PID was reused by another process. Refresh before reading its logs.".into(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -412,7 +494,9 @@ fn reject_demo(state: &State<'_, AppState>) -> Result<(), String> {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
-    mutex.lock().map_err(|_| "Internal state lock was poisoned.".into())
+    mutex
+        .lock()
+        .map_err(|_| "Internal state lock was poisoned.".into())
 }
 
 fn parse_cli() -> Result<CliOptions, String> {
@@ -480,10 +564,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
-            let config_dir = app
-                .path()
-                .app_config_dir()
-                .map_err(|error| format!("Could not resolve the app configuration directory: {error}"))?;
+            let config_dir = app.path().app_config_dir().map_err(|error| {
+                format!("Could not resolve the app configuration directory: {error}")
+            })?;
             let settings_path = config_dir.join("settings.json");
             let profiles_path = config_dir.join("launch-profiles.json");
             let logs_dir = config_dir.join("logs");
@@ -491,11 +574,7 @@ pub fn run() {
             let window_icon = app.default_window_icon().cloned();
             if let Some(window) = app.get_webview_window("main") {
                 let main_window = window.as_ref().window();
-                settings = migrate_startup_window_settings(
-                    &main_window,
-                    &settings_path,
-                    settings,
-                );
+                settings = migrate_startup_window_settings(&main_window, &settings_path, settings);
                 if let Some(icon) = window_icon {
                     window.set_icon(icon).map_err(|error| {
                         format!("Could not set the application window icon: {error}")
@@ -548,6 +627,7 @@ pub fn run() {
             scan_workspace,
             list_containers,
             container_logs,
+            service_logs,
             start_container,
             stop_container,
             load_settings,
@@ -597,8 +677,8 @@ mod tests {
             window_y: Some(78),
             ..UiSettings::default()
         };
-        let migrated = migrate_legacy_window_size(settings, 2.0)
-            .expect("legacy physical size should migrate");
+        let migrated =
+            migrate_legacy_window_size(settings, 2.0).expect("legacy physical size should migrate");
 
         assert_eq!(migrated.window_width, 1_080);
         assert_eq!(migrated.window_height, 720);
@@ -622,5 +702,48 @@ mod tests {
     fn parses_auto_close_option() {
         assert_eq!(parse_positive_seconds("0.5").unwrap(), 0.5);
         assert!(parse_positive_seconds("0").is_err());
+    }
+
+    #[test]
+    fn service_without_process_returns_unavailable_logs() {
+        let workspace = WorkspaceSnapshot {
+            services: vec![ServiceSnapshot {
+                id: "service".into(),
+                display_name: "Example".into(),
+                tech: "vite".into(),
+                category: "web".into(),
+                relevance: "dev".into(),
+                endpoints: vec![],
+                process: None,
+                project: None,
+                status: "limited".into(),
+                warnings: vec![],
+                origin_kind: "unknown".into(),
+                origin_label: None,
+                can_terminate: false,
+                browser_url: None,
+                active_profiles: vec![],
+            }],
+            scanned_at: 0,
+            scan_duration_ms: 0,
+            endpoint_count: 0,
+            errors: vec![],
+        };
+        let state = AppState(Arc::new(AppStateInner {
+            demo: false,
+            settings_path: PathBuf::new(),
+            profiles_path: PathBuf::new(),
+            logs_dir: PathBuf::new(),
+            last_workspace: Mutex::new(Some(workspace)),
+            service_index: Mutex::new(HashMap::new()),
+            launch: Mutex::new(LaunchManager::default()),
+        }));
+
+        let snapshot = read_service_logs(&state, "service").unwrap();
+
+        assert!(!snapshot.available);
+        assert!(snapshot.logs.is_empty());
+        assert_eq!(snapshot.source_path, None);
+        assert!(snapshot.message.is_some());
     }
 }

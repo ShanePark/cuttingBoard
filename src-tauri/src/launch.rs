@@ -1,15 +1,17 @@
 use crate::models::{
-    now_epoch, LaunchProfile, LaunchTask, ManagedTaskSnapshot, TaskRequest, WorkspaceSnapshot,
+    now_epoch, LaunchProfile, LaunchTask, ManagedTaskSnapshot, ServiceLogSnapshot, ServiceSnapshot,
+    TaskRequest, WorkspaceSnapshot,
 };
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
     time::Duration,
 };
+use sysinfo::{Pid, System};
 
 #[cfg(unix)]
 use std::{env, ffi::CStr};
@@ -74,6 +76,98 @@ impl LaunchManager {
         snapshots
     }
 
+    /// Read output for a discovered service, preferring an active managed task
+    /// because child processes can inherit the task shell's log file.
+    pub fn service_logs(
+        &mut self,
+        profiles: &[LaunchProfile],
+        service: &ServiceSnapshot,
+        logs_dir: &Path,
+    ) -> Result<ServiceLogSnapshot, String> {
+        self.refresh();
+
+        for profile in profiles {
+            for task in &profile.tasks {
+                if !task_matches_service(profile, task, service) {
+                    continue;
+                }
+                let Some(runtime) = self.tasks.get(&task_key(&profile.id, &task.name)) else {
+                    continue;
+                };
+                if !is_active(&runtime.state) {
+                    continue;
+                }
+                if !service_belongs_to_runtime(service, runtime.pid) {
+                    continue;
+                }
+                if let Ok(logs) = read_log_tail(&runtime.log_path) {
+                    return Ok(ServiceLogSnapshot {
+                        logs,
+                        source_path: Some(runtime.log_path.to_string_lossy().into_owned()),
+                        available: true,
+                        message: None,
+                    });
+                }
+            }
+        }
+
+        let Some(pid) = service.process.as_ref().map(|process| process.pid) else {
+            return Ok(unavailable_service_logs(
+                "Process details were unavailable during the last scan.",
+            ));
+        };
+        let start_time = service
+            .process
+            .as_ref()
+            .map(|process| process.create_time)
+            .unwrap_or_default();
+        ensure_process_identity(pid, start_time)?;
+        if let Some(path) = external_log_path(pid) {
+            ensure_process_identity(pid, start_time)?;
+            match read_log_tail(&path) {
+                Ok(logs) => {
+                    ensure_process_identity(pid, start_time)?;
+                    return Ok(ServiceLogSnapshot {
+                        logs,
+                        source_path: Some(path.to_string_lossy().into_owned()),
+                        available: true,
+                        message: None,
+                    });
+                }
+                Err(_) => {
+                    return Ok(unavailable_service_logs(
+                        "A stdout/stderr log file was found, but it could not be read.",
+                    ));
+                }
+            }
+        }
+
+        if let Some(path) = recovered_managed_log_path(logs_dir, profiles, service, start_time) {
+            ensure_process_identity(pid, start_time)?;
+            match read_log_tail(&path) {
+                Ok(logs) => {
+                    ensure_process_identity(pid, start_time)?;
+                    return Ok(ServiceLogSnapshot {
+                        logs,
+                        source_path: Some(path.to_string_lossy().into_owned()),
+                        available: true,
+                        message: None,
+                    });
+                }
+                Err(_) => {
+                    return Ok(unavailable_service_logs(
+                        "A Cutting Board task log was found, but it could not be read.",
+                    ));
+                }
+            }
+        }
+
+        ensure_process_identity(pid, start_time)?;
+        Ok(unavailable_service_logs(
+            "No readable log output is connected to this service. Terminal and pipe output cannot be recovered after launch.",
+        ))
+    }
+
     pub fn start_task(
         &mut self,
         profiles: &[LaunchProfile],
@@ -96,7 +190,11 @@ impl LaunchManager {
         let cwd = resolve_cwd(profile, task)?;
         fs::create_dir_all(logs_dir)
             .map_err(|error| format!("Could not create {}: {error}", logs_dir.display()))?;
-        let log_path = logs_dir.join(format!("{}-{}.log", safe_name(&profile.id), safe_name(&task.name)));
+        let log_path = logs_dir.join(format!(
+            "{}-{}.log",
+            safe_name(&profile.id),
+            safe_name(&task.name)
+        ));
         let mut log_file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -109,6 +207,13 @@ impl LaunchManager {
             task.command
         )
         .map_err(|error| format!("Could not write {}: {error}", log_path.display()))?;
+        let metadata = serde_json::json!({
+            "profile_id": profile.id,
+            "task_name": task.name,
+            "cwd": cwd.to_string_lossy(),
+        });
+        writeln!(log_file, "=== Cutting Board task metadata {} ===", metadata)
+            .map_err(|error| format!("Could not write {}: {error}", log_path.display()))?;
         let stderr_file = log_file
             .try_clone()
             .map_err(|error| format!("Could not duplicate {}: {error}", log_path.display()))?;
@@ -152,7 +257,9 @@ impl LaunchManager {
         Ok(snapshot_from(
             &profile.id,
             &task.name,
-            self.tasks.get(&task_key(&profile.id, &task.name)).expect("inserted runtime task"),
+            self.tasks
+                .get(&task_key(&profile.id, &task.name))
+                .expect("inserted runtime task"),
         ))
     }
 
@@ -199,7 +306,11 @@ impl LaunchManager {
         let mut snapshots = Vec::new();
         for request in requests {
             let key = task_key(&request.profile_id, &request.task_name);
-            if self.tasks.get(&key).is_some_and(|runtime| is_active(&runtime.state)) {
+            if self
+                .tasks
+                .get(&key)
+                .is_some_and(|runtime| is_active(&runtime.state))
+            {
                 snapshots.push(self.stop_task(profiles, &request)?);
             }
         }
@@ -228,7 +339,9 @@ impl LaunchManager {
 
     fn refresh(&mut self) {
         for runtime in self.tasks.values_mut() {
-            let Some(child) = runtime.child.as_mut() else { continue };
+            let Some(child) = runtime.child.as_mut() else {
+                continue;
+            };
             match child.try_wait() {
                 Ok(Some(status)) => {
                     runtime.child = None;
@@ -248,7 +361,8 @@ impl LaunchManager {
                 }
                 Err(error) => {
                     runtime.state = "failed".into();
-                    runtime.message = Some(format!("Could not inspect the managed process: {error}"));
+                    runtime.message =
+                        Some(format!("Could not inspect the managed process: {error}"));
                     runtime.child = None;
                     runtime.pid = None;
                 }
@@ -276,7 +390,10 @@ fn find_task<'a>(
 fn resolve_cwd(profile: &LaunchProfile, task: &LaunchTask) -> Result<PathBuf, String> {
     let resolved = task_cwd(profile, task);
     if !resolved.is_dir() {
-        return Err(format!("The task directory does not exist: {}", resolved.display()));
+        return Err(format!(
+            "The task directory does not exist: {}",
+            resolved.display()
+        ));
     }
     Ok(resolved)
 }
@@ -354,7 +471,9 @@ fn terminate_runtime(runtime: &mut RuntimeTask) -> Result<(), String> {
     }
     #[cfg(not(unix))]
     if let Some(child) = runtime.child.as_mut() {
-        child.kill().map_err(|error| format!("Could not stop PID {pid}: {error}"))?;
+        child
+            .kill()
+            .map_err(|error| format!("Could not stop PID {pid}: {error}"))?;
     }
 
     for _ in 0..25 {
@@ -391,11 +510,7 @@ fn terminate_runtime(runtime: &mut RuntimeTask) -> Result<(), String> {
     Ok(())
 }
 
-fn snapshot_from(
-    profile_id: &str,
-    task_name: &str,
-    runtime: &RuntimeTask,
-) -> ManagedTaskSnapshot {
+fn snapshot_from(profile_id: &str, task_name: &str, runtime: &RuntimeTask) -> ManagedTaskSnapshot {
     ManagedTaskSnapshot {
         profile_id: profile_id.into(),
         task_name: task_name.into(),
@@ -448,34 +563,274 @@ fn read_log_tail(path: &Path) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+const LOG_RECOVERY_START_SKEW_SECS: u64 = 15 * 60;
+const LOG_MARKER_SCAN_BYTES: u64 = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+struct LogStartMarker {
+    started_at: u64,
+    command: String,
+    profile_id: Option<String>,
+    task_name: Option<String>,
+    cwd: Option<String>,
+}
+
+fn recovered_managed_log_path(
+    logs_dir: &Path,
+    profiles: &[LaunchProfile],
+    service: &ServiceSnapshot,
+    process_start: u64,
+) -> Option<PathBuf> {
+    let mut matches = Vec::new();
+    let process_commands = process_command_provenance(service);
+    for profile in profiles {
+        for task in &profile.tasks {
+            if !task_matches_service(profile, task, service) {
+                continue;
+            }
+            let expected_name = format!("{}-{}.log", safe_name(&profile.id), safe_name(&task.name));
+            let suffix = format!("-{}.log", safe_name(&task.name));
+            let Ok(entries) = fs::read_dir(logs_dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let file_type = match entry.file_type() {
+                    Ok(file_type) => file_type,
+                    Err(_) => continue,
+                };
+                if !file_type.is_file() {
+                    continue;
+                }
+                let file_name = entry.file_name();
+                let file_name = file_name.to_string_lossy();
+                if file_name != expected_name && !file_name.ends_with(&suffix) {
+                    continue;
+                }
+                let path = entry.path();
+                let Ok(markers) = read_log_start_markers(&path) else {
+                    continue;
+                };
+                let Some((rank, distance)) = markers
+                    .iter()
+                    .filter_map(|marker| {
+                        log_marker_match_score(
+                            marker,
+                            profile,
+                            task,
+                            service,
+                            &process_commands,
+                            process_start,
+                            file_name == expected_name,
+                        )
+                    })
+                    .min()
+                else {
+                    continue;
+                };
+                matches.push((rank, distance, path, profile.id.clone(), task.name.clone()));
+            }
+        }
+    }
+
+    matches.sort_by(|left, right| {
+        (left.0, left.1, &left.2, &left.3, &left.4)
+            .cmp(&(right.0, right.1, &right.2, &right.3, &right.4))
+    });
+    let best = matches.first()?;
+    if matches
+        .get(1)
+        .is_some_and(|candidate| (candidate.0, candidate.1) == (best.0, best.1))
+    {
+        return None;
+    }
+    Some(best.2.clone())
+}
+
+fn read_log_start_markers(path: &Path) -> io::Result<Vec<LogStartMarker>> {
+    let file = OpenOptions::new().read(true).open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut bytes_read = 0;
+    let mut line = String::new();
+    let mut markers = Vec::new();
+    while bytes_read < LOG_MARKER_SCAN_BYTES {
+        line.clear();
+        let bytes = reader.read_line(&mut line)?;
+        if bytes == 0 {
+            break;
+        }
+        bytes_read = bytes_read.saturating_add(bytes as u64);
+        if let Some(marker) = parse_log_start_marker(&line) {
+            markers.push(marker);
+        } else if let Some(metadata) = parse_log_metadata(&line) {
+            if let Some(marker) = markers.last_mut() {
+                marker.profile_id = metadata.0;
+                marker.task_name = metadata.1;
+                marker.cwd = metadata.2;
+            }
+        }
+    }
+    Ok(markers)
+}
+
+fn parse_log_start_marker(line: &str) -> Option<LogStartMarker> {
+    let body = line
+        .trim_end_matches(['\r', '\n'])
+        .strip_prefix("=== Cutting Board start ")?
+        .strip_suffix(" ===")?;
+    let (started_at, command) = body.split_once(" · ")?;
+    Some(LogStartMarker {
+        started_at: started_at.parse().ok()?,
+        command: command.into(),
+        profile_id: None,
+        task_name: None,
+        cwd: None,
+    })
+}
+
+fn parse_log_metadata(line: &str) -> Option<(Option<String>, Option<String>, Option<String>)> {
+    let json = line
+        .trim_end_matches(['\r', '\n'])
+        .strip_prefix("=== Cutting Board task metadata ")?
+        .strip_suffix(" ===")?;
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    Some((
+        value.get("profile_id")?.as_str().map(str::to_owned),
+        value.get("task_name")?.as_str().map(str::to_owned),
+        value.get("cwd")?.as_str().map(str::to_owned),
+    ))
+}
+
+fn log_marker_match_score(
+    marker: &LogStartMarker,
+    profile: &LaunchProfile,
+    task: &LaunchTask,
+    service: &ServiceSnapshot,
+    process_commands: &[String],
+    process_start: u64,
+    expected_path: bool,
+) -> Option<(u8, u64)> {
+    if marker
+        .task_name
+        .as_deref()
+        .is_some_and(|task_name| task_name != task.name)
+    {
+        return None;
+    }
+    let task_root = task_cwd(profile, task)
+        .canonicalize()
+        .unwrap_or_else(|_| task_cwd(profile, task));
+    if marker
+        .cwd
+        .as_deref()
+        .is_some_and(|cwd| !path_matches_task(cwd, &task_root))
+    {
+        return None;
+    }
+
+    let distance = marker.started_at.abs_diff(process_start);
+    let command_matches = marker.command == task.command
+        || service
+            .process
+            .as_ref()
+            .and_then(|process| process.launch_command.as_deref())
+            .is_some_and(|command| marker.command == command)
+        || process_commands
+            .iter()
+            .any(|command| commands_match(marker.command.as_str(), command));
+    let metadata_matches = marker
+        .profile_id
+        .as_deref()
+        .is_some_and(|profile_id| profile_id == profile.id)
+        && marker.task_name.as_deref() == Some(task.name.as_str())
+        && marker
+            .cwd
+            .as_deref()
+            .is_some_and(|cwd| path_matches_task(cwd, &task_root));
+
+    if distance > LOG_RECOVERY_START_SKEW_SECS && !metadata_matches {
+        return None;
+    }
+
+    let rank = if metadata_matches {
+        0
+    } else if command_matches {
+        1
+    } else if expected_path {
+        2
+    } else {
+        3
+    };
+    Some((rank, distance))
+}
+
+fn process_command_provenance(service: &ServiceSnapshot) -> Vec<String> {
+    let Some(process) = service.process.as_ref() else {
+        return Vec::new();
+    };
+    let system = System::new_all();
+    let mut pid = Some(Pid::from_u32(process.pid));
+    let mut visited = Vec::new();
+    let mut commands = Vec::new();
+    while let Some(current_pid) = pid {
+        if visited.contains(&current_pid) {
+            break;
+        }
+        visited.push(current_pid);
+        let Some(current) = system.process(current_pid) else {
+            break;
+        };
+        let command = current
+            .cmd()
+            .iter()
+            .map(|part| part.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !command.is_empty() {
+            commands.push(command);
+        }
+        pid = current.parent();
+    }
+    commands
+}
+
+fn commands_match(marker: &str, process: &str) -> bool {
+    let marker = marker.trim();
+    let process = process.trim();
+    if marker.is_empty() || process.is_empty() {
+        return false;
+    }
+    marker == process
+        || (marker.len() >= 16 && process.contains(marker))
+        || (process.len() >= 16 && marker.contains(process))
+}
+
+fn ensure_process_identity(pid: u32, start_time: u64) -> Result<(), String> {
+    let system = System::new_all();
+    let process = system.process(Pid::from_u32(pid)).ok_or_else(|| {
+        "The process changed since the last scan. Refresh and try again.".to_string()
+    })?;
+    if process.start_time() != start_time {
+        return Err(
+            "The PID was reused by another process. Refresh before reading its logs.".into(),
+        );
+    }
+    Ok(())
+}
+
 fn external_task_info(
     profile: &LaunchProfile,
     task: &LaunchTask,
     workspace: Option<&WorkspaceSnapshot>,
 ) -> Option<ExternalTaskInfo> {
-    let Some(port) = task.expected_port else { return None };
-    let task_root = task_cwd(profile, task)
-        .canonicalize()
-        .unwrap_or_else(|_| task_cwd(profile, task));
     let service = workspace.and_then(|snapshot| {
-        snapshot.services.iter().find(|service| {
-            service.endpoints.iter().any(|endpoint| endpoint.port == port)
-                && (service
-                    .process
-                    .as_ref()
-                    .and_then(|process| process.working_directory.as_deref())
-                    .is_some_and(|path| path_matches_task(path, &task_root))
-                    || service.project.as_ref().is_some_and(|project| {
-                        [project.root_path.as_str(), project.workspace_root_path.as_str()]
-                            .into_iter()
-                            .any(|path| path_matches_task(path, &task_root))
-                    }))
-        })
+        snapshot
+            .services
+            .iter()
+            .find(|service| task_matches_service(profile, task, service))
     })?;
     let process = service.process.as_ref();
     let pid = process.map(|process| process.pid);
-    let working_directory = process
-        .and_then(|process| process.working_directory.clone());
+    let working_directory = process.and_then(|process| process.working_directory.clone());
     let (log_path, log_tail) = pid
         .and_then(external_log_path)
         .and_then(|path| read_log_tail(&path).ok().map(|tail| (Some(path), tail)))
@@ -486,6 +841,78 @@ fn external_task_info(
         log_path,
         log_tail,
     })
+}
+
+fn task_matches_service(
+    profile: &LaunchProfile,
+    task: &LaunchTask,
+    service: &ServiceSnapshot,
+) -> bool {
+    let Some(port) = task.expected_port else {
+        return false;
+    };
+    if !service
+        .endpoints
+        .iter()
+        .any(|endpoint| endpoint.port == port)
+    {
+        return false;
+    }
+    let task_root = task_cwd(profile, task)
+        .canonicalize()
+        .unwrap_or_else(|_| task_cwd(profile, task));
+    service
+        .process
+        .as_ref()
+        .and_then(|process| process.working_directory.as_deref())
+        .is_some_and(|path| path_matches_task(path, &task_root))
+        || service.project.as_ref().is_some_and(|project| {
+            [
+                project.root_path.as_str(),
+                project.workspace_root_path.as_str(),
+            ]
+            .into_iter()
+            .any(|path| path_matches_task(path, &task_root))
+        })
+}
+
+fn service_belongs_to_runtime(service: &ServiceSnapshot, runtime_pid: Option<u32>) -> bool {
+    let Some(process) = service.process.as_ref() else {
+        return false;
+    };
+    let Some(runtime_pid) = runtime_pid else {
+        return true;
+    };
+    if process.pid == runtime_pid {
+        return true;
+    }
+
+    let system = System::new_all();
+    let mut parent_pid = process.parent_pid;
+    let mut visited = Vec::new();
+    while let Some(pid) = parent_pid {
+        if pid == runtime_pid {
+            return true;
+        }
+        if visited.contains(&pid) {
+            return false;
+        }
+        visited.push(pid);
+        parent_pid = system
+            .process(Pid::from_u32(pid))
+            .and_then(|process| process.parent())
+            .map(|pid| pid.as_u32());
+    }
+    false
+}
+
+fn unavailable_service_logs(message: &str) -> ServiceLogSnapshot {
+    ServiceLogSnapshot {
+        logs: String::new(),
+        source_path: None,
+        available: false,
+        message: Some(message.into()),
+    }
 }
 
 #[cfg(unix)]
@@ -511,7 +938,9 @@ fn parse_lsof_output_paths(text: &str) -> Vec<(u8, PathBuf)> {
     let mut fd = None;
     let mut paths = Vec::new();
     for line in text.lines() {
-        let Some((field, value)) = line.split_at_checked(1) else { continue };
+        let Some((field, value)) = line.split_at_checked(1) else {
+            continue;
+        };
         match field {
             "f" => fd = parse_lsof_fd(value),
             "n" if matches!(fd, Some(1 | 2)) => {
@@ -541,7 +970,9 @@ fn first_readable_external_log_path(mut paths: Vec<(u8, PathBuf)>) -> Option<Pat
             continue;
         }
         seen.push(comparison_path);
-        let Ok(metadata) = fs::metadata(&path) else { continue };
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
         if !metadata.is_file() {
             continue;
         }
@@ -573,9 +1004,19 @@ fn is_active(state: &str) -> bool {
 fn safe_name(value: &str) -> String {
     let safe = value
         .chars()
-        .map(|character| if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') { character } else { '_' })
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
-    if safe.is_empty() { "task".into() } else { safe }
+    if safe.is_empty() {
+        "task".into()
+    } else {
+        safe
+    }
 }
 
 #[cfg(test)]
@@ -622,13 +1063,81 @@ mod tests {
         }
     }
 
+    fn managed_service_log_fixture(
+        contents: &str,
+    ) -> (
+        tempfile::TempDir,
+        LaunchProfile,
+        WorkspaceSnapshot,
+        LaunchManager,
+    ) {
+        let temporary = tempfile::tempdir().unwrap();
+        let frontend = temporary.path().join("frontend");
+        fs::create_dir(&frontend).unwrap();
+        let log_path = temporary.path().join("frontend.log");
+        fs::write(&log_path, contents).unwrap();
+        let profile = LaunchProfile {
+            id: "profile".into(),
+            name: "dutypark".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "frontend".into(),
+                cwd: "frontend".into(),
+                command: "npm run dev".into(),
+                expected_port: Some(5173),
+            }],
+        };
+        let mut workspace = workspace_with_project(5173, &frontend);
+        workspace.services[0].process = Some(crate::models::ProcessInfo {
+            pid: 123,
+            parent_pid: None,
+            name: "node".into(),
+            executable: None,
+            working_directory: Some(frontend.to_string_lossy().into_owned()),
+            command: "node vite".into(),
+            launch_command: None,
+            create_time: 0,
+            uptime_seconds: 0,
+            cpu_percent: None,
+            memory_bytes: None,
+            uid: None,
+        });
+        let manager = LaunchManager {
+            tasks: HashMap::from([(
+                task_key("profile", "frontend"),
+                RuntimeTask {
+                    child: None,
+                    pid: Some(123),
+                    state: "running".into(),
+                    started_at: Some(1),
+                    message: None,
+                    log_path,
+                },
+            )]),
+        };
+        (temporary, profile, workspace, manager)
+    }
+
     #[test]
     fn relative_task_directory_is_anchored_to_project() {
         let temporary = tempfile::tempdir().unwrap();
         fs::create_dir(temporary.path().join("frontend")).unwrap();
-        let profile = LaunchProfile { id: "p".into(), name: "P".into(), project_root: temporary.path().to_string_lossy().into_owned(), tasks: vec![] };
-        let task = LaunchTask { name: "web".into(), cwd: "frontend".into(), command: "echo ok".into(), expected_port: None };
-        assert_eq!(resolve_cwd(&profile, &task).unwrap(), temporary.path().join("frontend"));
+        let profile = LaunchProfile {
+            id: "p".into(),
+            name: "P".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![],
+        };
+        let task = LaunchTask {
+            name: "web".into(),
+            cwd: "frontend".into(),
+            command: "echo ok".into(),
+            expected_port: None,
+        };
+        assert_eq!(
+            resolve_cwd(&profile, &task).unwrap(),
+            temporary.path().join("frontend")
+        );
     }
 
     #[test]
@@ -732,6 +1241,147 @@ mod tests {
 
         assert_eq!(snapshots[0].state, "running");
         assert_eq!(snapshots[0].main_pid, Some(42));
+    }
+
+    #[test]
+    fn service_logs_prefers_matching_active_task_log() {
+        let (_temporary, profile, workspace, mut manager) =
+            managed_service_log_fixture("managed output\n");
+
+        let snapshot = manager.service_logs(&[profile], &workspace.services[0], _temporary.path());
+        let snapshot = snapshot.unwrap();
+
+        assert!(snapshot.available);
+        assert_eq!(snapshot.logs, "managed output\n");
+        assert!(snapshot.source_path.is_some());
+        assert_eq!(snapshot.message, None);
+    }
+
+    #[test]
+    fn service_logs_marks_empty_managed_file_as_available() {
+        let (_temporary, profile, workspace, mut manager) = managed_service_log_fixture("");
+
+        let snapshot = manager.service_logs(&[profile], &workspace.services[0], _temporary.path());
+        let snapshot = snapshot.unwrap();
+
+        assert!(snapshot.available);
+        assert!(snapshot.logs.is_empty());
+        assert!(snapshot.source_path.is_some());
+        assert_eq!(snapshot.message, None);
+    }
+
+    #[test]
+    fn managed_task_ownership_requires_runtime_pid_or_descendant() {
+        let (_temporary, _profile, workspace, _manager) =
+            managed_service_log_fixture("managed output\n");
+        let service = &workspace.services[0];
+
+        assert!(service_belongs_to_runtime(service, Some(123)));
+        assert!(!service_belongs_to_runtime(service, Some(42)));
+        assert!(service_belongs_to_runtime(service, None));
+    }
+
+    #[test]
+    fn recovered_log_matches_legacy_profile_by_task_and_start_time() {
+        let temporary = tempfile::tempdir().unwrap();
+        let frontend = temporary.path().join("frontend");
+        let logs_dir = temporary.path().join("logs");
+        fs::create_dir(&frontend).unwrap();
+        fs::create_dir(&logs_dir).unwrap();
+        let profile = LaunchProfile {
+            id: "current-profile".into(),
+            name: "dutypark".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "frontend".into(),
+                cwd: "frontend".into(),
+                command: "npm run dev".into(),
+                expected_port: Some(5173),
+            }],
+        };
+        let workspace = workspace_with_project(5173, &frontend);
+        fs::write(
+            logs_dir.join("legacy-profile-frontend.log"),
+            format!(
+                "=== Cutting Board start 1000 · npm run dev ===\n=== Cutting Board task metadata {} ===\noutput\n",
+                serde_json::json!({
+                    "profile_id": "legacy-profile",
+                    "task_name": "frontend",
+                    "cwd": frontend.to_string_lossy(),
+                })
+            ),
+        )
+        .unwrap();
+
+        let path = recovered_managed_log_path(&logs_dir, &[profile], &workspace.services[0], 1005);
+
+        assert_eq!(path, Some(logs_dir.join("legacy-profile-frontend.log")));
+    }
+
+    #[test]
+    fn recovered_log_rejects_unrelated_stale_marker() {
+        let temporary = tempfile::tempdir().unwrap();
+        let frontend = temporary.path().join("frontend");
+        let logs_dir = temporary.path().join("logs");
+        fs::create_dir(&frontend).unwrap();
+        fs::create_dir(&logs_dir).unwrap();
+        let profile = LaunchProfile {
+            id: "current-profile".into(),
+            name: "dutypark".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "frontend".into(),
+                cwd: "frontend".into(),
+                command: "npm run dev".into(),
+                expected_port: Some(5173),
+            }],
+        };
+        let workspace = workspace_with_project(5173, &frontend);
+        fs::write(
+            logs_dir.join("legacy-profile-frontend.log"),
+            "=== Cutting Board start 1 · an unrelated command ===\noutput\n",
+        )
+        .unwrap();
+
+        let path =
+            recovered_managed_log_path(&logs_dir, &[profile], &workspace.services[0], 10_000);
+
+        assert_eq!(path, None);
+    }
+
+    #[test]
+    fn recovered_log_prefers_current_start_over_old_matching_command() {
+        let temporary = tempfile::tempdir().unwrap();
+        let frontend = temporary.path().join("frontend");
+        let logs_dir = temporary.path().join("logs");
+        fs::create_dir(&frontend).unwrap();
+        fs::create_dir(&logs_dir).unwrap();
+        let profile = LaunchProfile {
+            id: "current-profile".into(),
+            name: "dutypark".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "frontend".into(),
+                cwd: "frontend".into(),
+                command: "npm run dev".into(),
+                expected_port: Some(5173),
+            }],
+        };
+        let workspace = workspace_with_project(5173, &frontend);
+        fs::write(
+            logs_dir.join("old-profile-frontend.log"),
+            "=== Cutting Board start 1 · npm run dev ===\nold output\n",
+        )
+        .unwrap();
+        fs::write(
+            logs_dir.join("legacy-profile-frontend.log"),
+            "=== Cutting Board start 1000 · a wrapper command ===\ncurrent output\n",
+        )
+        .unwrap();
+
+        let path = recovered_managed_log_path(&logs_dir, &[profile], &workspace.services[0], 1005);
+
+        assert_eq!(path, Some(logs_dir.join("legacy-profile-frontend.log")));
     }
 
     #[test]
