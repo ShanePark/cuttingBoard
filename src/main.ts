@@ -454,7 +454,11 @@ function renderServices(force = false): void {
   const groups = groupServices(services).map((group) => ({
     ...group,
     containers: relatedContainersForGroup(group.services, containers)
-  }));
+  })).sort((left, right) => {
+    const leftTiles = left.services.length + left.containers.length;
+    const rightTiles = right.services.length + right.containers.length;
+    return rightTiles - leftTiles || left.name.localeCompare(right.name);
+  });
   const signature = JSON.stringify([
     services.map((service) => [
       service.id, service.display_name, service.tech, uniquePorts(service), service.category, service.status,
