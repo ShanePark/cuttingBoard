@@ -1358,6 +1358,7 @@ function renderTask(profile: LaunchProfile, task: LaunchTask): string {
   const selected = selectedTaskKey === launchTaskKey(profile.id, task.name);
   const externalCanStop = external && Boolean(matchedService?.can_terminate);
   const stopUnavailable = external ? !externalCanStop : !active;
+  const detailsAction = `<button type="button" class="info-button icon-only-button service-card-control task-card-action" data-tile-action data-action="task-details" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="View ${h(task.name)} details" title="View task details">${uiIcon("info", 15)}</button>`;
   const startAction = !active && !external
     ? `<button class="quiet-button start-action icon-only-button service-card-control task-card-action" type="button" data-tile-action data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="Start ${h(task.name)}" title="Start task" ${busy ? "disabled" : ""}>${uiIcon(busy ? "refresh" : "play", 15)}</button>`
     : "";
@@ -1380,7 +1381,7 @@ function renderTask(profile: LaunchProfile, task: LaunchTask): string {
     iconMarkup: matchedService ? techIcon(matchedService.tech, 44) : uiIcon("terminal", 25),
     pipClass: busy ? "busy" : state === "external" ? "external" : state === "stopped" || state === "failed" ? "idle" : "running",
     title: task.name,
-    controlsMarkup: `${startAction}${stopAction}`,
+    controlsMarkup: `${detailsAction}${startAction}${stopAction}`,
     metricsMarkup,
     ports: task.expected_port ? [task.expected_port] : [],
     emptyPortLabel: "No expected port"
@@ -1803,6 +1804,7 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "toggle-settings-info") toggleSettingsInfo(target);
     else if (action === "show-info") showInfo(required(target.dataset.infoKind));
     else if (action === "profile-details") showProfileDetails(findProfile(required(target.dataset.profileId)));
+    else if (action === "task-details") showTaskDetails(findProfile(required(target.dataset.profileId)), required(target.dataset.taskName));
     else if (action === "close-modal") closeModal();
     else if (action === "save-settings") await saveSettingsFromModal();
     else if (action === "open-source") await openUrl(SOURCE_URL);
@@ -2208,6 +2210,31 @@ function showContainerGroupDetails(groupName: string): void {
 function showProfileDetails(profile: LaunchProfile): void {
   const taskItems = profile.tasks.map((task) => `<li><strong>${h(task.name)}</strong><span class="profile-task-meta"><code class="mono">${h(task.command || "No command configured")}</code>${task.expected_port ? `<span>Port ${task.expected_port}</span>` : ""}</span></li>`).join("");
   openModal(profile.name, `<div class="info-modal-copy"><p>Saved commands and project context for this launch profile.</p><dl class="detail-grid"><dt>Project root</dt><dd class="mono">${h(profile.project_root)}</dd><dt>Tasks</dt><dd>${profile.tasks.length}</dd></dl><h3 class="detail-heading">Commands</h3><ul class="detail-list">${taskItems || "<li><span>No tasks configured</span></li>"}</ul></div><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+}
+
+function showTaskDetails(profile: LaunchProfile, taskName: string): void {
+  const task = profile.tasks.find((item) => item.name === taskName);
+  if (!task) throw new Error("The launch task no longer exists.");
+  const snapshot = snapshotFor(profile.id, taskName);
+  const state: LaunchState = snapshot?.state ?? "stopped";
+  const external = state === "external";
+  const pid = external ? snapshot?.external_pid ?? snapshot?.main_pid ?? null : snapshot?.main_pid ?? null;
+  const cwd = external ? snapshot?.external_working_directory || task.cwd : task.cwd;
+  const uptime = snapshot?.started_at ? formatUptimeCompact(Date.now() / 1000 - snapshot.started_at) : "";
+  const matchedService = matchedServiceForTask(profile, task);
+  const message = snapshot?.message?.trim() ?? "";
+  openModal(task.name, `
+    <div class="detail-identity"><div class="detail-icon" aria-hidden="true">${matchedService ? techIcon(matchedService.tech, 56) : uiIcon("terminal", 34)}</div><div><strong>${h(task.name)}</strong><span>${h(profile.name)} · ${h(stateLabel(state))}</span></div></div>
+    ${message ? `<div class="detail-warning">${h(message)}</div>` : ""}
+    <dl class="detail-grid">
+      <dt>State</dt><dd>${h(stateLabel(state))}</dd><dt>PID</dt><dd>${pid ?? "—"}</dd>
+      <dt>Uptime</dt><dd>${h(uptime || "—")}</dd><dt>Expected port</dt><dd>${task.expected_port ?? "—"}</dd>
+      <dt>Command</dt><dd class="mono">${h(task.command || "—")}</dd><dt>Working directory</dt><dd class="mono">${h(cwd || "—")}</dd>
+      <dt>Project root</dt><dd class="mono">${h(profile.project_root)}</dd>
+      ${external ? `<dt>External log</dt><dd class="mono">${h(snapshot?.external_log_path ?? "—")}</dd>` : ""}
+      ${matchedService ? `<dt>Detected service</dt><dd>${h(serviceTitle(matchedService) || matchedService.display_name)}</dd><dt>Memory</dt><dd>${formatBytes(matchedService.process?.memory_bytes ?? null)}</dd>` : ""}
+    </dl>
+    <div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
 }
 
 function showInfo(kind: string): void {
