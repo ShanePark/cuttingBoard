@@ -1212,7 +1212,7 @@ function renderProfile(profile: LaunchProfile): string {
       <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name.toUpperCase(), "View profile details")}</h2></div>
       <div class="section-actions launch-profile-actions">
         ${runAll}${stopAll}
-        <button class="section-action icon-only-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" aria-label="Edit ${h(profile.name)}" title="Edit profile" ${appInfo?.demo || canStop ? "disabled" : ""}>${uiIcon("settings", 15)}</button>
+        <button class="section-action icon-only-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" aria-label="Edit ${h(profile.name)}" title="Edit profile" ${appInfo?.demo ? "disabled" : ""}>${uiIcon("settings", 15)}</button>
       </div>
     </header>
     <div class="task-list" role="list" aria-label="Tasks in ${h(profile.name)}">${profile.tasks.map((task) => renderTask(profile, task)).join("")}</div>
@@ -1779,6 +1779,13 @@ function launchTaskIsActive(state: LaunchState): boolean {
   return ["starting", "running", "stopping"].includes(state);
 }
 
+function launchProfileBlocksEditing(profile: LaunchProfile): boolean {
+  return profile.tasks.some((task) => {
+    const state = snapshotFor(profile.id, task.name)?.state ?? "stopped";
+    return launchTaskIsActive(state) || state === "external";
+  });
+}
+
 function launchProfileOperationKey(profileId: string): string {
   return `profile:${profileId}`;
 }
@@ -1951,12 +1958,14 @@ async function stopGroup(id: string): Promise<void> {
 function requestDeleteProfile(id: string): void {
   if (pendingProfileDeleteId !== null) return;
   const profile = findProfile(id);
+  if (launchProfileBlocksEditing(profile)) throw new Error("Stop every task in this profile before deleting it.");
   pendingProfileDeleteId = id;
   openModal("Delete launch profile?", `<p class="confirm-copy">Delete <strong>${h(profile.name)}</strong>? This removes its saved commands.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button" type="button" data-action="confirm-delete-profile" data-profile-id="${h(id)}">Delete</button></div>`);
 }
 
 async function confirmDeleteProfile(id: string): Promise<void> {
   if (pendingProfileDeleteId !== id) return;
+  if (launchProfileBlocksEditing(findProfile(id))) throw new Error("Stop every task in this profile before deleting it.");
   closeModal();
   await deleteProfile(id);
 }
@@ -2171,21 +2180,26 @@ async function saveSettingsFromModal(): Promise<void> {
 
 function showProfileEditor(profile: LaunchProfile | null): void {
   const tasks = profile?.tasks.length ? profile.tasks : [{ name: "Backend", cwd: ".", command: "", expected_port: null }];
-  const active = profile?.tasks.some((task) => ["starting", "running", "stopping"].includes(snapshotFor(profile.id, task.name)?.state ?? "stopped")) ?? false;
+  const active = profile ? launchProfileBlocksEditing(profile) : false;
+  const readOnly = active ? "readonly" : "";
+  const disabled = active ? "disabled" : "";
   const deleteAction = profile
     ? `<button class="secondary-button danger-button icon-button-label profile-delete-action" type="button" data-action="delete-profile" data-profile-id="${h(profile.id)}" aria-label="Delete ${h(profile.name)}" title="Delete profile" ${appInfo?.demo || active ? "disabled" : ""}>${uiIcon("trash", 15)} Delete</button>`
     : "";
-  openModal(profile ? "Edit Launch Profile" : "Add Launch Profile", `<form id="profile-form" class="form-stack" onsubmit="return false">
-    <label>Profile name<input name="name" required maxlength="80" value="${h(profile?.name ?? "")}"></label>
-    <label>Project root<div class="field-with-button"><input id="project-root" name="project_root" required value="${h(profile?.project_root ?? "")}"><button class="secondary-button" type="button" data-action="choose-root">Choose</button></div></label>
-    <div class="task-editor-heading"><strong>Tasks</strong><button class="quiet-button icon-button-label" type="button" data-action="add-task-row">${uiIcon("plus", 13)} Add task</button></div>
-    <div id="task-editors">${tasks.map(renderTaskEditor).join("")}</div>
-    <div class="modal-actions">${deleteAction}<button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button" type="button" data-action="save-profile" ${profile ? `data-profile-id="${h(profile.id)}"` : ""}>Save</button></div>
+  const activeNote = active ? `<p class="form-note">This profile is read-only while any task is running. Stop every task before editing, saving, or deleting it.</p>` : "";
+  openModal(profile ? "Edit Launch Profile" : "Add Launch Profile", `<form id="profile-form" class="form-stack${active ? " is-readonly" : ""}" onsubmit="return false">
+    <label>Profile name<input name="name" required maxlength="80" value="${h(profile?.name ?? "")}" ${readOnly}></label>
+    <label>Project root<div class="field-with-button"><input id="project-root" name="project_root" required value="${h(profile?.project_root ?? "")}" ${readOnly}><button class="secondary-button" type="button" data-action="choose-root" ${disabled}>Choose</button></div></label>
+    <div class="task-editor-heading"><strong>Tasks</strong><button class="quiet-button icon-button-label" type="button" data-action="add-task-row" ${disabled}>${uiIcon("plus", 13)} Add task</button></div>
+    <div id="task-editors">${tasks.map((task) => renderTaskEditor(task, active)).join("")}</div>
+    ${activeNote}<div class="modal-actions">${deleteAction}<button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button" type="button" data-action="save-profile" ${profile ? `data-profile-id="${h(profile.id)}"` : ""} ${appInfo?.demo || active ? "disabled" : ""}>Save</button></div>
   </form>`);
 }
 
-function renderTaskEditor(task: LaunchTask): string {
-  return `<fieldset class="task-editor"><button class="remove-task" type="button" data-action="remove-task-row" aria-label="Remove task" title="Remove task">${uiIcon("trash", 15)}</button><label>Name<input data-task-field="name" required value="${h(task.name)}"></label><label>Working directory<input data-task-field="cwd" required value="${h(task.cwd)}"></label><label>Command<input data-task-field="command" required value="${h(task.command)}"></label><label>Expected port (optional)<input data-task-field="expected_port" type="number" min="1" max="65535" value="${task.expected_port ?? ""}"></label></fieldset>`;
+function renderTaskEditor(task: LaunchTask, readOnly = false): string {
+  const inputState = readOnly ? "readonly" : "";
+  const buttonState = readOnly ? "disabled" : "";
+  return `<fieldset class="task-editor"><button class="remove-task" type="button" data-action="remove-task-row" aria-label="Remove task" title="Remove task" ${buttonState}>${uiIcon("trash", 15)}</button><label>Name<input data-task-field="name" required value="${h(task.name)}" ${inputState}></label><label>Working directory<input data-task-field="cwd" required value="${h(task.cwd)}" ${inputState}></label><label>Command<input data-task-field="command" required value="${h(task.command)}" ${inputState}></label><label>Expected port (optional)<input data-task-field="expected_port" type="number" min="1" max="65535" value="${task.expected_port ?? ""}" ${inputState}></label></fieldset>`;
 }
 
 function addTaskRow(): void {
@@ -2204,6 +2218,7 @@ async function chooseProfileRoot(): Promise<void> {
 async function saveProfileFromModal(id: string | null): Promise<void> {
   const form = document.querySelector<HTMLFormElement>("#profile-form");
   if (!form) return;
+  if (id && launchProfileBlocksEditing(findProfile(id))) throw new Error("Stop every task in this profile before editing it.");
   const data = new FormData(form);
   const tasks = [...form.querySelectorAll<HTMLElement>(".task-editor")].map((row) => {
     const value = (name: string): string => row.querySelector<HTMLInputElement>(`[data-task-field='${name}']`)?.value.trim() ?? "";
@@ -2235,6 +2250,12 @@ function openModal(title: string, body: string): void {
   const activeElement = document.activeElement;
   modalFocusReturn = activeElement instanceof HTMLElement && activeElement !== document.body ? activeElement : null;
   byId("modal-root").innerHTML = `<div class="modal-backdrop" role="presentation"><section class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header class="modal-header"><h2 id="modal-title">${h(title)}</h2><button type="button" class="modal-close" data-action="close-modal" aria-label="Close">${uiIcon("close", 18)}</button></header><div class="modal-body">${body}</div></section></div>`;
+  const modal = document.querySelector<HTMLElement>(".modal");
+  const actions = modal?.querySelector<HTMLElement>(".modal-body .modal-actions");
+  if (actions) {
+    actions.classList.add("modal-footer");
+    modal?.append(actions);
+  }
   document.querySelector<HTMLElement>(".modal button, .modal input, .modal select")?.focus();
   const appShell = document.querySelector<HTMLElement>(".app-shell");
   appShell?.setAttribute("inert", "");

@@ -714,14 +714,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .service-card-control.icon-only-button { display: inline-grid; place-items: center; }
 button:disabled { opacity: .45; cursor: default; }
 
-.modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .56); backdrop-filter: blur(2px); }
-.modal { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: hidden; border: 1px solid var(--border); border-radius: 20px; background: var(--surface); box-shadow: 0 22px 70px var(--shadow); }
-.modal-header { min-height: 64px; height: auto; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid var(--hairline); }
+.modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 16px; overflow: hidden; background: rgba(0, 0, 0, .56); backdrop-filter: blur(2px); }
+.modal { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 20px; background: var(--surface); box-shadow: 0 22px 70px var(--shadow); }
+.modal-header { min-height: 64px; height: auto; display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid var(--hairline); }
 .modal-header h2 { margin: 0; font-size: 18px; }
 .modal-close { width: 40px; height: 40px; display: grid; place-items: center; border: 0; border-radius: 10px; background: transparent; color: var(--text-muted); cursor: pointer; }
 .modal-close:hover { background: var(--surface-hover); color: var(--text); }
-.modal-body { max-height: calc(100dvh - 96px); overflow: auto; padding: 22px; }
+.modal-body { min-height: 0; overflow: auto; padding: 22px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.modal-footer { flex: 0 0 auto; margin-top: 0; padding: 16px 22px; border-top: 1px solid var(--hairline); background: var(--surface); }
 .confirm-copy { margin: 0; color: var(--text-muted); line-height: 1.5; }
 .confirm-copy strong { color: var(--text); }
 .detail-identity { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
@@ -745,6 +746,7 @@ button:disabled { opacity: .45; cursor: default; }
 .form-stack { display: grid; gap: 18px; }
 .form-stack label { display: grid; gap: 8px; color: var(--text-muted); font-size: 13px; font-weight: 700; }
 .form-stack input, .form-stack select { width: 100%; min-height: 44px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--canvas); color: var(--text); font-size: 13px; user-select: text; }
+.form-stack.is-readonly input[readonly] { border-color: var(--hairline); background: var(--surface-alt); color: var(--text-muted); cursor: default; }
 .field-with-button { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .form-note { margin: 0; color: var(--text-dim); font-size: 11px; line-height: 1.5; }
 .info-modal-copy > p { margin: 0 0 16px; color: var(--text-muted); font-size: 13px; line-height: 1.55; }
@@ -822,6 +824,7 @@ button:disabled { opacity: .45; cursor: default; }
 .task-editor label:nth-of-type(3) { grid-column: 1 / -1; }
 .remove-task { position: absolute; top: 8px; right: 8px; width: 34px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 9px; background: transparent; color: var(--text-dim); cursor: pointer; }
 .remove-task:hover { color: var(--danger); background: var(--surface-hover); }
+.remove-task:disabled:hover { color: var(--text-dim); background: transparent; }
 .profile-delete-action { margin-right: auto; }
 
 #toast-root { position: fixed; z-index: 200; right: 18px; bottom: 38px; pointer-events: none; }
@@ -873,7 +876,8 @@ button:disabled { opacity: .45; cursor: default; }
   .modal { width: min(100%, calc(100vw - 20px)); max-height: calc(100dvh - 20px); border-radius: 16px; }
   .modal-header { min-height: 58px; padding-inline: 16px; }
   .modal-header h2 { font-size: 17px; }
-  .modal-body { max-height: calc(100dvh - 78px); padding: 16px; }
+  .modal-body { padding: 16px; }
+  .modal-footer { padding: 12px 16px; }
   .settings-section { padding: 16px; }
   .theme-options { grid-template-columns: 1fr; }
   .modal-actions > button { flex: 1 1 140px; }
