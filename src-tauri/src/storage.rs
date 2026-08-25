@@ -90,11 +90,12 @@ pub fn load_profiles(path: &Path) -> Result<Vec<LaunchProfile>, String> {
 
 fn migrate_legacy_profile(profile: &mut LaunchProfile) -> bool {
     let project_root = PathBuf::from(profile.project_root.trim());
-    profile
-        .tasks
-        .iter_mut()
-        .map(|task| repair_legacy_java_command(&project_root, task))
-        .any(|changed| changed)
+    let mut changed = false;
+    for task in &mut profile.tasks {
+        changed |= repair_legacy_java_command(&project_root, task);
+        changed |= repair_truncated_spring_gradle_command(&project_root, task);
+    }
+    changed
 }
 
 fn repair_legacy_java_command(project_root: &Path, task: &mut LaunchTask) -> bool {
@@ -109,6 +110,51 @@ fn repair_legacy_java_command(project_root: &Path, task: &mut LaunchTask) -> boo
     let Some(main_class) = find_spring_boot_main_class(project_root) else { return false };
     parts[classpath_index + 2] = main_class;
     task.command = parts.join(" ");
+    true
+}
+
+fn repair_truncated_spring_gradle_command(project_root: &Path, task: &mut LaunchTask) -> bool {
+    let command = task.command.trim();
+    if !command.ends_with('…') {
+        return false;
+    }
+    let parts = command.split_whitespace().collect::<Vec<_>>();
+    let is_java = parts
+        .first()
+        .and_then(|value| Path::new(value).file_name())
+        .and_then(|value| value.to_str())
+        == Some("java");
+    let classpath = parts
+        .iter()
+        .position(|part| matches!(*part, "-cp" | "-classpath" | "--class-path"))
+        .and_then(|index| parts.get(index + 1));
+    if !is_java || !classpath.is_some_and(|value| value.contains("spring-boot")) {
+        return false;
+    }
+
+    let cwd = PathBuf::from(task.cwd.trim());
+    let task_root = if cwd.is_absolute() {
+        cwd
+    } else {
+        project_root.join(cwd)
+    };
+    let build_file = [task_root.join("build.gradle"), task_root.join("build.gradle.kts")]
+        .into_iter()
+        .find(|path| path.is_file());
+    let Some(build_file) = build_file else {
+        return false;
+    };
+    if !task_root.join("gradlew").is_file() {
+        return false;
+    }
+    let Ok(build_script) = fs::read_to_string(build_file) else {
+        return false;
+    };
+    if !build_script.contains("org.springframework.boot") && !build_script.contains("bootRun") {
+        return false;
+    }
+
+    task.command = "./gradlew bootRun".into();
     true
 }
 
@@ -282,5 +328,38 @@ mod tests {
             profiles[0].tasks[0].command,
             "java -cp /cache/spring-boot.jar com.example.DemoApplication --spring.profiles.active=dev"
         );
+    }
+
+    #[test]
+    fn migrates_truncated_spring_boot_java_command_to_gradle_wrapper() {
+        let temporary = tempfile::tempdir().unwrap();
+        let backend = temporary.path().join("backend");
+        fs::create_dir(&backend).unwrap();
+        fs::write(backend.join("gradlew"), "#!/bin/sh\n").unwrap();
+        fs::write(
+            backend.join("build.gradle"),
+            "plugins { id 'org.springframework.boot' version '2.7.18' }\n",
+        )
+        .unwrap();
+        let profile_path = temporary.path().join("profiles.json");
+        let profile = LaunchProfile {
+            id: "profile".into(),
+            name: "Demo".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "backend".into(),
+                cwd: "backend".into(),
+                command: "/opt/java/bin/java -cp /cache/spring-boot.jar:/cache/liquibase/li…"
+                    .into(),
+                expected_port: Some(8080),
+            }],
+        };
+        write_json_atomic(&profile_path, &vec![profile]).unwrap();
+
+        let profiles = load_profiles(&profile_path).unwrap();
+
+        assert_eq!(profiles[0].tasks[0].command, "./gradlew bootRun");
+        let persisted = read_json_or_default::<Vec<LaunchProfile>>(&profile_path).unwrap();
+        assert_eq!(persisted[0].tasks[0].command, "./gradlew bootRun");
     }
 }

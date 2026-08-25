@@ -56,7 +56,11 @@ impl LaunchManager {
         for profile in profiles {
             for task in &profile.tasks {
                 let key = task_key(&profile.id, &task.name);
-                if let Some(runtime) = self.tasks.get(&key) {
+                if let Some(runtime) = self
+                    .tasks
+                    .get(&key)
+                    .filter(|runtime| is_active(&runtime.state))
+                {
                     snapshots.push(snapshot_from(&profile.id, &task.name, runtime));
                 } else if let Some(mut external) = external_task_info(profile, task, workspace) {
                     recover_external_task_log(
@@ -68,6 +72,8 @@ impl LaunchManager {
                         workspace,
                     );
                     snapshots.push(external_snapshot(&profile.id, &task.name, external));
+                } else if let Some(runtime) = self.tasks.get(&key) {
+                    snapshots.push(snapshot_from(&profile.id, &task.name, runtime));
                 } else {
                     snapshots.push(ManagedTaskSnapshot {
                         profile_id: profile.id.clone(),
@@ -283,10 +289,12 @@ impl LaunchManager {
         self.refresh();
         let (profile, task) = find_task(profiles, request)?;
         let key = task_key(&profile.id, &task.name);
-        if let Some(runtime) = self.tasks.get_mut(&key) {
-            if !is_active(&runtime.state) {
-                return Ok(snapshot_from(&profile.id, &task.name, runtime));
-            }
+        if self
+            .tasks
+            .get(&key)
+            .is_some_and(|runtime| is_active(&runtime.state))
+        {
+            let runtime = self.tasks.get_mut(&key).expect("active runtime task");
             runtime.state = "stopping".into();
             runtime.message = Some(format!("Stopping {}…", task.name));
             terminate_runtime(runtime)?;
@@ -295,9 +303,14 @@ impl LaunchManager {
             return Ok(snapshot_from(&profile.id, &task.name, runtime));
         }
 
-        let external = external_task_info(profile, task, workspace)
-            .ok_or_else(|| format!("{} is not running.", task.name))?;
-        stop_external_task(&profile.id, &task.name, external)
+        if let Some(external) = external_task_info(profile, task, workspace) {
+            return stop_external_task(&profile.id, &task.name, external);
+        }
+
+        self.tasks
+            .get(&key)
+            .map(|runtime| snapshot_from(&profile.id, &task.name, runtime))
+            .ok_or_else(|| format!("{} is not running.", task.name))
     }
 
     pub fn stop_profile(
@@ -1513,6 +1526,28 @@ mod tests {
 
         assert_eq!(snapshots[0].state, "running");
         assert_eq!(snapshots[0].main_pid, Some(42));
+    }
+
+    #[test]
+    fn stopped_runtime_record_does_not_hide_matching_external_service() {
+        let (temporary, profile, workspace, mut manager) =
+            managed_service_log_fixture("managed output\n");
+        let runtime = manager
+            .tasks
+            .get_mut(&task_key("profile", "frontend"))
+            .unwrap();
+        runtime.child = None;
+        runtime.pid = None;
+        runtime.state = "stopped".into();
+
+        let snapshots = manager.snapshots(
+            std::slice::from_ref(&profile),
+            Some(&workspace),
+            temporary.path(),
+        );
+
+        assert_eq!(snapshots[0].state, "running");
+        assert_eq!(snapshots[0].external_pid, Some(123));
     }
 
     #[test]

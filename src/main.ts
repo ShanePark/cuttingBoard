@@ -544,7 +544,7 @@ function renderGroupActions(group: ReturnType<typeof groupServices>[number]): st
   const stopBusy = operations.has(`group-stop:${group.id}`);
   const profilePresent = profileForGroup(group) !== undefined;
   const saveAction = profilePresent
-    ? `<span class="group-profile-saved" title="Launch profile saved" aria-label="Launch profile saved">${uiIcon("check", 14)}</span>`
+    ? `<span class="group-profile-saved" title="Launch profile saved" aria-label="Launch profile saved">${uiIcon("check", 17)}</span>`
     : `<button class="section-action icon-only-button save-group-action" type="button" data-action="save-service-group" data-group-id="${h(group.id)}" title="${saveBusy ? "Saving launch profile" : "Save launch profile"}" aria-label="${saveBusy ? "Saving" : "Save"} launch profile for ${h(group.name)}" ${saveBusy ? "disabled" : ""}>${uiIcon(saveBusy ? "refresh" : "save", 17)}</button>`;
   if (group.services.length === 1) return `<div class="section-actions">${saveAction}</div>`;
   const terminableCount = group.services.filter((service) => service.can_terminate).length;
