@@ -2,7 +2,7 @@ import "./styles.css";
 import { open as choosePath } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
-import { techIcon, uiIcon } from "./icons";
+import { techIcon, uiIcon, type UiIconName } from "./icons";
 import {
   FRESH_UPTIME_SECONDS,
   currentUptime,
@@ -36,6 +36,19 @@ import type {
 type Tab = "services" | "docker" | "launch";
 const SOURCE_URL = "https://github.com/ShanePark/cuttingBoard";
 const MIN_TILE_WIDTH = 300;
+const MIN_CONSOLE_HEIGHT = 220;
+const DEFAULT_CONSOLE_HEIGHT = 336;
+const MIN_BOARD_HEIGHT = 140;
+const CONSOLE_RESIZE_STEP = 24;
+
+// The dock below the workspace shows one panel at a time and is shared by every tab.
+// A new panel needs an entry here plus a body rendered for its id.
+type BottomPanelId = "console";
+const BOTTOM_PANELS: ReadonlyArray<{ id: BottomPanelId; label: string; icon: UiIconName }> = [
+  { id: "console", label: "Console", icon: "terminal" }
+];
+let activeBottomPanel: BottomPanelId | null = "console";
+let consoleHeight = DEFAULT_CONSOLE_HEIGHT;
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing application root");
@@ -51,6 +64,7 @@ root.innerHTML = `
       <button class="gear-button" type="button" data-action="settings" aria-label="Settings" title="Settings">${uiIcon("settings", 18)}</button>
     </header>
     <main id="workspace" class="workspace" aria-live="polite"></main>
+    <nav id="bottom-tabs" class="bottom-tabs" aria-label="Panels">${renderBottomPanelTabs()}</nav>
     <footer id="status-footer" class="footer" hidden><span id="app-status"></span></footer>
   </div>
   <div id="modal-root"></div>
@@ -175,6 +189,7 @@ function activeContainerTab(): ContainerTab {
 
 root.addEventListener("click", (event) => void handleClick(event));
 root.addEventListener("keydown", handleKeyboard);
+root.addEventListener("pointerdown", handleConsoleResizeStart);
 root.addEventListener("scroll", handleConsoleScroll, true);
 document.addEventListener("keydown", (event) => {
   if (!document.querySelector(".modal-backdrop")) return;
@@ -196,6 +211,7 @@ async function bootstrap(): Promise<void> {
     applyTheme(settings.theme_mode);
     renderHeaderCounts();
     await refreshWorkspace(true);
+    applyConsoleHeight();
     installTimers();
     installBoardObserver();
   } catch (error) {
@@ -204,7 +220,10 @@ async function bootstrap(): Promise<void> {
 }
 
 function installBoardObserver(): void {
-  new ResizeObserver(() => applyBoardLayout()).observe(workspaceElement);
+  new ResizeObserver(() => {
+    applyBoardLayout();
+    applyConsoleHeight();
+  }).observe(workspaceElement);
 }
 
 // Groups share rows: the board is one column grid and every section spans as many
@@ -481,7 +500,8 @@ function renderServices(force = false): void {
     ]),
     selectedServiceId,
     containerViewState("services").selectedContainerId,
-    servicesConsoleTarget
+    servicesConsoleTarget,
+    activeBottomPanel
   ]);
   if (!force && signature === serviceSignature && workspaceElement.dataset.view === "services") {
     updateDockerContainerStatuses();
@@ -703,9 +723,86 @@ function uptimeText(service: ServiceSnapshot, busy: boolean): string {
   return uptime === null ? "—" : formatUptimeCompact(uptime);
 }
 
+function renderBottomPanelTabs(): string {
+  return BOTTOM_PANELS.map((panel) => {
+    const open = activeBottomPanel === panel.id;
+    const label = `${open ? "Hide" : "Show"} ${panel.label.toLowerCase()}`;
+    return `<button class="bottom-tab${open ? " is-active" : ""}" type="button" data-action="toggle-bottom-panel" data-panel-id="${h(panel.id)}" aria-pressed="${open ? "true" : "false"}" aria-label="${h(label)}" title="${h(label)}">${uiIcon(panel.icon, 15)}<span class="tab-label">${h(panel.label)}</span>${uiIcon("chevronDown", 12, "bottom-tab-caret")}</button>`;
+  }).join("");
+}
+
+function bottomPanelIsOpen(id: BottomPanelId): boolean {
+  return activeBottomPanel === id;
+}
+
+function toggleBottomPanel(id: string): void {
+  const panel = BOTTOM_PANELS.find((item) => item.id === id);
+  if (!panel) throw new Error("Unknown panel.");
+  activeBottomPanel = activeBottomPanel === panel.id ? null : panel.id;
+  byId("bottom-tabs").innerHTML = renderBottomPanelTabs();
+  render(true);
+  applyConsoleHeight();
+}
+
+function renderConsoleResizer(): string {
+  return `<div class="console-resizer" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="Resize console" aria-valuemin="${MIN_CONSOLE_HEIGHT}" aria-valuemax="${maxConsoleHeight()}" aria-valuenow="${appliedConsoleHeight()}" title="Drag to resize the console"></div>`;
+}
+
+function maxConsoleHeight(): number {
+  return Math.max(MIN_CONSOLE_HEIGHT, workspaceElement.clientHeight - MIN_BOARD_HEIGHT);
+}
+
+// The requested height is kept as is so the console returns to it when the window grows again.
+function appliedConsoleHeight(): number {
+  return Math.round(Math.min(Math.max(consoleHeight, MIN_CONSOLE_HEIGHT), maxConsoleHeight()));
+}
+
+function applyConsoleHeight(): void {
+  const height = appliedConsoleHeight();
+  document.documentElement.style.setProperty("--console-height", `${height}px`);
+  const resizer = workspaceElement.querySelector<HTMLElement>(".console-resizer");
+  if (resizer) {
+    resizer.setAttribute("aria-valuenow", String(height));
+    resizer.setAttribute("aria-valuemax", String(maxConsoleHeight()));
+  }
+  if (!consoleFollow) return;
+  const output = workspaceElement.querySelector<HTMLElement>(".console-output");
+  if (output) output.scrollTop = output.scrollHeight;
+}
+
+function setConsoleHeight(height: number): void {
+  const next = Math.round(Math.min(Math.max(height, MIN_CONSOLE_HEIGHT), maxConsoleHeight()));
+  if (next === consoleHeight) return;
+  consoleHeight = next;
+  applyConsoleHeight();
+}
+
+function handleConsoleResizeStart(event: PointerEvent): void {
+  if (event.button !== 0) return;
+  const handle = event.target instanceof Element ? event.target.closest<HTMLElement>(".console-resizer") : null;
+  const consoleElement = handle?.closest<HTMLElement>(".launch-console");
+  if (!handle || !consoleElement) return;
+  event.preventDefault();
+  handle.focus();
+  const startY = event.clientY;
+  const startHeight = consoleElement.offsetHeight;
+  // A background refresh can replace the handle mid-drag, so the drag listens on the window.
+  const resize = (move: PointerEvent): void => setConsoleHeight(startHeight + startY - move.clientY);
+  const finish = (): void => {
+    window.removeEventListener("pointermove", resize);
+    window.removeEventListener("pointerup", finish);
+    window.removeEventListener("pointercancel", finish);
+    document.body.classList.remove("is-console-resizing");
+  };
+  window.addEventListener("pointermove", resize);
+  window.addEventListener("pointerup", finish);
+  window.addEventListener("pointercancel", finish);
+  document.body.classList.add("is-console-resizing");
+}
+
 function renderConsoleToolbar(label: string, disabled: boolean): string {
   const disabledAttribute = disabled ? " disabled" : "";
-  return `<div class="console-toolbar"><span class="console-toolbar-label" title="${h(label)}">${uiIcon("log", 14)}<span>${h(label)}</span></span><div class="console-tools"><button class="console-tool icon-only-button${consoleWrap ? " is-active" : ""}" type="button" data-action="toggle-log-wrap" aria-pressed="${consoleWrap ? "true" : "false"}" aria-label="${consoleWrap ? "Disable line wrapping" : "Wrap long lines"}" title="${consoleWrap ? "Disable line wrapping" : "Wrap long lines"}"${disabledAttribute}>${uiIcon("chevronDown", 13)}</button><button class="console-tool icon-only-button${consoleFollow ? " is-active" : ""}" type="button" data-action="toggle-log-follow" aria-pressed="${consoleFollow ? "true" : "false"}" aria-label="${consoleFollow ? "Pause following new output" : "Follow new output"}" title="${consoleFollow ? "Pause following new output" : "Follow new output"}"${disabledAttribute}>${uiIcon(consoleFollow ? "refresh" : "play", 13)}<span class="sr-only" data-console-follow-label>${consoleFollow ? "Following" : "Follow output"}</span></button></div></div>`;
+  return `<div class="console-toolbar"><span class="console-toolbar-label" title="${h(label)}">${uiIcon("log", 14)}<span>${h(label)}</span></span><div class="console-tools"><button class="console-tool icon-only-button${consoleWrap ? " is-active" : ""}" type="button" data-action="toggle-log-wrap" aria-pressed="${consoleWrap ? "true" : "false"}" aria-label="${consoleWrap ? "Disable line wrapping" : "Wrap long lines"}" title="${consoleWrap ? "Disable line wrapping" : "Wrap long lines"}"${disabledAttribute}>${uiIcon("chevronDown", 13)}</button><button class="console-tool icon-only-button${consoleFollow ? " is-active" : ""}" type="button" data-action="toggle-log-follow" aria-pressed="${consoleFollow ? "true" : "false"}" aria-label="${consoleFollow ? "Pause following new output" : "Follow new output"}" title="${consoleFollow ? "Pause following new output" : "Follow new output"}"${disabledAttribute}>${uiIcon(consoleFollow ? "refresh" : "play", 13)}<span class="sr-only" data-console-follow-label>${consoleFollow ? "Following" : "Follow output"}</span></button><button class="console-tool icon-only-button" type="button" data-action="toggle-bottom-panel" data-panel-id="console" aria-label="Hide console" title="Hide console">${uiIcon("close", 13)}</button></div></div>`;
 }
 
 function renderConsoleContext(label: string, content: string): string {
@@ -877,6 +974,7 @@ function serviceConsoleOutputKind(service: ServiceSnapshot | null): string {
 }
 
 function renderServiceConsole(): string {
+  if (!bottomPanelIsOpen("console")) return "";
   if (servicesConsoleTarget?.kind === "container") return renderDockerConsole("service-console docker-service-console", "container", "services");
   const service = servicesConsoleTarget?.kind === "service"
     ? workspace?.services.find((item) => item.relevance === "dev" && item.id === servicesConsoleTarget?.id) ?? null
@@ -899,6 +997,7 @@ function renderServiceConsole(): string {
     : "";
   const outputLabel = service ? `Logs for ${h(title)}` : "Service logs";
   return `<section class="launch-console service-console${service ? ` state-${stateClass}` : " launch-console-empty"}" aria-labelledby="service-console-title" data-console-service-id="${h(service?.id ?? "")}">
+    ${renderConsoleResizer()}
     <header class="console-header">
       <div class="console-title"><span class="console-icon state-${stateClass}" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="service-console-title">${h(title)}</h2><p>${h(subtitle)}</p></div></div>
       <div class="console-meta" aria-label="Service status"><span class="console-state state-${stateClass}"><span class="task-state-dot" aria-hidden="true"></span>${h(statusText)}</span>${process?.pid !== undefined && process?.pid !== null ? `<span class="console-meta-item" title="Process ID"><span class="sr-only">PID </span>${uiIcon("terminal", 12)}<code>${process.pid}</code></span>` : ""}${portMeta}${sourceMeta}${renderServiceLogMeta(service, logState)}</div>
@@ -965,7 +1064,8 @@ function renderDocker(force = false): void {
     containerStructure,
     containerActions,
     containerViewState("docker").selectedContainerId,
-    fallback.map((service) => [service.id, uniquePorts(service)])
+    fallback.map((service) => [service.id, uniquePorts(service)]),
+    activeBottomPanel
   ]);
   if (!force && signature === dockerSignature && workspaceElement.dataset.view === "docker") {
     updateDockerContainerStatuses();
@@ -1099,6 +1199,7 @@ function dockerConsoleOutputKind(container: ContainerInfo | null, logState = con
 }
 
 function renderDockerConsole(consoleClass = "docker-console", consoleKind = "container", tab = activeContainerTab()): string {
+  if (!bottomPanelIsOpen("console")) return "";
   const viewState = containerViewState(tab);
   const container = viewState.selectedContainerId
     ? containerListing?.containers.find((item) => item.id === viewState.selectedContainerId) ?? null
@@ -1115,6 +1216,7 @@ function renderDockerConsole(consoleClass = "docker-console", consoleKind = "con
     : "";
   const outputLabel = container ? `Logs for ${h(container.name)}` : "Docker container logs";
   return `<section class="launch-console ${consoleClass}${container ? ` state-${stateClass}` : " launch-console-empty"}" aria-labelledby="docker-console-title" data-console-kind="${h(consoleKind)}" data-console-container-id="${h(container?.id ?? "")}">
+    ${renderConsoleResizer()}
     <header class="console-header">
       <div class="console-title"><span class="console-icon state-${stateClass}" aria-hidden="true">${uiIcon("docker", 16)}</span><div><h2 id="docker-console-title">${h(title)}</h2><p>${h(subtitle)}</p></div></div>
       <div class="console-meta" aria-label="Container status"><span class="console-state state-${stateClass}"><span class="task-state-dot" aria-hidden="true"></span><span data-console-status-text>${h(statusText)}</span></span>${container ? `<span class="console-meta-item" title="Container ID"><span class="sr-only">Container ID </span>${uiIcon("docker", 12)}<code>${h(middleEllipsis(container.id, 16))}</code></span>` : ""}${renderDockerLogMeta(container, viewState.logState)}</div>
@@ -1160,7 +1262,8 @@ function renderLaunch(force = false): void {
     profiles,
     taskSnapshots.map(({ log_tail: _logTail, ...snapshot }) => snapshot),
     appInfo?.demo,
-    [...operations]
+    [...operations],
+    activeBottomPanel
   ]);
   if (!force && signature === launchSignature && workspaceElement.dataset.view === "launch") {
     updateLaunchConsoleDom();
@@ -1326,8 +1429,9 @@ function launchStatePriority(state: LaunchState): number {
 }
 
 function renderLaunchConsole(ref: LaunchTaskRef | null): string {
+  if (!bottomPanelIsOpen("console")) return "";
   if (!ref) {
-    return `<section class="launch-console launch-console-empty" aria-labelledby="launch-console-title"><header class="console-header"><div class="console-title"><span class="console-icon" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">Task console</h2><p>No task selected</p></div></div><div class="console-meta" aria-label="Task status"><span class="console-state"><span class="task-state-dot" aria-hidden="true"></span>No task selected</span><span class="console-meta-item" data-console-log-meta hidden></span></div></header>${renderConsoleContext("Task details", "")}${renderConsoleToolbar("Recent logs", true)}<div class="console-output console-empty-output" data-console-output-kind="empty" role="status"><div class="console-message"><strong>No tasks available</strong><span>Add at least one task to this launch profile.</span></div></div></section>`;
+    return `<section class="launch-console launch-console-empty" aria-labelledby="launch-console-title">${renderConsoleResizer()}<header class="console-header"><div class="console-title"><span class="console-icon" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">Task console</h2><p>No task selected</p></div></div><div class="console-meta" aria-label="Task status"><span class="console-state"><span class="task-state-dot" aria-hidden="true"></span>No task selected</span><span class="console-meta-item" data-console-log-meta hidden></span></div></header>${renderConsoleContext("Task details", "")}${renderConsoleToolbar("Recent logs", true)}<div class="console-output console-empty-output" data-console-output-kind="empty" role="status"><div class="console-message"><strong>No tasks available</strong><span>Add at least one task to this launch profile.</span></div></div></section>`;
   }
   const { profile, task } = ref;
   const snapshot = snapshotFor(profile.id, task.name);
@@ -1338,6 +1442,7 @@ function renderLaunchConsole(ref: LaunchTaskRef | null): string {
   const cwd = state === "external" ? snapshot?.external_working_directory || task.cwd : task.cwd;
   const externalLogPath = state === "external" ? snapshot?.external_log_path : null;
   return `<section class="launch-console state-${state}" aria-labelledby="launch-console-title" data-console-task-key="${h(launchTaskDomKey(profile.id, task.name))}">
+    ${renderConsoleResizer()}
     <header class="console-header">
       <div class="console-title"><span class="console-icon state-${state}" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">${h(task.name)}</h2><p>${h(profile.name)}</p></div></div>
       <div class="console-meta" aria-label="Task status"><span class="console-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span>${pid !== null ? `<span class="console-meta-item" title="Process ID"><span class="sr-only">PID </span>${uiIcon("terminal", 12)}<code>${pid}</code></span>` : ""}${port ? `<span class="console-meta-item" title="Port"><span class="sr-only">Port </span>${uiIcon("port", 12)}<code>localhost:${port}</code></span>` : ""}${externalLogPath ? `<span class="console-meta-item console-meta-source" title="External log source: ${h(externalLogPath)}"><span class="sr-only">Log source </span>${uiIcon("log", 12)}<code>${h(middleEllipsis(externalLogPath, 52))}</code></span>` : ""}</div>
@@ -1724,6 +1829,7 @@ async function handleClick(event: Event): Promise<void> {
       else if (activeTab === "docker") renderDocker(true);
       else if (activeTab === "launch") renderLaunch(true);
     }
+    else if (action === "toggle-bottom-panel") toggleBottomPanel(required(target.dataset.panelId));
     else if (action === "choose-root") await chooseProfileRoot();
     else if (action === "add-task-row") addTaskRow();
     else if (action === "remove-task-row") target.closest(".task-editor")?.remove();
@@ -1733,6 +1839,12 @@ async function handleClick(event: Event): Promise<void> {
 }
 
 function handleKeyboard(event: KeyboardEvent): void {
+  const resizer = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(".console-resizer") : null;
+  if (resizer && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+    event.preventDefault();
+    setConsoleHeight(appliedConsoleHeight() + (event.key === "ArrowUp" ? CONSOLE_RESIZE_STEP : -CONSOLE_RESIZE_STEP));
+    return;
+  }
   const taskRow = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(".task-card") : null;
   if (taskRow && event.target === taskRow) {
     if (event.key === "Enter" || event.key === " ") {

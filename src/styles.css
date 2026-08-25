@@ -524,6 +524,54 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .service-tile:hover { transform: none; }
 }
 
+.bottom-tabs {
+  min-width: 0;
+  height: 34px;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 0 18px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-top: 1px solid var(--hairline);
+  background: var(--canvas);
+}
+.bottom-tabs::-webkit-scrollbar { display: none; }
+.bottom-tab {
+  position: relative;
+  min-width: 112px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-top: 0;
+  border-radius: 0 0 12px 12px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.bottom-tab .bottom-tab-caret { margin-left: 1px; }
+.bottom-tab:not(.is-active) .bottom-tab-caret { transform: rotate(180deg); }
+.bottom-tab:hover { color: var(--text); background: color-mix(in srgb, var(--surface-alt) 54%, transparent); }
+.bottom-tab:focus-visible { z-index: 1; color: var(--text); outline-offset: -3px; }
+.bottom-tab.is-active { z-index: 1; color: var(--text); border-color: var(--hairline); background: var(--surface); }
+.bottom-tab.is-active .ui-icon:first-child { color: var(--accent); }
+.bottom-tab.is-active::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: 12px;
+  left: 12px;
+  height: 3px;
+  border-radius: 0 0 999px 999px;
+  background: var(--accent);
+}
+
 .footer { height: 26px; display: flex; align-items: center; padding: 0 20px; overflow: hidden; color: var(--text-dim); background: var(--canvas); font-size: 10px; white-space: nowrap; }
 .footer[hidden] { display: none; }
 .footer span { overflow: hidden; text-overflow: ellipsis; }
@@ -593,7 +641,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .launch-view, .services-view, .docker-view { min-height: 100%; height: 100%; }
 .launch-view > .split-view-list, .services-view > .split-view-list, .docker-view > .split-view-list { min-height: 0; }
 .launch-view > .split-view-list > .launch-list { width: 100%; }
-.launch-console { position: relative; z-index: 10; bottom: auto; min-width: 0; min-height: 0; max-height: 100%; display: flex; flex-direction: column; margin: 0 20px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 18px 18px 0 0; background: color-mix(in srgb, var(--surface) 94%, var(--accent)); box-shadow: 0 -12px 34px color-mix(in srgb, var(--shadow) 84%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent); }
+/* The console height repeats the clamp applied in main.ts so a window that shrinks before the
+   resize observer runs still leaves room for the list above it. */
+.launch-console { position: relative; z-index: 10; bottom: auto; min-width: 0; min-height: 0; height: max(220px, min(var(--console-height, 336px), calc(100dvh - 270px))); max-height: 100%; display: flex; flex-direction: column; margin: 0 20px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 18px 18px 0 0; background: color-mix(in srgb, var(--surface) 94%, var(--accent)); box-shadow: 0 -12px 34px color-mix(in srgb, var(--shadow) 84%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent); }
 .service-console { border-bottom-color: var(--hairline); }
 .service-console .console-toolbar-label { color: var(--text-muted); }
 .service-console .console-meta-error { border-color: color-mix(in srgb, var(--danger) 36%, var(--hairline)); color: var(--danger); }
@@ -603,6 +653,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .docker-console .console-meta-error { border-color: color-mix(in srgb, var(--danger) 36%, var(--hairline)); color: var(--danger); }
 .docker-console .console-meta-error span { color: inherit; }
 .launch-console-empty { border-color: var(--hairline); }
+.console-resizer { position: relative; flex: 0 0 11px; height: 11px; min-height: 11px; cursor: ns-resize; touch-action: none; }
+.console-resizer::after { content: ""; position: absolute; top: 50%; left: 50%; width: 42px; height: 3px; transform: translate(-50%, -50%); border-radius: 999px; background: var(--border); opacity: .55; }
+.console-resizer:hover::after, .console-resizer:focus-visible::after { background: var(--accent); opacity: 1; }
+.console-resizer:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+body.is-console-resizing { cursor: ns-resize; }
+body.is-console-resizing .console-resizer::after { background: var(--accent); opacity: 1; }
+body.is-console-resizing .console-log, body.is-console-resizing .console-context-item code { user-select: none; }
 .console-header { flex: 0 0 64px; height: 64px; min-height: 64px; display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap; gap: 12px 18px; overflow: hidden; padding: 12px 16px; border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 38%, var(--surface)); }
 .console-title { min-width: 0; flex: 1 1 46%; display: flex; align-items: center; gap: 10px; overflow: hidden; }
 .console-icon { width: 34px; height: 34px; display: grid; flex: 0 0 34px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); }
@@ -643,7 +700,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .console-tool.icon-only-button { display: inline-grid; flex: 0 0 38px; width: 38px; min-height: 38px; height: 38px; padding: 0; place-items: center; }
 .console-tool:hover, .console-tool:focus-visible { border-color: var(--hairline); background: var(--surface-hover); color: var(--text); }
 .console-tool.is-active { color: var(--accent); }
-.console-output { flex: 1 1 clamp(96px, 24vh, 220px); height: auto; min-height: 96px; max-height: none; overflow: auto; padding: 15px 16px 18px; background: color-mix(in srgb, var(--canvas) 88%, #050608); color: var(--text-muted); scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
+.console-output { flex: 1 1 auto; height: auto; min-height: 0; max-height: none; overflow: auto; padding: 15px 16px 18px; background: color-mix(in srgb, var(--canvas) 88%, #050608); color: var(--text-muted); scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
 .console-output::-webkit-scrollbar { width: 9px; height: 9px; }
 .console-output::-webkit-scrollbar-track { background: transparent; }
 .console-output::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 9px; background: var(--border); background-clip: padding-box; }
@@ -863,6 +920,9 @@ button:disabled { opacity: .45; cursor: default; }
   .launch-add-card:only-child { min-height: 190px; }
   .launch-add-action { padding: 28px 18px; }
   .launch-add-info { top: 10px; right: 10px; }
+  .bottom-tabs { gap: 2px; padding: 0 10px; }
+  .bottom-tab { min-width: 0; padding: 0 11px; }
+  .bottom-tab.is-active::after { right: 10px; left: 10px; }
   .launch-console { margin: 0 12px; border-radius: 15px 15px 0 0; }
   .console-header { flex: 0 0 96px; height: 96px; min-height: 96px; align-items: flex-start; flex-direction: column; gap: 10px; }
   .console-title { width: 100%; flex: 0 0 34px; }
@@ -871,7 +931,7 @@ button:disabled { opacity: .45; cursor: default; }
   .console-context { grid-template-columns: 1fr; }
   .console-context-item { min-height: 42px; padding-inline: 12px; }
   .console-toolbar { padding-left: 11px; }
-  .console-output { flex: 1 1 clamp(96px, 30vh, 220px); height: auto; min-height: 96px; max-height: none; padding: 13px 12px 16px; }
+  .console-output { padding: 13px 12px 16px; }
   .modal-backdrop { padding: 10px; }
   .modal { width: min(100%, calc(100vw - 20px)); max-height: calc(100dvh - 20px); border-radius: 16px; }
   .modal-header { min-height: 58px; padding-inline: 16px; }
