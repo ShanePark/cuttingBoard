@@ -31,12 +31,8 @@
   .bottom-tab { min-width: 0; padding: 0 11px; }
   .bottom-tab.is-active::after { right: 10px; left: 10px; }
   .launch-console { margin: 0 12px; border-radius: 15px 15px 0 0; }
-  .console-header { flex: 0 0 96px; height: 96px; min-height: 96px; align-items: flex-start; flex-direction: column; gap: 10px; }
-  .console-title { width: 100%; flex: 0 0 34px; }
-  .console-meta { width: 100%; flex: 0 0 28px; justify-content: flex-start; flex-wrap: nowrap; }
-  .console-meta-source { max-width: 100%; }
-  .console-context { grid-template-columns: 1fr; }
-  .console-context-item { min-height: 42px; padding-inline: 12px; }
+  .console-header { flex: 0 0 64px; height: 64px; min-height: 64px; gap: 8px; padding-inline: 12px; }
+  .console-title { flex: 1 1 auto; }
   .console-toolbar { padding-left: 11px; }
   .console-output { padding: 13px 12px 16px; }
   .modal-backdrop { padding: 10px; }

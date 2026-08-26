@@ -11,6 +11,7 @@
     "prebuild": "npm run icons:runtime",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
     "icons": "npm run icons:runtime && npm run icons:app",
     "icons:runtime": "node scripts/build-icons.mjs",
     "icons:app": "tauri icon assets/app-icon-source.png --output src-tauri/icons",

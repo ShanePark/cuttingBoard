@@ -1,19 +1,4 @@
-export function patchConsoleElement(target: HTMLElement | null, markup: string): void {
-  if (!target) return;
-  const template = document.createElement("template");
-  template.innerHTML = markup.trim();
-  const source = template.content.firstElementChild;
-  if (!(source instanceof HTMLElement)) return;
-  if (target.className !== source.className) target.className = source.className;
-  target.hidden = source.hidden;
-  if (target.title !== source.title) target.title = source.title;
-  const sourceKey = source.dataset.consoleLogMetaKey ?? "";
-  if (target.dataset.consoleLogMetaKey !== sourceKey) {
-    if (sourceKey) target.dataset.consoleLogMetaKey = sourceKey;
-    else delete target.dataset.consoleLogMetaKey;
-  }
-  if (target.innerHTML !== source.innerHTML) target.innerHTML = source.innerHTML;
-}
+import { scrollTopForConsoleUpdate } from "./console-scroll";
 
 function patchConsoleMessage(current: HTMLElement, next: HTMLElement): void {
   const currentStrong = current.querySelector<HTMLElement>(":scope > strong");
@@ -37,8 +22,7 @@ export function patchConsoleOutput(output: HTMLElement, markup: string, kind: st
     output.innerHTML = markup;
     output.dataset.consoleOutputKind = kind;
     if (hasLog) {
-      if (follow) output.scrollTop = output.scrollHeight;
-      else output.scrollTop = Math.min(previousScrollTop, output.scrollHeight);
+      output.scrollTop = scrollTopForConsoleUpdate(output, previousScrollTop, follow);
     }
     return;
   }
@@ -56,8 +40,7 @@ export function patchConsoleOutput(output: HTMLElement, markup: string, kind: st
     const nextAlertText = nextAlert?.querySelector<HTMLElement>("span");
     if (currentAlertText && nextAlertText && currentAlertText.textContent !== nextAlertText.textContent) currentAlertText.textContent = nextAlertText.textContent;
     if (logChanged) {
-      if (follow) output.scrollTop = output.scrollHeight;
-      else output.scrollTop = Math.min(previousScrollTop, output.scrollHeight);
+      output.scrollTop = scrollTopForConsoleUpdate(output, previousScrollTop, follow);
     }
     return;
   }
