@@ -40,6 +40,7 @@ const MIN_CONSOLE_HEIGHT = 220;
 const DEFAULT_CONSOLE_HEIGHT = 336;
 const MIN_BOARD_HEIGHT = 140;
 const CONSOLE_RESIZE_STEP = 24;
+const SERVICE_LOG_TIMEOUT_MS = 10_000;
 
 // The dock below the workspace shows one panel at a time and is shared by every tab.
 // A new panel needs an entry here plus a body rendered for its id.
@@ -119,6 +120,7 @@ type ServiceLogState = {
   sourcePath: string | null;
   available: boolean;
   loading: boolean;
+  loadingStartedAt: number | null;
   message: string | null;
   error: string | null;
 };
@@ -133,10 +135,13 @@ let serviceLogState: ServiceLogState = {
   sourcePath: null,
   available: false,
   loading: false,
+  loadingStartedAt: null,
   message: null,
   error: null
 };
 let serviceLogRequestId = 0;
+const pendingServiceLogRequests = new Map<string, number>();
+let serviceLogElapsedTimer: number | null = null;
 let serviceConsoleScrollTop = 0;
 let serviceConsoleScrollServiceId: string | null = null;
 let restoringServiceConsoleScroll = false;
@@ -274,7 +279,48 @@ function syncSelectedService(): void {
   if (!stillAvailable) clearServiceSelection();
 }
 
+function stopServiceLogElapsedTimer(): void {
+  if (serviceLogElapsedTimer === null) return;
+  window.clearInterval(serviceLogElapsedTimer);
+  serviceLogElapsedTimer = null;
+}
+
+function serviceLogElapsedSeconds(state: ServiceLogState): number {
+  if (state.loadingStartedAt === null) return 0;
+  return Math.max(0, Math.floor((Date.now() - state.loadingStartedAt) / 1000));
+}
+
+function updateServiceLogElapsedDom(): void {
+  const serviceId = selectedServiceId;
+  if (activeTab !== "services" || servicesConsoleTarget?.kind !== "service" || !serviceId || !serviceLogState.loading || serviceLogState.serviceId !== serviceId) return;
+  const consoleElement = [...workspaceElement.querySelectorAll<HTMLElement>(".service-console:not(.docker-service-console)")]
+    .find((element) => element.dataset.consoleServiceId === serviceId);
+  if (!consoleElement) return;
+  const elapsed = `${serviceLogElapsedSeconds(serviceLogState)}s`;
+  consoleElement.querySelectorAll<HTMLElement>("[data-service-log-elapsed]").forEach((element) => {
+    if (element.textContent !== elapsed) element.textContent = elapsed;
+  });
+}
+
+function startServiceLogElapsedTimer(serviceId: string, requestId: number): void {
+  stopServiceLogElapsedTimer();
+  serviceLogElapsedTimer = window.setInterval(() => {
+    if (requestId !== serviceLogRequestId || servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId || serviceLogState.serviceId !== serviceId || !serviceLogState.loading || pendingServiceLogRequests.get(serviceId) !== requestId) {
+      stopServiceLogElapsedTimer();
+      return;
+    }
+    if (activeTab === "services") updateServiceLogElapsedDom();
+  }, 1000);
+}
+
+function resumeServiceLogElapsedTimer(): void {
+  const serviceId = selectedServiceId;
+  if (activeTab !== "services" || servicesConsoleTarget?.kind !== "service" || !serviceId || !serviceLogState.loading || pendingServiceLogRequests.get(serviceId) !== serviceLogRequestId) return;
+  startServiceLogElapsedTimer(serviceId, serviceLogRequestId);
+}
+
 function clearServiceSelection(): void {
+  stopServiceLogElapsedTimer();
   selectedServiceId = null;
   if (servicesConsoleTarget?.kind === "service") servicesConsoleTarget = null;
   serviceLogRequestId += 1;
@@ -284,6 +330,7 @@ function clearServiceSelection(): void {
     sourcePath: null,
     available: false,
     loading: false,
+    loadingStartedAt: null,
     message: null,
     error: null
   };
@@ -305,6 +352,7 @@ async function refreshSelectedServiceLogs(): Promise<void> {
 async function loadServiceLogs(serviceId: string, showLoading = false): Promise<void> {
   if (servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId) return;
   if (!showLoading && serviceLogState.serviceId === serviceId && serviceLogState.loading) return;
+  if (!showLoading && pendingServiceLogRequests.has(serviceId)) return;
   const requestId = ++serviceLogRequestId;
   if (showLoading) {
     serviceLogState = {
@@ -313,6 +361,7 @@ async function loadServiceLogs(serviceId: string, showLoading = false): Promise<
       sourcePath: null,
       available: false,
       loading: true,
+      loadingStartedAt: Date.now(),
       message: null,
       error: null
     };
@@ -322,31 +371,57 @@ async function loadServiceLogs(serviceId: string, showLoading = false): Promise<
       ...serviceLogState,
       serviceId,
       loading: true,
+      loadingStartedAt: Date.now(),
       error: null
     };
   }
+  pendingServiceLogRequests.set(serviceId, requestId);
+  startServiceLogElapsedTimer(serviceId, requestId);
+  let timeoutHandle: number | null = null;
   try {
+    // A native log lookup may inspect process file descriptors and cannot be
+    // cancelled from the webview. Keep the request pending while bounding the
+    // visible loading state; a late result may still refresh the current view.
+    timeoutHandle = window.setTimeout(() => {
+      if (requestId !== serviceLogRequestId || servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId || !serviceLogState.loading) return;
+      serviceLogState = {
+        ...serviceLogState,
+        serviceId,
+        loading: false,
+        loadingStartedAt: null,
+        error: "Timed out while fetching service logs. Try selecting the service again."
+      };
+      stopServiceLogElapsedTimer();
+      if (activeTab === "services" && servicesConsoleTarget?.kind === "service") updateServiceConsoleDom();
+    }, SERVICE_LOG_TIMEOUT_MS);
     const result = await api.serviceLogs(serviceId);
     if (requestId !== serviceLogRequestId || servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId) return;
+    stopServiceLogElapsedTimer();
     serviceLogState = {
       serviceId,
       logs: result.logs ?? "",
       sourcePath: result.source_path ?? null,
       available: result.available ?? Boolean(result.source_path || result.logs),
       loading: false,
+      loadingStartedAt: null,
       message: result.message ?? null,
       error: null
     };
     if (activeTab === "services" && servicesConsoleTarget?.kind === "service") updateServiceConsoleDom();
   } catch (error) {
     if (requestId !== serviceLogRequestId || servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId) return;
+    stopServiceLogElapsedTimer();
     serviceLogState = {
       ...serviceLogState,
       serviceId,
       loading: false,
+      loadingStartedAt: null,
       error: messageOf(error)
     };
     if (activeTab === "services" && servicesConsoleTarget?.kind === "service") updateServiceConsoleDom();
+  } finally {
+    if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
+    if (pendingServiceLogRequests.get(serviceId) === requestId) pendingServiceLogRequests.delete(serviceId);
   }
 }
 
@@ -839,7 +914,12 @@ function patchConsoleElement(target: HTMLElement | null, markup: string): void {
 function patchConsoleMessage(current: HTMLElement, next: HTMLElement): void {
   const currentStrong = current.querySelector<HTMLElement>(":scope > strong");
   const nextStrong = next.querySelector<HTMLElement>(":scope > strong");
-  if (currentStrong && nextStrong && currentStrong.textContent !== nextStrong.textContent) currentStrong.textContent = nextStrong.textContent;
+  if (currentStrong && nextStrong) {
+    const currentElapsed = currentStrong.querySelector<HTMLElement>("[data-service-log-elapsed]");
+    const nextElapsed = nextStrong.querySelector<HTMLElement>("[data-service-log-elapsed]");
+    if (currentElapsed && nextElapsed) currentElapsed.textContent = nextElapsed.textContent;
+    else if (currentStrong.innerHTML !== nextStrong.innerHTML) currentStrong.replaceChildren(...[...nextStrong.childNodes].map((child) => child.cloneNode(true)));
+  }
   const currentCopy = [...current.children].filter((child) => child instanceof HTMLElement && child.tagName === "SPAN" && !child.classList.contains("console-message-icon")).at(-1) as HTMLElement | undefined;
   const nextCopy = [...next.children].filter((child) => child instanceof HTMLElement && child.tagName === "SPAN" && !child.classList.contains("console-message-icon")).at(-1) as HTMLElement | undefined;
   if (currentCopy && nextCopy && currentCopy.textContent !== nextCopy.textContent) currentCopy.textContent = nextCopy.textContent;
@@ -957,10 +1037,13 @@ function updateLaunchConsoleDom(): void {
 
 function renderServiceLogMeta(service: ServiceSnapshot | null, state: ServiceLogState | null): string {
   if (!service || !state) return `<span class="console-meta-item" data-console-log-meta hidden></span>`;
-  const loading = state.loading && !state.logs.trim();
+  const loading = state.loading;
   const unavailable = !state.loading && Boolean(state.error || state.available === false);
   const message = state.error ?? state.message ?? "Service output is unavailable.";
-  if (loading) return `<span class="console-meta-item" data-console-log-meta data-console-log-meta-key="loading" title="Loading recent logs">${uiIcon("refresh", 12)}<span>Loading logs</span></span>`;
+  if (loading) {
+    const elapsed = serviceLogElapsedSeconds(state);
+    return `<span class="console-meta-item" data-console-log-meta data-console-log-meta-key="loading" title="Loading recent logs">${uiIcon("refresh", 12, "service-log-spinner")}<span>Loading logs · <span data-service-log-elapsed>${elapsed}s</span></span></span>`;
+  }
   if (unavailable) return `<span class="console-meta-item console-meta-error" data-console-log-meta data-console-log-meta-key="unavailable:${h(message)}" title="${h(message)}">${uiIcon("warning", 12)}<span>Logs unavailable</span></span>`;
   return `<span class="console-meta-item" data-console-log-meta data-console-log-meta-key="available" title="The backend returns the most recent log tail">${uiIcon("log", 12)}<span>Recent log tail</span></span>`;
 }
@@ -1028,7 +1111,8 @@ function renderServiceLogOutput(service: ServiceSnapshot | null): string {
   }
   const state = serviceLogState.serviceId === service.id ? serviceLogState : null;
   if (state?.loading && !state.logs.trim()) {
-    return `<div class="console-message"><span class="console-message-icon">${uiIcon("refresh", 18)}</span><strong>Loading service logs</strong><span>Fetching the most recent output from the service…</span></div>`;
+    const elapsed = serviceLogElapsedSeconds(state);
+    return `<div class="console-message"><span class="console-message-icon">${uiIcon("refresh", 18, "service-log-spinner")}</span><strong>Loading service logs · <span data-service-log-elapsed>${elapsed}s</span></strong><span>Fetching the most recent output from the service…</span></div>`;
   }
   const log = state?.logs ?? "";
   const message = state?.error ?? state?.message ?? "";
@@ -1699,6 +1783,7 @@ function selectService(id: string, focus = false): void {
   const service = findService(id);
   if (service.relevance !== "dev") throw new Error("This service is not available in the Services view.");
   captureServicesConsoleState();
+  stopServiceLogElapsedTimer();
   selectedServiceId = id;
   servicesConsoleTarget = { kind: "service", id };
   serviceConsoleScrollServiceId = id;
@@ -1710,6 +1795,7 @@ function selectService(id: string, focus = false): void {
     sourcePath: null,
     available: false,
     loading: true,
+    loadingStartedAt: Date.now(),
     message: null,
     error: null
   };
@@ -1745,6 +1831,7 @@ function selectContainer(id: string, focus = false): void {
   state.selectedContainerId = id;
   if (tab === "services") {
     servicesConsoleTarget = { kind: "container", id };
+    stopServiceLogElapsedTimer();
     serviceLogRequestId += 1;
   }
   state.consoleScrollContainerId = id;
@@ -1780,10 +1867,12 @@ async function handleClick(event: Event): Promise<void> {
       captureConsoleState();
       captureServiceConsoleState();
       captureDockerConsoleState();
+      if (activeTab === "services") stopServiceLogElapsedTimer();
     }
     activeTab = tab;
     document.querySelectorAll<HTMLElement>("[data-tab]").forEach((item) => item.classList.toggle("is-active", item.dataset.tab === tab));
     render(true);
+    if (tab === "services") resumeServiceLogElapsedTimer();
     if (tab === "services" && servicesConsoleTarget?.kind === "service") void refreshSelectedServiceLogs();
     if (tab === "services" || tab === "docker") await refreshContainers(true);
     if (tab === "launch") await refreshLaunch(true);

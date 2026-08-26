@@ -19,6 +19,9 @@ use std::{env, ffi::CStr};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+#[cfg(unix)]
+use std::time::Instant;
+
 #[derive(Debug)]
 struct RuntimeTask {
     child: Option<Child>,
@@ -1160,10 +1163,32 @@ fn unavailable_service_logs(message: &str) -> ServiceLogSnapshot {
 
 #[cfg(unix)]
 fn external_log_path(pid: u32) -> Option<PathBuf> {
-    let output = Command::new("lsof")
+    const TIMEOUT: Duration = Duration::from_secs(2);
+    const POLL_INTERVAL: Duration = Duration::from_millis(20);
+    let mut child = Command::new("lsof")
         .args(["-nP", "-a", "-p", &pid.to_string(), "-d", "1,2", "-Ffn"])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => thread::sleep(POLL_INTERVAL),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let output = child.wait_with_output().ok()?;
     if !output.status.success() && output.stdout.is_empty() {
         return None;
     }
