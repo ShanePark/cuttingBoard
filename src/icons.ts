@@ -1,5 +1,6 @@
 import "./devicon.generated.css";
 import iconManifest from "./icon-manifest.json";
+import { escapeHtml } from "./html";
 
 export type UiIconName = keyof typeof iconManifest.ui;
 
@@ -19,31 +20,26 @@ document.addEventListener("error", (event) => {
   image.src = TECH_FALLBACK_URL;
 }, true);
 
-export const TECH_ICON_IDS = Object.freeze([
-  ...Object.keys(iconManifest.devicon),
-  ...Object.keys(iconManifest.tech),
-].sort());
-
 export function uiIcon(name: UiIconName, size = 20, className = ""): string {
   const icon = iconManifest.ui[name];
-  const safeClass = className ? ` ${escapeAttribute(className)}` : "";
-  const style = `--ui-icon-size:${safeSize(size)}px;--ui-icon-image:url('/${escapeAttribute(icon.file)}')`;
-  return `<span class="ui-icon ui-icon-${escapeAttribute(name)}${safeClass}" style="${style}" aria-hidden="true"></span>`;
+  const safeClass = className ? ` ${escapeHtml(className)}` : "";
+  const style = `--ui-icon-size:${safeSize(size)}px;--ui-icon-image:url('/${escapeHtml(icon.file)}')`;
+  return `<span class="ui-icon ui-icon-${escapeHtml(name)}${safeClass}" style="${style}" aria-hidden="true"></span>`;
 }
 
 export function techIcon(tech: string, size = 48, className = ""): string {
   const requested = normaliseTech(tech);
   const edge = safeSize(size);
-  const safeClass = className ? ` ${escapeAttribute(className)}` : "";
+  const safeClass = className ? ` ${escapeHtml(className)}` : "";
 
   if (Object.hasOwn(iconManifest.devicon, requested)) {
     const icon = iconManifest.devicon[requested as keyof typeof iconManifest.devicon];
-    return `<i class="tech-icon devicon devicon-${escapeAttribute(icon.name)}-${escapeAttribute(icon.variant)} colored${safeClass}" style="font-size:${edge}px" aria-hidden="true"></i>`;
+    return `<i class="tech-icon devicon devicon-${escapeHtml(icon.name)}-${escapeHtml(icon.variant)} colored${safeClass}" style="font-size:${edge}px" aria-hidden="true"></i>`;
   }
 
   const id = Object.hasOwn(iconManifest.tech, requested) ? requested : "service";
   const icon = iconManifest.tech[id as keyof typeof iconManifest.tech];
-  return `<img class="tech-icon tech-${escapeAttribute(id)}${safeClass}" src="/${escapeAttribute(icon.file)}" width="${edge}" height="${edge}" alt="" aria-hidden="true" draggable="false">`;
+  return `<img class="tech-icon tech-${escapeHtml(id)}${safeClass}" src="/${escapeHtml(icon.file)}" width="${edge}" height="${edge}" alt="" aria-hidden="true" draggable="false">`;
 }
 
 function normaliseTech(tech: string): string {
@@ -53,10 +49,4 @@ function normaliseTech(tech: string): string {
 
 function safeSize(value: number): number {
   return Number.isFinite(value) ? Math.min(512, Math.max(8, Math.round(value))) : 20;
-}
-
-function escapeAttribute(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '\"': "&quot;", "'": "&#39;",
-  })[character] ?? character);
 }

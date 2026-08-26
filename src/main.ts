@@ -3,6 +3,33 @@ import { open as choosePath } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
 import { techIcon, uiIcon, type UiIconName } from "./icons";
+import { escapeHtml as h } from "./html";
+import { patchConsoleElement, patchConsoleOutput } from "./console-dom";
+import { openModal, closeModal as closeModalView, trapModalFocus } from "./modal";
+import {
+  infoCopy,
+  renderContainerDetails,
+  renderContainerGroupDetails,
+  renderGroupDetails,
+  renderInfoDetails,
+  renderProfileDetails,
+  renderServiceDetails,
+  renderTaskDetails
+} from "./modal-content";
+import {
+  renderOpenServiceButton,
+  renderSharedServiceCard,
+  renderTileFoot,
+  renderTileHeading,
+  renderTileOrdinal
+} from "./tile-rendering";
+import {
+  launchStatePriority,
+  launchTaskCanStart,
+  launchTaskCanStop,
+  launchTaskIsActive,
+  stateLabel
+} from "./launch-state";
 import {
   FRESH_UPTIME_SECONDS,
   currentUptime,
@@ -13,9 +40,9 @@ import {
   launchTasksEquivalent,
   middleEllipsis,
   pathIsEqualOrNested,
-  portBadgeLabels,
   relatedContainersForGroup,
   serviceTitle,
+  type ServiceGroup,
   techLabel,
   uniquePorts
 } from "./presentation";
@@ -95,7 +122,6 @@ let uptimeTimer: number | null = null;
 let serviceSignature = "";
 let dockerSignature = "";
 let launchSignature = "";
-let modalFocusReturn: HTMLElement | null = null;
 let pendingServiceStopId: string | null = null;
 let pendingGroupSaveId: string | null = null;
 let pendingGroupStopId: string | null = null;
@@ -632,13 +658,13 @@ function renderGroupTitle(title: string, itemCount: number, action: string, attr
     : h(displayTitle);
 }
 
-function renderServiceGroupTiles(group: ReturnType<typeof groupServices>[number] & { containers: ContainerInfo[] }): string {
+function renderServiceGroupTiles(group: ServiceGroup & { containers: ContainerInfo[] }): string {
   const total = group.services.length + group.containers.length;
   const ordinalTotal = total > 1 ? total : undefined;
   return `${group.services.map((service, index) => renderServiceTile(service, ordinalTotal ? index + 1 : undefined, ordinalTotal)).join("")}${group.containers.map((container, index) => renderContainerTile(container, ordinalTotal ? group.services.length + index + 1 : undefined, ordinalTotal, true)).join("")}`;
 }
 
-function renderGroupActions(group: ReturnType<typeof groupServices>[number]): string {
+function renderGroupActions(group: ServiceGroup): string {
   const saveBusy = operations.has(`group-save:${group.id}`);
   const stopBusy = operations.has(`group-stop:${group.id}`);
   const profilePresent = profileForGroup(group) !== undefined;
@@ -668,18 +694,18 @@ function generatedTasksForGroup(services: ServiceSnapshot[]): LaunchTask[] {
   });
 }
 
-function groupForId(id: string): ReturnType<typeof groupServices>[number] {
+function groupForId(id: string): ServiceGroup {
   const group = groupServices(workspace?.services.filter((service) => service.relevance === "dev") ?? []).find((item) => item.id === id);
   if (!group) throw new Error("The workspace group is no longer available.");
   return group;
 }
 
-function profileForGroup(group: ReturnType<typeof groupServices>[number]): LaunchProfile | undefined {
+function profileForGroup(group: ServiceGroup): LaunchProfile | undefined {
   if (!group.path) return undefined;
   return profiles.find((profile) => profile.project_root === group.path && launchTasksEquivalent(profile.tasks, generatedTasksForGroup(group.services)));
 }
 
-function validateGroupProfile(group: ReturnType<typeof groupServices>[number]): LaunchTask[] {
+function validateGroupProfile(group: ServiceGroup): LaunchTask[] {
   if (!group.path) throw new Error("This workspace group has no project root and cannot be saved.");
   const incomplete = group.services.filter((service) => !service.process?.command.trim() || !service.process?.working_directory?.trim());
   if (incomplete.length) throw new Error(`Cannot save ${group.name}: ${incomplete.map((service) => serviceTitle(service) || service.display_name).join(", ")} ${incomplete.length === 1 ? "is missing" : "are missing"} a process command or working directory.`);
@@ -687,49 +713,6 @@ function validateGroupProfile(group: ReturnType<typeof groupServices>[number]): 
 }
 
 type ServiceTileActionScope = { select?: boolean; info?: boolean; stop?: boolean; open?: boolean };
-
-type SharedServiceCardOptions = {
-  category: string;
-  cardClass?: string;
-  metricsId?: string;
-  cardAttributes?: string;
-  ariaLabel: string;
-  selected?: boolean;
-  busy?: boolean;
-  ordinal?: number;
-  ordinalTotal?: number;
-  iconMarkup: string;
-  pipClass: string;
-  title: string;
-  overlayMarkup?: string;
-  controlsMarkup?: string;
-  metricsMarkup: string;
-  ports: number[];
-  emptyPortLabel: string;
-  trailingMarkup?: string;
-};
-
-function renderSharedServiceCard(options: SharedServiceCardOptions): string {
-  const cardClasses = `service-tile category-${options.category}${options.cardClass ? ` ${options.cardClass}` : ""}${options.busy ? " is-busy" : ""}${options.selected ? " is-selected" : ""}`;
-  const metricsAttribute = options.metricsId ? ` data-metrics-id="${h(options.metricsId)}"` : "";
-  return `
-    <article class="${cardClasses}"${metricsAttribute}${options.cardAttributes ?? ""} aria-label="${h(options.ariaLabel)}">
-      ${options.overlayMarkup ?? ""}
-      <div class="tile-top">
-        <span class="icon-well service-icon" aria-hidden="true">${renderTileOrdinal(options.ordinal, options.ordinalTotal)}${options.iconMarkup}<span class="status-pip state-${options.pipClass}"></span></span>
-        ${renderTileHeading(options.title, "", "")}
-        ${options.controlsMarkup ? `<div class="service-card-actions">${options.controlsMarkup}</div>` : ""}
-      </div>
-      <div class="tile-metrics">${options.metricsMarkup}</div>
-      ${renderTileFoot(options.ports, options.emptyPortLabel, options.trailingMarkup ?? "")}
-    </article>`;
-}
-
-// The browser shortcut lives in the card foot: only a service with a resolved URL can offer one.
-function renderOpenServiceButton(service: ServiceSnapshot, label: string): string {
-  if (!service.browser_url) return "";
-  return `<button type="button" class="service-link icon-only-button service-card-control" data-tile-action data-action="open-service" data-service-id="${h(service.id)}" aria-label="Open ${h(label)} in the browser" title="Open ${h(service.browser_url)}">${uiIcon("external", 15)}</button>`;
-}
 
 function renderServiceTile(service: ServiceSnapshot, ordinal?: number, ordinalTotal?: number, actionScope?: ServiceTileActionScope): string {
   const scope = actionScope ?? { select: service.relevance === "dev", info: true, stop: service.can_terminate, open: Boolean(service.browser_url) };
@@ -768,32 +751,6 @@ function renderServiceTile(service: ServiceSnapshot, ordinal?: number, ordinalTo
     emptyPortLabel: "No port information",
     trailingMarkup
   });
-}
-
-function renderTileOrdinal(ordinal?: number, total?: number): string {
-  if (!ordinal || !total || total < 2) return "";
-  return `<span class="tile-ordinal" title="Item ${ordinal} of ${total}" aria-label="Item ${ordinal} of ${total}">${ordinal}</span>`;
-}
-
-// The subtitle carries the technology once: skip the label when the title already says it.
-function renderTileHeading(title: string, label: string, badge: string): string {
-  const trimmedLabel = label.trim();
-  const tech = trimmedLabel && trimmedLabel.toLowerCase() !== title.trim().toLowerCase() ? `<span class="tech-label">${h(trimmedLabel)}</span>` : "";
-  return `<div class="tile-heading">
-        <h3 class="tile-name" title="${h(title)}">${h(title)}</h3>
-        ${tech || badge ? `<p class="tile-subtitle">${tech}${badge}</p>` : ""}
-      </div>`;
-}
-
-function renderTileFoot(ports: number[], emptyLabel: string, trailing: string): string {
-  const labels = portBadgeLabels(ports);
-  return `<div class="tile-foot">
-        <div class="port-row">
-          ${labels.map((label) => `<span class="port-chip${label.startsWith("+") ? " port-overflow" : ""}" title="${h(portChipDescription(label, ports))}" aria-label="${h(portChipDescription(label, ports))}">${h(label)}</span>`).join("")}
-          ${ports.length === 0 ? `<span class="no-port-label port-empty-icon" title="${h(emptyLabel)}" aria-label="${h(emptyLabel)}">${uiIcon("port", 14)}</span>` : ""}
-        </div>
-        ${trailing}
-      </div>`;
 }
 
 function uptimeText(service: ServiceSnapshot, busy: boolean): string {
@@ -894,91 +851,6 @@ function renderConsoleSourceMeta(path: string | null, titlePrefix: string): stri
   return `<span class="console-meta-item console-meta-source" data-console-source title="${h(`${titlePrefix}: ${path}`)}"><span class="sr-only">Log source </span>${uiIcon("log", 12)}<code>${h(middleEllipsis(path, 52))}</code></span>`;
 }
 
-function patchConsoleElement(target: HTMLElement | null, markup: string): void {
-  if (!target) return;
-  const template = document.createElement("template");
-  template.innerHTML = markup.trim();
-  const source = template.content.firstElementChild;
-  if (!(source instanceof HTMLElement)) return;
-  if (target.className !== source.className) target.className = source.className;
-  target.hidden = source.hidden;
-  if (target.title !== source.title) target.title = source.title;
-  const sourceKey = source.dataset.consoleLogMetaKey ?? "";
-  if (target.dataset.consoleLogMetaKey !== sourceKey) {
-    if (sourceKey) target.dataset.consoleLogMetaKey = sourceKey;
-    else delete target.dataset.consoleLogMetaKey;
-  }
-  if (target.innerHTML !== source.innerHTML) target.innerHTML = source.innerHTML;
-}
-
-function patchConsoleMessage(current: HTMLElement, next: HTMLElement): void {
-  const currentStrong = current.querySelector<HTMLElement>(":scope > strong");
-  const nextStrong = next.querySelector<HTMLElement>(":scope > strong");
-  if (currentStrong && nextStrong) {
-    const currentElapsed = currentStrong.querySelector<HTMLElement>("[data-service-log-elapsed]");
-    const nextElapsed = nextStrong.querySelector<HTMLElement>("[data-service-log-elapsed]");
-    if (currentElapsed && nextElapsed) currentElapsed.textContent = nextElapsed.textContent;
-    else if (currentStrong.innerHTML !== nextStrong.innerHTML) currentStrong.replaceChildren(...[...nextStrong.childNodes].map((child) => child.cloneNode(true)));
-  }
-  const currentCopy = [...current.children].filter((child) => child instanceof HTMLElement && child.tagName === "SPAN" && !child.classList.contains("console-message-icon")).at(-1) as HTMLElement | undefined;
-  const nextCopy = [...next.children].filter((child) => child instanceof HTMLElement && child.tagName === "SPAN" && !child.classList.contains("console-message-icon")).at(-1) as HTMLElement | undefined;
-  if (currentCopy && nextCopy && currentCopy.textContent !== nextCopy.textContent) currentCopy.textContent = nextCopy.textContent;
-}
-
-function patchConsoleOutput(output: HTMLElement, markup: string, kind: string, log: string): void {
-  const sameKind = output.dataset.consoleOutputKind === kind;
-  const hasLog = kind === "log" || kind === "log-alert";
-  if (!sameKind) {
-    const previousScrollTop = output.scrollTop;
-    output.innerHTML = markup;
-    output.dataset.consoleOutputKind = kind;
-    if (hasLog) {
-      if (consoleFollow) output.scrollTop = output.scrollHeight;
-      else output.scrollTop = Math.min(previousScrollTop, output.scrollHeight);
-    }
-    return;
-  }
-
-  const currentLog = output.querySelector<HTMLElement>(".console-log");
-  if (hasLog && currentLog) {
-    const previousScrollTop = output.scrollTop;
-    const logChanged = currentLog.textContent !== log;
-    if (logChanged) currentLog.textContent = log;
-    const template = document.createElement("template");
-    template.innerHTML = markup;
-    const nextAlert = template.content.querySelector<HTMLElement>(".console-alert");
-    const currentAlert = output.querySelector<HTMLElement>(".console-alert");
-    const currentAlertText = currentAlert?.querySelector<HTMLElement>("span");
-    const nextAlertText = nextAlert?.querySelector<HTMLElement>("span");
-    if (currentAlertText && nextAlertText && currentAlertText.textContent !== nextAlertText.textContent) currentAlertText.textContent = nextAlertText.textContent;
-    if (logChanged) {
-      if (consoleFollow) output.scrollTop = output.scrollHeight;
-      else output.scrollTop = Math.min(previousScrollTop, output.scrollHeight);
-    }
-    return;
-  }
-
-  const template = document.createElement("template");
-  template.innerHTML = markup;
-  const nextMessage = template.content.querySelector<HTMLElement>(".console-message");
-  const currentMessage = output.querySelector<HTMLElement>(".console-message");
-  const nextAlert = template.content.querySelector<HTMLElement>(".console-alert");
-  const currentAlert = output.querySelector<HTMLElement>(".console-alert");
-  if (nextMessage && currentMessage && !nextAlert && !currentAlert) {
-    patchConsoleMessage(currentMessage, nextMessage);
-    return;
-  }
-  if (nextMessage && currentMessage && nextAlert && currentAlert) {
-    patchConsoleMessage(currentMessage, nextMessage);
-    const currentAlertText = currentAlert.querySelector<HTMLElement>("span");
-    const nextAlertText = nextAlert.querySelector<HTMLElement>("span");
-    if (currentAlertText && nextAlertText && currentAlertText.textContent !== nextAlertText.textContent) currentAlertText.textContent = nextAlertText.textContent;
-    return;
-  }
-  output.innerHTML = markup;
-  output.dataset.consoleOutputKind = kind;
-}
-
 function updateServiceConsoleDom(): void {
   const consoleElement = workspaceElement.querySelector<HTMLElement>(".service-console");
   if (!consoleElement) return;
@@ -993,7 +865,7 @@ function updateServiceConsoleDom(): void {
     const output = consoleElement.querySelector<HTMLElement>(".console-output");
     if (!output) return;
     const log = container && servicesState.logState.containerId === container.id ? servicesState.logState.logs : "";
-    patchConsoleOutput(output, renderDockerLogOutput(container, servicesState.logState), dockerConsoleOutputKind(container, servicesState.logState), log);
+    patchConsoleOutput(output, renderDockerLogOutput(container, servicesState.logState), dockerConsoleOutputKind(container, servicesState.logState), log, consoleFollow);
     return;
   }
   const serviceId = consoleElement.dataset.consoleServiceId || null;
@@ -1006,7 +878,7 @@ function updateServiceConsoleDom(): void {
   patchConsoleElement(consoleElement.querySelector<HTMLElement>("[data-console-source]"), renderConsoleSourceMeta(service && state?.sourcePath ? state.sourcePath : null, "Log source"));
   const output = consoleElement.querySelector<HTMLElement>(".console-output");
   if (!output) return;
-  patchConsoleOutput(output, renderServiceLogOutput(service), serviceConsoleOutputKind(service), state?.logs ?? "");
+  patchConsoleOutput(output, renderServiceLogOutput(service), serviceConsoleOutputKind(service), state?.logs ?? "", consoleFollow);
 }
 
 function updateDockerConsoleDom(): void {
@@ -1022,7 +894,7 @@ function updateDockerConsoleDom(): void {
   const output = consoleElement.querySelector<HTMLElement>(".console-output");
   if (!output) return;
   const log = container && dockerState.logState.containerId === container.id ? dockerState.logState.logs : "";
-  patchConsoleOutput(output, renderDockerLogOutput(container, dockerState.logState), dockerConsoleOutputKind(container, dockerState.logState), log);
+  patchConsoleOutput(output, renderDockerLogOutput(container, dockerState.logState), dockerConsoleOutputKind(container, dockerState.logState), log, consoleFollow);
 }
 
 function updateLaunchConsoleDom(): void {
@@ -1032,7 +904,7 @@ function updateLaunchConsoleDom(): void {
   if (!ref) return;
   const snapshot = snapshotFor(ref.profile.id, ref.task.name);
   const state: LaunchState = snapshot?.state ?? "stopped";
-  patchConsoleOutput(output, renderConsoleOutput(snapshot, state), launchConsoleOutputKind(snapshot, state), snapshot?.log_tail ?? "");
+  patchConsoleOutput(output, renderConsoleOutput(snapshot, state), launchConsoleOutputKind(snapshot, state), snapshot?.log_tail ?? "", consoleFollow);
 }
 
 function renderServiceLogMeta(service: ServiceSnapshot | null, state: ServiceLogState | null): string {
@@ -1231,7 +1103,7 @@ function renderContainerTile(container: ContainerInfo, ordinal?: number, ordinal
       ${showActions ? "" : detailsButton}
       <div class="tile-top">
         <span class="icon-well service-icon" aria-hidden="true">${renderTileOrdinal(ordinal, ordinalTotal)}${techIcon(imageTech(container.image), 44)}<span class="status-pip state-${busy ? "busy" : running ? "running" : "idle"}"></span></span>
-        ${renderTileHeading(container.name, "", "")}
+        ${renderTileHeading(container.name)}
         ${showActions ? `<div class="service-card-actions">${detailsButton}${actionButton}</div>` : actionButton}
       </div>
       <div class="tile-metrics">
@@ -1388,8 +1260,8 @@ function bulkActionIcon(name: "play" | "stop"): string {
 
 function renderProfile(profile: LaunchProfile): string {
   const snapshots = profile.tasks.map((task) => snapshotFor(profile.id, task.name));
-  const canStop = snapshots.some((snapshot) => snapshot && ["starting", "running", "stopping"].includes(snapshot.state));
-  const canStart = profile.tasks.some((task) => !["starting", "running", "stopping", "external"].includes(snapshotFor(profile.id, task.name)?.state ?? "stopped"));
+  const canStop = snapshots.some((snapshot) => snapshot && launchTaskCanStop(snapshot.state));
+  const canStart = profile.tasks.some((task) => launchTaskCanStart(snapshotFor(profile.id, task.name)?.state ?? "stopped"));
   const profileBusy = operations.has(launchProfileOperationKey(profile.id)) || launchProfileHasTaskOperation(profile);
   const runAll = profile.tasks.length > 1 && canStart
     ? `<button class="primary-button icon-only-button bulk-action-button" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}" aria-label="${canStop ? "Start remaining tasks" : "Run all tasks"}" title="${profileBusy ? "Starting tasks" : canStop ? "Start remaining tasks" : "Run all tasks"}" ${profileBusy ? "disabled" : ""}>${bulkActionIcon("play")}</button>`
@@ -1436,7 +1308,7 @@ function matchedServiceForTask(profile: LaunchProfile, task: LaunchTask): Servic
 function renderTask(profile: LaunchProfile, task: LaunchTask): string {
   const snapshot = snapshotFor(profile.id, task.name);
   const state: LaunchState = snapshot?.state ?? "stopped";
-  const active = ["starting", "running", "stopping"].includes(state);
+  const active = launchTaskIsActive(state);
   const external = state === "external";
   const matchedService = matchedServiceForTask(profile, task);
   const taskOperation = operations.has(`task:${profile.id}:${task.name}`);
@@ -1445,7 +1317,7 @@ function renderTask(profile: LaunchProfile, task: LaunchTask): string {
   const busy = taskOperation || serviceOperation || profileOperation;
   const selected = selectedTaskKey === launchTaskKey(profile.id, task.name);
   const externalCanStop = external && Boolean(matchedService?.can_terminate);
-  const stopUnavailable = external ? !externalCanStop : !active;
+  const stopUnavailable = external ? !externalCanStop : !launchTaskCanStop(state);
   const detailsAction = `<button type="button" class="info-button icon-only-button service-card-control task-card-action" data-tile-action data-action="task-details" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="View ${h(task.name)} details" title="View task details">${uiIcon("info", 15)}</button>`;
   const startAction = !active && !external
     ? `<button class="quiet-button start-action icon-only-button service-card-control task-card-action" type="button" data-tile-action data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="Start ${h(task.name)}" title="Start task" ${busy ? "disabled" : ""}>${uiIcon(busy ? "refresh" : "play", 15)}</button>`
@@ -1514,10 +1386,6 @@ function ensureSelectedTask(): LaunchTaskRef | null {
   const next = active ?? refs[0] ?? null;
   selectedTaskKey = next ? launchTaskKey(next.profile.id, next.task.name) : null;
   return next;
-}
-
-function launchStatePriority(state: LaunchState): number {
-  return ({ running: 0, starting: 1, stopping: 2, external: 3, failed: 4, stopped: 5 })[state];
 }
 
 function renderLaunchConsole(ref: LaunchTaskRef | null): string {
@@ -1985,10 +1853,6 @@ async function openService(id: string): Promise<void> {
   await openUrl(service.browser_url);
 }
 
-function launchTaskIsActive(state: LaunchState): boolean {
-  return ["starting", "running", "stopping"].includes(state);
-}
-
 function launchProfileBlocksEditing(profile: LaunchProfile): boolean {
   return profile.tasks.some((task) => {
     const state = snapshotFor(profile.id, task.name)?.state ?? "stopped";
@@ -2013,8 +1877,8 @@ function requestLaunchAction(action: PendingLaunchAction): void {
     if (!task) throw new Error("The launch task no longer exists.");
     const state = snapshotFor(profile.id, task.name)?.state ?? "stopped";
     if (operations.has(`task:${profile.id}:${task.name}`)) return;
-    if (action.direction === "start" && (launchTaskIsActive(state) || state === "external")) return;
-    if (action.direction === "stop" && !launchTaskIsActive(state)) return;
+    if (action.direction === "start" && !launchTaskCanStart(state)) return;
+    if (action.direction === "stop" && !launchTaskCanStop(state)) return;
     pendingLaunchAction = action;
     const title = action.direction === "start" ? "Start task?" : "Stop task?";
     const description = action.direction === "start"
@@ -2030,9 +1894,9 @@ function requestLaunchAction(action: PendingLaunchAction): void {
   if (launchProfileHasTaskOperation(profile)) return;
   const canStart = profile.tasks.some((task) => {
     const state = snapshotFor(profile.id, task.name)?.state ?? "stopped";
-    return !launchTaskIsActive(state) && state !== "external";
+    return launchTaskCanStart(state);
   });
-  const canStop = profile.tasks.some((task) => launchTaskIsActive(snapshotFor(profile.id, task.name)?.state ?? "stopped"));
+  const canStop = profile.tasks.some((task) => launchTaskCanStop(snapshotFor(profile.id, task.name)?.state ?? "stopped"));
   if (action.direction === "start" && !canStart) return;
   if (action.direction === "stop" && !canStop) return;
   pendingLaunchAction = action;
@@ -2057,7 +1921,7 @@ async function confirmLaunchAction(): Promise<void> {
       throw new Error("The launch task is no longer available.");
     }
     const state = snapshotFor(profile.id, task.name)?.state ?? "stopped";
-    if (operations.has(launchProfileOperationKey(profile.id)) || operations.has(`task:${profile.id}:${task.name}`) || (action.direction === "start" && (launchTaskIsActive(state) || state === "external")) || (action.direction === "stop" && !launchTaskIsActive(state))) {
+    if (operations.has(launchProfileOperationKey(profile.id)) || operations.has(`task:${profile.id}:${task.name}`) || (action.direction === "start" && !launchTaskCanStart(state)) || (action.direction === "stop" && !launchTaskCanStop(state))) {
       return;
     }
     await runTask(profile.id, task.name, action.direction === "start");
@@ -2067,9 +1931,9 @@ async function confirmLaunchAction(): Promise<void> {
   if (operations.has(launchProfileOperationKey(profile.id)) || launchProfileHasTaskOperation(profile)) return;
   const canStart = profile.tasks.some((task) => {
     const state = snapshotFor(profile.id, task.name)?.state ?? "stopped";
-    return !launchTaskIsActive(state) && state !== "external";
+    return launchTaskCanStart(state);
   });
-  const canStop = profile.tasks.some((task) => launchTaskIsActive(snapshotFor(profile.id, task.name)?.state ?? "stopped"));
+  const canStop = profile.tasks.some((task) => launchTaskCanStop(snapshotFor(profile.id, task.name)?.state ?? "stopped"));
   if ((action.direction === "start" && !canStart) || (action.direction === "stop" && !canStop)) {
     return;
   }
@@ -2235,7 +2099,7 @@ async function startProfile(id: string): Promise<void> {
   const profile = findProfile(id);
   const operationKey = launchProfileOperationKey(id);
   if (operations.has(operationKey) || launchProfileHasTaskOperation(profile)) return;
-  const firstStartable = profile.tasks.find((task) => !["starting", "running", "stopping", "external"].includes(snapshotFor(id, task.name)?.state ?? "stopped"));
+  const firstStartable = profile.tasks.find((task) => launchTaskCanStart(snapshotFor(id, task.name)?.state ?? "stopped"));
   if (!firstStartable) return;
   operations.add(operationKey);
   renderLaunch(true);
@@ -2243,7 +2107,7 @@ async function startProfile(id: string): Promise<void> {
     setSelectedTask(id, firstStartable.name);
     for (const task of profile.tasks) {
       const state = snapshotFor(id, task.name)?.state ?? "stopped";
-      if (!["starting", "running", "stopping", "external"].includes(state)) await runTask(id, task.name, true, false, false);
+      if (launchTaskCanStart(state)) await runTask(id, task.name, true, false, false);
     }
     await refreshLaunch(true);
   } finally {
@@ -2256,7 +2120,7 @@ async function stopProfile(id: string): Promise<void> {
   const profile = findProfile(id);
   const operationKey = launchProfileOperationKey(id);
   if (operations.has(operationKey) || launchProfileHasTaskOperation(profile)) return;
-  const canStop = profile.tasks.some((task) => launchTaskIsActive(snapshotFor(id, task.name)?.state ?? "stopped"));
+  const canStop = profile.tasks.some((task) => launchTaskCanStop(snapshotFor(id, task.name)?.state ?? "stopped"));
   if (!canStop) return;
   operations.add(operationKey);
   renderLaunch(true);
@@ -2291,57 +2155,30 @@ function mergeSnapshots(current: ManagedTaskSnapshot[], next: ManagedTaskSnapsho
   return [...map.values()];
 }
 
-function showGroupDetails(group: ReturnType<typeof groupServices>[number]): void {
-  const serviceItems = group.services.map((service) => `<li><strong>${h(serviceTitle(service) || service.display_name)}</strong><span>${h(techLabel(service.tech))}</span></li>`).join("");
-  const containerItems = relatedContainersForGroup(group.services, containerListing?.available ? containerListing.containers : [])
-    .map((container) => `<li><strong>${h(container.name)}</strong><span>${h(container.status || container.state)}</span></li>`).join("");
-  openModal(group.name, `<div class="info-modal-copy"><p>Workspace details for this service group.</p>${group.path ? `<dl class="detail-grid"><dt>Project root</dt><dd class="mono">${h(group.path)}</dd></dl>` : ""}<h3 class="detail-heading">Services</h3><ul class="detail-list">${serviceItems || "<li><span>No services available</span></li>"}</ul>${containerItems ? `<h3 class="detail-heading">Docker</h3><ul class="detail-list">${containerItems}</ul>` : ""}</div><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+function showGroupDetails(group: ServiceGroup): void {
+  openModal(group.name, renderGroupDetails(group, containerListing?.available ? containerListing.containers : []));
 }
 
 function showContainerGroupDetails(groupName: string): void {
   const containers = containerListing?.containers.filter((container) => (container.compose_project ?? "Standalone containers") === groupName) ?? [];
-  openModal(groupName, `<div class="info-modal-copy"><p>Docker containers in this group.</p><ul class="detail-list">${containers.map((container) => `<li><strong>${h(container.name)}</strong><span>${h(container.status || container.state)}</span></li>`).join("") || "<li><span>No containers available</span></li>"}</ul></div><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+  openModal(groupName, renderContainerGroupDetails(containers));
 }
 
 function showProfileDetails(profile: LaunchProfile): void {
-  const taskItems = profile.tasks.map((task) => `<li><strong>${h(task.name)}</strong><span class="profile-task-meta"><code class="mono">${h(task.command || "No command configured")}</code>${task.expected_port ? `<span>Port ${task.expected_port}</span>` : ""}</span></li>`).join("");
-  openModal(profile.name, `<div class="info-modal-copy"><p>Saved commands and project context for this launch profile.</p><dl class="detail-grid"><dt>Project root</dt><dd class="mono">${h(profile.project_root)}</dd><dt>Tasks</dt><dd>${profile.tasks.length}</dd></dl><h3 class="detail-heading">Commands</h3><ul class="detail-list">${taskItems || "<li><span>No tasks configured</span></li>"}</ul></div><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+  openModal(profile.name, renderProfileDetails(profile));
 }
 
 function showTaskDetails(profile: LaunchProfile, taskName: string): void {
   const task = profile.tasks.find((item) => item.name === taskName);
   if (!task) throw new Error("The launch task no longer exists.");
   const snapshot = snapshotFor(profile.id, taskName);
-  const state: LaunchState = snapshot?.state ?? "stopped";
-  const external = state === "external";
-  const pid = external ? snapshot?.external_pid ?? snapshot?.main_pid ?? null : snapshot?.main_pid ?? null;
-  const cwd = external ? snapshot?.external_working_directory || task.cwd : task.cwd;
-  const uptime = snapshot?.started_at ? formatUptimeCompact(Date.now() / 1000 - snapshot.started_at) : "";
   const matchedService = matchedServiceForTask(profile, task);
-  const message = snapshot?.message?.trim() ?? "";
-  openModal(task.name, `
-    <div class="detail-identity"><div class="detail-icon" aria-hidden="true">${matchedService ? techIcon(matchedService.tech, 56) : uiIcon("terminal", 34)}</div><div><strong>${h(task.name)}</strong><span>${h(profile.name)} · ${h(stateLabel(state))}</span></div></div>
-    ${message ? `<div class="detail-warning">${h(message)}</div>` : ""}
-    <dl class="detail-grid">
-      <dt>State</dt><dd>${h(stateLabel(state))}</dd><dt>PID</dt><dd>${pid ?? "—"}</dd>
-      <dt>Uptime</dt><dd>${h(uptime || "—")}</dd><dt>Expected port</dt><dd>${task.expected_port ?? "—"}</dd>
-      <dt>Command</dt><dd class="mono">${h(task.command || "—")}</dd><dt>Working directory</dt><dd class="mono">${h(cwd || "—")}</dd>
-      <dt>Project root</dt><dd class="mono">${h(profile.project_root)}</dd>
-      ${external ? `<dt>External log</dt><dd class="mono">${h(snapshot?.external_log_path ?? "—")}</dd>` : ""}
-      ${matchedService ? `<dt>Detected service</dt><dd>${h(serviceTitle(matchedService) || matchedService.display_name)}</dd><dt>Memory</dt><dd>${formatBytes(matchedService.process?.memory_bytes ?? null)}</dd>` : ""}
-    </dl>
-    <div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+  openModal(task.name, renderTaskDetails(profile, task, snapshot, matchedService));
 }
 
 function showInfo(kind: string): void {
-  const copy: Record<string, { title: string; message: string }> = {
-    launch: { title: "Launch Profiles", message: "Group related commands into one place. Select a task to view its output, then use the play and stop icons to control it." },
-    appearance: { title: "Appearance", message: "Choose whether Cutting Board follows the system theme or always uses a light or dark appearance." },
-    scanning: { title: "Scanning", message: "This controls how often Cutting Board refreshes the list of running local services. A longer interval uses less CPU." },
-    privacy: { title: "Privacy", message: "Settings are stored locally on this device. Cutting Board does not collect telemetry or start automatically at login." }
-  };
-  const selected = copy[kind] ?? { title: "Information", message: "More information is available here." };
-  openModal(selected.title, `<div class="info-modal-copy"><p>${h(selected.message)}</p></div><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+  const selected = infoCopy(kind);
+  openModal(selected.title, renderInfoDetails(selected.message));
 }
 
 function toggleSettingsInfo(button: HTMLElement): void {
@@ -2354,26 +2191,11 @@ function toggleSettingsInfo(button: HTMLElement): void {
 }
 
 function showServiceDetails(service: ServiceSnapshot): void {
-  const process = service.process;
-  const activeProfiles = service.tech.trim().toLowerCase() === "spring"
-    ? service.active_profiles.map((profile) => profile.trim()).filter(Boolean)
-    : [];
-  openModal(service.display_name, `
-    <div class="detail-identity"><div class="detail-icon" aria-hidden="true">${techIcon(service.tech, 56)}</div><div><strong>${h(serviceTitle(service))}</strong><span>${h(techLabel(service.tech))} · ${h(service.category)}</span></div></div>
-    ${service.warnings.map((warning) => `<div class="detail-warning">${h(warning)}</div>`).join("")}
-    <dl class="detail-grid">
-      <dt>Status</dt><dd>${h(service.status)}</dd><dt>Origin</dt><dd>${h(service.origin_label ?? service.origin_kind)}</dd>
-      ${activeProfiles.length ? `<dt>Active profiles</dt><dd class="detail-badges">${activeProfiles.map((profile) => `<span class="profile-badge">${h(profile)}</span>`).join("")}</dd>` : ""}
-      <dt>Project</dt><dd>${h(service.project?.root_path ?? "—")}</dd><dt>PID</dt><dd>${process?.pid ?? "—"}</dd>
-      <dt>Executable</dt><dd>${h(process?.executable ?? "—")}</dd><dt>Working directory</dt><dd>${h(process?.working_directory ?? "—")}</dd>
-      <dt>Command</dt><dd class="mono">${h(process?.command ?? "—")}</dd><dt>CPU</dt><dd>${process?.cpu_percent === null || process?.cpu_percent === undefined ? "Calculating" : `${process.cpu_percent.toFixed(1)}%`}</dd>
-      <dt>Memory</dt><dd>${formatBytes(process?.memory_bytes ?? null)}</dd><dt>Uptime</dt><dd>${h(formatUptimeCompact(currentUptime(service)) || "—")}</dd>
-    </dl>
-    <h3 class="detail-heading">Listening endpoints</h3><div class="endpoint-list">${service.endpoints.map((endpoint) => `<div><span class="port-chip">${endpoint.port}</span><code>${h(endpoint.address)} · ${h(endpoint.family)} · ${h(endpoint.scope)}</code></div>`).join("")}</div>`);
+  openModal(service.display_name, renderServiceDetails(service));
 }
 
 function showContainerDetails(container: ContainerInfo): void {
-  openModal(container.name, `<dl class="detail-grid"><dt>Container ID</dt><dd class="mono">${h(container.id)}</dd><dt>Image</dt><dd>${h(container.image)}</dd><dt>State</dt><dd>${h(container.state)}</dd><dt>Status</dt><dd>${h(container.status || "—")}</dd><dt>Compose project</dt><dd>${h(container.compose_project ?? "—")}</dd><dt>Compose service</dt><dd>${h(container.compose_service ?? "—")}</dd><dt>Compose working directory</dt><dd>${h(container.compose_working_dir ?? "—")}</dd><dt>Published ports</dt><dd>${container.ports.length ? container.ports.join(", ") : "—"}</dd></dl><div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>`);
+  openModal(container.name, renderContainerDetails(container));
 }
 
 function showSettings(): void {
@@ -2481,61 +2303,13 @@ async function deleteProfile(id: string): Promise<void> {
   toast("Launch profile deleted.");
 }
 
-function openModal(title: string, body: string): void {
-  const activeElement = document.activeElement;
-  modalFocusReturn = activeElement instanceof HTMLElement && activeElement !== document.body ? activeElement : null;
-  byId("modal-root").innerHTML = `<div class="modal-backdrop" role="presentation"><section class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header class="modal-header"><h2 id="modal-title">${h(title)}</h2><button type="button" class="modal-close" data-action="close-modal" aria-label="Close">${uiIcon("close", 18)}</button></header><div class="modal-body">${body}</div></section></div>`;
-  const modal = document.querySelector<HTMLElement>(".modal");
-  const actions = modal?.querySelector<HTMLElement>(".modal-body .modal-actions");
-  if (actions) {
-    actions.classList.add("modal-footer");
-    modal?.append(actions);
-  }
-  document.querySelector<HTMLElement>(".modal button, .modal input, .modal select")?.focus();
-  const appShell = document.querySelector<HTMLElement>(".app-shell");
-  appShell?.setAttribute("inert", "");
-  appShell?.setAttribute("aria-hidden", "true");
-}
-
 function closeModal(): void {
   pendingServiceStopId = null;
   pendingGroupSaveId = null;
   pendingGroupStopId = null;
   pendingProfileDeleteId = null;
   pendingLaunchAction = null;
-  if (!document.querySelector(".modal-backdrop")) return;
-  byId("modal-root").replaceChildren();
-  const appShell = document.querySelector<HTMLElement>(".app-shell");
-  appShell?.removeAttribute("inert");
-  appShell?.removeAttribute("aria-hidden");
-  const focusReturn = modalFocusReturn;
-  modalFocusReturn = null;
-  if (focusReturn?.isConnected) focusReturn.focus();
-}
-
-function trapModalFocus(event: KeyboardEvent): void {
-  const modal = document.querySelector<HTMLElement>(".modal");
-  if (!modal) return;
-  const focusable = [...modal.querySelectorAll<HTMLElement>(
-    'button:not([disabled]), [href], input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-  )].filter((element) => !element.hasAttribute("hidden") && element.getAttribute("aria-hidden") !== "true");
-  if (focusable.length === 0) {
-    event.preventDefault();
-    modal.focus();
-    return;
-  }
-  const first = focusable[0]!;
-  const last = focusable[focusable.length - 1]!;
-  if (!modal.contains(document.activeElement) || document.activeElement === modal) {
-    event.preventDefault();
-    (event.shiftKey ? last : first).focus();
-  } else if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
+  closeModalView();
 }
 
 function updateLiveMetrics(): void {
@@ -2583,10 +2357,6 @@ function findProfile(id: string): LaunchProfile {
   return value;
 }
 
-function stateLabel(state: LaunchState): string {
-  return ({ stopped: "Stopped", starting: "Starting", running: "Running", stopping: "Stopping", failed: "Failed", external: "Running externally" })[state];
-}
-
 function themeChoice(value: ThemeMode, label: string, description: string): string {
   return `<label class="theme-choice" title="${h(description)}"><input type="radio" name="theme_mode" value="${value}" ${settings.theme_mode === value ? "checked" : ""}><span class="theme-preview theme-preview-${value}" aria-hidden="true"><i></i><i></i><i></i></span><span class="theme-copy"><strong>${label}</strong></span><span class="choice-check">${uiIcon("check", 14)}</span></label>`;
 }
@@ -2596,19 +2366,12 @@ function formatInterval(milliseconds: number): string {
   return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} sec`;
 }
 
-function portChipDescription(label: string, ports: number[]): string {
-  if (!label.startsWith("+")) return `Listening port ${label}`;
-  return `${ports.length - 1} additional listening ports: ${ports.slice(1).join(", ")}`;
-}
-
 function loadingState(message: string): string { return `<div class="empty-state"><span class="spinner"></span><p>${h(message)}</p></div>`; }
 function emptyState(title: string, message: string): string { return `<div class="empty-state"><h2>${h(title)}</h2><p>${h(message)}</p><button class="secondary-button icon-only-button" type="button" onclick="location.reload()" aria-label="Refresh" title="Refresh">${uiIcon("refresh", 16)}</button></div>`; }
 function byId(id: string): HTMLElement { const value = document.getElementById(id); if (!value) throw new Error(`Missing #${id}`); return value; }
 function required(value: string | undefined): string { if (!value) throw new Error("Missing action identifier."); return value; }
 function ellipsis(value: string, limit: number): string { return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`; }
 function messageOf(error: unknown): string { return error instanceof Error ? error.message : String(error); }
-function h(value: unknown): string { return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character] ?? character); }
-
 function toast(message: string, error = false): void {
   const host = byId("toast-root");
   host.innerHTML = `<div class="toast${error ? " is-error" : ""}">${h(message)}</div>`;

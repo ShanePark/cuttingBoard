@@ -1,0 +1,70 @@
+/* The console height repeats the clamp applied in main.ts so a window that shrinks before the
+   resize observer runs still leaves room for the list above it. */
+.launch-console { position: relative; z-index: 10; bottom: auto; min-width: 0; min-height: 0; height: max(220px, min(var(--console-height, 336px), calc(100dvh - 270px))); max-height: 100%; display: flex; flex-direction: column; margin: 0 20px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 18px 18px 0 0; background: color-mix(in srgb, var(--surface) 94%, var(--accent)); box-shadow: 0 -12px 34px color-mix(in srgb, var(--shadow) 84%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent); }
+.service-console, .docker-console { border-bottom-color: var(--hairline); }
+.service-console .console-toolbar-label, .docker-console .console-toolbar-label { color: var(--text-muted); }
+.service-console .console-meta-error, .docker-console .console-meta-error { border-color: color-mix(in srgb, var(--danger) 36%, var(--hairline)); color: var(--danger); }
+.service-console .console-meta-error span, .docker-console .console-meta-error span { color: inherit; }
+.launch-console-empty { border-color: var(--hairline); }
+.console-resizer { position: relative; flex: 0 0 11px; height: 11px; min-height: 11px; cursor: ns-resize; touch-action: none; }
+.console-resizer::after { content: ""; position: absolute; top: 50%; left: 50%; width: 42px; height: 3px; transform: translate(-50%, -50%); border-radius: 999px; background: var(--border); opacity: .55; }
+.console-resizer:hover::after, .console-resizer:focus-visible::after { background: var(--accent); opacity: 1; }
+.console-resizer:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+body.is-console-resizing { cursor: ns-resize; }
+body.is-console-resizing .console-resizer::after { background: var(--accent); opacity: 1; }
+body.is-console-resizing .console-log, body.is-console-resizing .console-context-item code { user-select: none; }
+.console-header { flex: 0 0 64px; height: 64px; min-height: 64px; display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap; gap: 12px 18px; overflow: hidden; padding: 12px 16px; border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 38%, var(--surface)); }
+.console-title { min-width: 0; flex: 1 1 46%; display: flex; align-items: center; gap: 10px; overflow: hidden; }
+.console-icon { width: 34px; height: 34px; display: grid; flex: 0 0 34px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); }
+.console-icon.state-running { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 13%, transparent); }
+.console-icon.state-starting, .console-icon.state-stopping { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, transparent); background: color-mix(in srgb, var(--warning) 13%, transparent); }
+.console-icon.state-failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 13%, transparent); }
+.console-icon.state-external { color: var(--violet); border-color: color-mix(in srgb, var(--violet) 35%, transparent); background: color-mix(in srgb, var(--violet) 13%, transparent); }
+.console-title h2 { margin: 0; color: var(--text); font-size: 14px; font-weight: 750; letter-spacing: .01em; }
+.console-title p { min-width: 0; margin: 5px 0 0; overflow: hidden; color: var(--text-dim); font-family: "SF Mono", Menlo, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.console-title > div { min-width: 0; overflow: hidden; }
+.console-title p strong { color: var(--text-muted); font-family: inherit; font-weight: 700; }
+.console-meta { display: flex; min-width: 0; flex: 1 1 54%; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 6px; overflow: hidden; }
+.console-state { min-height: 28px; height: auto; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border-radius: 999px; background: var(--surface-alt); color: var(--text-dim); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.console-state.state-running { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+.console-state.state-starting, .console-state.state-stopping { background: color-mix(in srgb, var(--warning) 17%, transparent); color: var(--warning); }
+.console-state.state-failed { background: color-mix(in srgb, var(--danger) 17%, transparent); color: var(--danger); }
+.console-state.state-external { background: color-mix(in srgb, var(--violet) 17%, transparent); color: var(--violet); }
+.console-meta-item { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; height: auto; padding: 0 9px; border: 1px solid var(--hairline); border-radius: 8px; color: var(--text-dim); font-size: 10px; font-weight: 700; }
+.console-meta-item code { color: var(--text-muted); font: 10px "SF Mono", Menlo, monospace; }
+.console-meta > * { flex: 0 0 auto; }
+.console-meta-source { min-width: 0; max-width: min(280px, 28vw); overflow: hidden; }
+.console-meta-source code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console-context-details { flex: 0 0 39px; height: 39px; min-height: 39px; overflow: hidden; border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 14%, var(--surface)); }
+.console-context-details[open] { flex-basis: auto; height: auto; max-height: none; }
+.console-context-details.is-empty > summary { cursor: default; }
+.console-context-details > summary { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 16px; color: var(--text-dim); font-size: 11px; font-weight: 700; cursor: pointer; list-style: none; }
+.console-context-details > summary::-webkit-details-marker { display: none; }
+.console-context-details > summary:hover, .console-context-details > summary:focus-visible { color: var(--text); }
+.console-context-details[open] > summary { color: var(--accent); }
+.console-context { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 1px; border-bottom: 1px solid var(--hairline); background: var(--hairline); }
+.console-context-item { min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 0 16px; background: color-mix(in srgb, var(--surface-alt) 22%, var(--surface)); }
+.console-context-item > span { flex: 0 0 auto; color: var(--text-dim); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.console-context-item code { min-width: 0; overflow: hidden; color: var(--text-muted); font: 10px "SF Mono", Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
+.console-toolbar { flex: 0 0 50px; height: 50px; min-height: 50px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 12px 6px 16px; border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 14%, var(--surface)); }
+.console-toolbar-label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; font-weight: 700; }
+.console-tools { display: inline-flex; align-items: center; gap: 4px; }
+.console-tool { min-width: 36px; min-height: 34px; display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text-dim); font-size: 11px; font-weight: 700; cursor: pointer; }
+.console-tool.icon-only-button { display: inline-grid; flex: 0 0 38px; width: 38px; min-height: 38px; height: 38px; padding: 0; place-items: center; }
+.console-tool:hover, .console-tool:focus-visible { border-color: var(--hairline); background: var(--surface-hover); color: var(--text); }
+.console-tool.is-active { color: var(--accent); }
+.console-output { flex: 1 1 auto; height: auto; min-height: 0; max-height: none; overflow: auto; padding: 15px 16px 18px; background: color-mix(in srgb, var(--canvas) 88%, #050608); color: var(--text-muted); scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
+.console-output::-webkit-scrollbar { width: 9px; height: 9px; }
+.console-output::-webkit-scrollbar-track { background: transparent; }
+.console-output::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 9px; background: var(--border); background-clip: padding-box; }
+.console-output:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.console-log { min-height: 0; margin: 0; color: var(--text-muted); font: 11px/1.58 "SF Mono", Menlo, "JetBrains Mono", "Ubuntu Mono", monospace; white-space: pre; user-select: text; tab-size: 2; }
+.console-output.is-wrapped .console-log { white-space: pre-wrap; overflow-wrap: anywhere; }
+.console-message { min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; padding: 28px 18px; color: var(--text-dim); text-align: center; font-size: 11px; line-height: 1.5; }
+.console-message strong { color: var(--text-muted); font-size: 12px; }
+.console-message-icon { display: grid; place-items: center; width: 35px; height: 35px; margin-bottom: 2px; border-radius: 10px; background: var(--surface-alt); color: var(--text-dim); }
+.service-log-spinner { animation: spin .8s linear infinite; }
+.console-message.is-external .console-message-icon { background: color-mix(in srgb, var(--violet) 15%, transparent); color: var(--violet); }
+.console-message.is-failed .console-message-icon { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+.console-alert { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 12px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); font: 10px/1.45 -apple-system, BlinkMacSystemFont, sans-serif; }
+.console-alert .ui-icon { flex: 0 0 auto; margin-top: 1px; }
