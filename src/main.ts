@@ -650,6 +650,12 @@ function renderSharedServiceCard(options: SharedServiceCardOptions): string {
     </article>`;
 }
 
+// The browser shortcut lives in the card foot: only a service with a resolved URL can offer one.
+function renderOpenServiceButton(service: ServiceSnapshot, label: string): string {
+  if (!service.browser_url) return "";
+  return `<button type="button" class="service-link icon-only-button service-card-control" data-tile-action data-action="open-service" data-service-id="${h(service.id)}" aria-label="Open ${h(label)} in the browser" title="Open ${h(service.browser_url)}">${uiIcon("external", 15)}</button>`;
+}
+
 function renderServiceTile(service: ServiceSnapshot, ordinal?: number, ordinalTotal?: number, actionScope?: ServiceTileActionScope): string {
   const scope = actionScope ?? { select: service.relevance === "dev", info: true, stop: service.can_terminate, open: Boolean(service.browser_url) };
   const busy = operations.has(`stop:${service.id}`);
@@ -668,9 +674,7 @@ function renderServiceTile(service: ServiceSnapshot, ordinal?: number, ordinalTo
     : "";
   const controlsMarkup = `${scope.info ? `<button type="button" class="info-button icon-only-button service-details-button service-card-control" data-tile-action data-action="service-details" data-service-id="${h(service.id)}" aria-label="View ${h(service.display_name)} details" title="View service details">${uiIcon("info", 15)}</button>` : ""}${scope.stop && service.can_terminate ? `<button type="button" class="stop-button service-card-control" data-tile-action data-action="stop-service" data-service-id="${h(service.id)}" aria-label="${busy ? "Stopping" : "Stop"} ${h(service.display_name)}" title="${busy ? "Stopping process" : "Stop process"}" ${busy ? "disabled" : ""}>${uiIcon("stop", 15)}</button>` : ""}`;
   const metricsMarkup = `<span class="metric metric-uptime${uptime !== null && uptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(uptimeText(service, busy))}</span></span><span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(service.process?.memory_bytes ?? null))}</span></span>`;
-  const trailingMarkup = scope.open && service.browser_url
-    ? `<button type="button" class="service-link icon-only-button service-card-control" data-tile-action data-action="open-service" data-service-id="${h(service.id)}" aria-label="Open ${h(service.display_name)} in the browser" title="Open ${h(service.browser_url)}">${uiIcon("external", 15)}</button>`
-    : "";
+  const trailingMarkup = scope.open ? renderOpenServiceButton(service, service.display_name) : "";
   return renderSharedServiceCard({
     category: service.category,
     metricsId: service.id,
@@ -1370,6 +1374,8 @@ function renderTask(profile: LaunchProfile, task: LaunchTask): string {
       ? `<span class="metric metric-state is-external" title="Running externally">${uiIcon("terminal", 13)}<span class="sr-only">Running externally</span></span>`
       : `<span class="metric metric-state ${busy ? "is-busy" : `state-${state}`}" title="Task state">${uiIcon(state === "running" ? "play" : "terminal", 13)}<span class="sr-only">State </span>${h(stateLabel(state))}</span>`;
   const cardAttributes = ` data-action="select-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" tabindex="0" role="listitem" aria-current="${selected ? "true" : "false"}"`;
+  // A stopped task has no port bound yet, so the shortcut only appears once a service backs it.
+  const trailingMarkup = matchedService ? renderOpenServiceButton(matchedService, task.name) : "";
   return renderSharedServiceCard({
     category: matchedService?.category ?? "runtime",
     cardClass: `task-card state-${state}`,
@@ -1384,7 +1390,8 @@ function renderTask(profile: LaunchProfile, task: LaunchTask): string {
     controlsMarkup: `${detailsAction}${startAction}${stopAction}`,
     metricsMarkup,
     ports: task.expected_port ? [task.expected_port] : [],
-    emptyPortLabel: "No expected port"
+    emptyPortLabel: "No expected port",
+    trailingMarkup
   });
 }
 
