@@ -67,7 +67,6 @@ const MIN_CONSOLE_HEIGHT = 220;
 const DEFAULT_CONSOLE_HEIGHT = 336;
 const MIN_BOARD_HEIGHT = 140;
 const CONSOLE_RESIZE_STEP = 24;
-const SERVICE_LOG_TIMEOUT_MS = 10_000;
 
 // The dock below the workspace shows one panel at a time and is shared by every tab.
 // A new panel needs an entry here plus a body rendered for its id.
@@ -403,23 +402,7 @@ async function loadServiceLogs(serviceId: string, showLoading = false): Promise<
   }
   pendingServiceLogRequests.set(serviceId, requestId);
   startServiceLogElapsedTimer(serviceId, requestId);
-  let timeoutHandle: number | null = null;
   try {
-    // A native log lookup may inspect process file descriptors and cannot be
-    // cancelled from the webview. Keep the request pending while bounding the
-    // visible loading state; a late result may still refresh the current view.
-    timeoutHandle = window.setTimeout(() => {
-      if (requestId !== serviceLogRequestId || servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId || !serviceLogState.loading) return;
-      serviceLogState = {
-        ...serviceLogState,
-        serviceId,
-        loading: false,
-        loadingStartedAt: null,
-        error: "Timed out while fetching service logs. Try selecting the service again."
-      };
-      stopServiceLogElapsedTimer();
-      if (activeTab === "services" && servicesConsoleTarget?.kind === "service") updateServiceConsoleDom();
-    }, SERVICE_LOG_TIMEOUT_MS);
     const result = await api.serviceLogs(serviceId);
     if (requestId !== serviceLogRequestId || servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId) return;
     stopServiceLogElapsedTimer();
@@ -446,7 +429,6 @@ async function loadServiceLogs(serviceId: string, showLoading = false): Promise<
     };
     if (activeTab === "services" && servicesConsoleTarget?.kind === "service") updateServiceConsoleDom();
   } finally {
-    if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
     if (pendingServiceLogRequests.get(serviceId) === requestId) pendingServiceLogRequests.delete(serviceId);
   }
 }

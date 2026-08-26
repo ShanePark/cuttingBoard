@@ -4,7 +4,7 @@ use std::{
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System, UpdateKind};
 
 use super::external::{path_matches_task, task_matches_service, ExternalTaskInfo};
 
@@ -268,7 +268,10 @@ fn process_command_provenance(service: &ServiceSnapshot) -> Vec<String> {
     let Some(process) = service.process.as_ref() else {
         return Vec::new();
     };
-    let system = System::new_all();
+    let refresh_kind = ProcessRefreshKind::nothing()
+        .without_tasks()
+        .with_cmd(UpdateKind::OnlyIfNotSet);
+    let system = System::new_with_specifics(RefreshKind::nothing().with_processes(refresh_kind));
     let mut pid = Some(Pid::from_u32(process.pid));
     let mut visited = Vec::new();
     let mut commands = Vec::new();
@@ -277,19 +280,21 @@ fn process_command_provenance(service: &ServiceSnapshot) -> Vec<String> {
             break;
         }
         visited.push(current_pid);
-        let Some(current) = system.process(current_pid) else {
+        let Some((command, parent)) = system.process(current_pid).map(|current| {
+            let command = current
+                .cmd()
+                .iter()
+                .map(|part| part.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ");
+            (command, current.parent())
+        }) else {
             break;
         };
-        let command = current
-            .cmd()
-            .iter()
-            .map(|part| part.to_string_lossy())
-            .collect::<Vec<_>>()
-            .join(" ");
         if !command.is_empty() {
             commands.push(command);
         }
-        pid = current.parent();
+        pid = parent;
     }
     commands
 }

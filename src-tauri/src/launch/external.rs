@@ -9,7 +9,7 @@ use std::{
     thread,
     time::Duration,
 };
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 #[cfg(unix)]
 use std::time::Instant;
@@ -276,7 +276,7 @@ pub(super) fn service_belongs_to_runtime(
         return true;
     }
 
-    let system = System::new_all();
+    let mut system = System::new();
     let mut parent_pid = process.parent_pid;
     let mut visited = Vec::new();
     while let Some(pid) = parent_pid {
@@ -287,8 +287,14 @@ pub(super) fn service_belongs_to_runtime(
             return false;
         }
         visited.push(pid);
+        let pid = Pid::from_u32(pid);
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().without_tasks(),
+        );
         parent_pid = system
-            .process(Pid::from_u32(pid))
+            .process(pid)
             .and_then(|process| process.parent())
             .map(|pid| pid.as_u32());
     }

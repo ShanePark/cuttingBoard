@@ -26,7 +26,7 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 #[derive(Debug)]
 struct RuntimeTask {
@@ -527,8 +527,14 @@ fn snapshot_from(profile_id: &str, task_name: &str, runtime: &RuntimeTask) -> Ma
 }
 
 fn ensure_process_identity(pid: u32, start_time: u64) -> Result<(), String> {
-    let system = System::new_all();
-    let process = system.process(Pid::from_u32(pid)).ok_or_else(|| {
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
+    let process = system.process(pid).ok_or_else(|| {
         "The process changed since the last scan. Refresh and try again.".to_string()
     })?;
     if process.start_time() != start_time {

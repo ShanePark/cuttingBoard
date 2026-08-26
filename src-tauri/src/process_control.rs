@@ -1,6 +1,6 @@
 use crate::models::{ServiceIdentity, ServiceSnapshot, TerminationResult};
 use std::{thread, time::Duration};
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 pub(crate) fn service_identity(service: &ServiceSnapshot) -> Result<ServiceIdentity, String> {
     let process = service.process.as_ref().ok_or_else(|| {
@@ -98,25 +98,33 @@ fn ensure_process_identity(
     missing_message: &str,
     reused_message: &str,
 ) -> Result<(), String> {
-    let system = System::new_all();
-    let process = system
-        .process(Pid::from_u32(identity.pid))
-        .ok_or_else(|| missing_message.to_string())?;
-    if !process_start_time_matches(process.start_time(), identity.start_time) {
+    let start_time =
+        current_process_start_time(identity.pid).ok_or_else(|| missing_message.to_string())?;
+    if !process_start_time_matches(start_time, identity.start_time) {
         return Err(reused_message.into());
     }
     Ok(())
 }
 
 fn process_is_current(identity: &ServiceIdentity) -> Result<bool, String> {
-    let system = System::new_all();
-    let Some(process) = system.process(Pid::from_u32(identity.pid)) else {
+    let Some(start_time) = current_process_start_time(identity.pid) else {
         return Ok(false);
     };
-    if !process_start_time_matches(process.start_time(), identity.start_time) {
+    if !process_start_time_matches(start_time, identity.start_time) {
         return Err("The PID was reused by another process. Refresh before stopping it.".into());
     }
     Ok(true)
+}
+
+fn current_process_start_time(pid: u32) -> Option<u64> {
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
+    system.process(pid).map(|process| process.start_time())
 }
 
 fn process_start_time_matches(actual: u64, expected: u64) -> bool {
