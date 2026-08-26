@@ -33,7 +33,6 @@
   .launch-console { margin: 0 12px; border-radius: 15px 15px 0 0; }
   .console-header { flex: 0 0 64px; height: 64px; min-height: 64px; gap: 8px; padding-inline: 12px; }
   .console-title { flex: 1 1 auto; }
-  .console-toolbar { padding-left: 11px; }
   .console-output { padding: 13px 12px 16px; }
   .modal-backdrop { padding: 10px; }
   .modal { width: min(100%, calc(100vw - 20px)); max-height: calc(100dvh - 20px); border-radius: 16px; }
