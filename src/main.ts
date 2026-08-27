@@ -12,6 +12,7 @@ import { createKeyboardNavigation, focusContainerCard, focusServiceCard, focusTa
 import { createLaunchRefresh } from "./launch-refresh";
 import { openModal, closeModal as closeModalView, trapModalFocus } from "./modal";
 import { createModalForms, SOURCE_URL } from "./modal-forms";
+import { updateSettingsFromRadio } from "./settings";
 import {
   launchConsoleOutputKind,
   ensureSelectedTask,
@@ -72,7 +73,6 @@ import type {
   LaunchProfile,
   LaunchState,
   ManagedTaskSnapshot,
-  ThemeMode,
   UiSettings,
   WorkspaceSnapshot
 } from "./types";
@@ -97,6 +97,8 @@ let settings: UiSettings = {
   window_y: null,
   window_geometry_logical: false
 };
+let persistedSettings: UiSettings = { ...settings };
+let settingsReady = false;
 let workspace: WorkspaceSnapshot | null = null;
 let containerListing: ContainerListing | null = null;
 let profiles: LaunchProfile[] = [];
@@ -106,6 +108,8 @@ let dockerBusy = false;
 let scanTimer: number | null = null;
 let consoleLogTimer: number | null = null;
 let uptimeTimer: number | null = null;
+let settingsSaveQueue = Promise.resolve();
+let settingsSaveRequestId = 0;
 let serviceSignature = "";
 let dockerSignature = "";
 let launchSignature = "";
@@ -273,6 +277,7 @@ const keyboardNavigation = createKeyboardNavigation({
 });
 
 root.addEventListener("click", (event) => void handleClick(event));
+root.addEventListener("change", (event) => handleChange(event));
 root.addEventListener("keydown", keyboardNavigation.handleKeyboard);
 root.addEventListener("pointerdown", (event) => consoleController.handleResizeStart(event));
 root.addEventListener("scroll", (event) => consoleController.handleScroll(event), true);
@@ -291,6 +296,7 @@ async function bootstrap(): Promise<void> {
     ]);
     appInfo = info;
     settings = loadedSettings;
+    persistedSettings = { ...loadedSettings };
     profiles = loadedProfiles;
     taskSnapshots = snapshots;
     applyTheme(settings.theme_mode);
@@ -299,6 +305,7 @@ async function bootstrap(): Promise<void> {
     consoleController.applyConsoleHeight();
     installTimers();
     installBoardObserver();
+    settingsReady = true;
   } catch (error) {
     showFatal(error);
   }
@@ -933,13 +940,14 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "start-container") await containerActions.operateContainer(required(target.dataset.containerId), true);
     else if (action === "stop-container") await containerActions.operateContainer(required(target.dataset.containerId), false);
     else if (action === "container-details") modalForms.showContainerDetails(findContainer(required(target.dataset.containerId)));
-    else if (action === "settings") modalForms.showSettings();
+    else if (action === "settings") {
+      if (settingsReady) modalForms.showSettings();
+    }
     else if (action === "toggle-settings-info") modalForms.toggleSettingsInfo(target);
     else if (action === "show-info") modalForms.showInfo(required(target.dataset.infoKind));
     else if (action === "profile-details") modalForms.showProfileDetails(findProfile(required(target.dataset.profileId)));
     else if (action === "task-details") modalForms.showTaskDetails(findProfile(required(target.dataset.profileId)), required(target.dataset.taskName));
     else if (action === "close-modal") closeModal();
-    else if (action === "save-settings") await saveSettingsFromModal();
     else if (action === "open-source") await openUrl(SOURCE_URL);
     else if (action === "add-profile") modalForms.showProfileEditor(null);
     else if (action === "edit-profile") modalForms.showProfileEditor(findProfile(required(target.dataset.profileId)));
@@ -962,18 +970,55 @@ async function handleClick(event: Event): Promise<void> {
   }
 }
 
-async function saveSettingsFromModal(): Promise<void> {
-  const form = document.querySelector<HTMLFormElement>("#settings-form");
-  if (!form) return;
-  const data = new FormData(form);
-  const theme = String(data.get("theme_mode")) as ThemeMode;
-  const interval = Number(data.get("scan_interval_ms"));
-  settings = await api.saveSettings({ ...settings, theme_mode: theme, scan_interval_ms: Math.min(60000, Math.max(500, interval || 2000)) });
+function handleChange(event: Event): void {
+  const target = event.target instanceof HTMLInputElement ? event.target : null;
+  if (!settingsReady || !target || target.type !== "radio" || !target.checked || !target.closest("#settings-form")) return;
+  try {
+    settings = updateSettingsFromRadio(settings, target.name, target.value);
+    applyTheme(settings.theme_mode);
+    installTimers();
+    render(true);
+    queueSettingsSave(settings);
+  } catch (error) {
+    toast(messageOf(error), true);
+  }
+}
+
+function queueSettingsSave(nextSettings: UiSettings): void {
+  const requestId = ++settingsSaveRequestId;
+  settingsSaveQueue = settingsSaveQueue.then(async () => {
+    try {
+      const saved = await api.saveSettings(nextSettings);
+      persistedSettings = { ...saved };
+      if (requestId !== settingsSaveRequestId) return;
+      settings = { ...saved };
+      applyTheme(settings.theme_mode);
+      installTimers();
+      render(true);
+      toast("Settings saved.");
+    } catch (error) {
+      if (requestId !== settingsSaveRequestId) return;
+      rollbackSettingsToPersisted();
+      toast(messageOf(error), true);
+    }
+  });
+}
+
+function rollbackSettingsToPersisted(): void {
+  settings = { ...persistedSettings };
   applyTheme(settings.theme_mode);
   installTimers();
-  closeModal();
   render(true);
-  toast("Settings saved.");
+  syncSettingsForm();
+}
+
+function syncSettingsForm(): void {
+  const form = document.querySelector<HTMLFormElement>("#settings-form");
+  if (!form) return;
+  form.querySelectorAll<HTMLInputElement>("input[type='radio']").forEach((input) => {
+    if (input.name === "theme_mode") input.checked = input.value === settings.theme_mode;
+    else if (input.name === "scan_interval_ms") input.checked = Number(input.value) === settings.scan_interval_ms;
+  });
 }
 
 async function chooseProfileRoot(): Promise<void> {

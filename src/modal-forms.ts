@@ -106,7 +106,7 @@ export function createModalForms(context: ModalFormsContext) {
       <button class="source-link" type="button" data-action="open-source" aria-label="View Cutting Board source code on GitHub" title="Open source on GitHub">${uiIcon("github", 20)}<span><strong>View source on GitHub</strong><small>${h(SOURCE_URL.replace("https://", ""))}</small></span>${uiIcon("external", 16)}</button>
       <p class="settings-note">Settings are stored locally on this device. Cutting Board does not collect telemetry and does not start automatically at login.</p>
     </section>
-    <div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button" type="button" data-action="save-settings">Save</button></div>
+    <div class="modal-actions"><button class="primary-button" type="button" data-action="close-modal">Done</button></div>
   </form>`);
   }
 
