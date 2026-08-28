@@ -928,6 +928,8 @@ async function handleClick(event: Event): Promise<void> {
     if (action === "service-details") modalForms.showServiceDetails(findService(required(target.dataset.serviceId)));
     else if (action === "select-service") selectService(required(target.dataset.serviceId), false);
     else if (action === "open-service") await serviceActions.openService(required(target.dataset.serviceId));
+    else if (action === "restart-service") serviceActions.requestRestartService(required(target.dataset.serviceId));
+    else if (action === "confirm-restart-service") await serviceActions.confirmRestartService(required(target.dataset.serviceId));
     else if (action === "stop-service") serviceActions.requestStopService(required(target.dataset.serviceId));
     else if (action === "confirm-stop-service") await serviceActions.confirmStopService(required(target.dataset.serviceId));
     else if (action === "save-service-group") serviceActions.requestSaveGroup(required(target.dataset.groupId));
@@ -958,6 +960,7 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "stop-profile") launchActions.requestLaunchAction({ kind: "profile", direction: "stop", profileId: required(target.dataset.profileId) });
     else if (action === "select-task") selectTask(required(target.dataset.profileId), required(target.dataset.taskName), true);
     else if (action === "start-task") launchActions.requestLaunchAction({ kind: "task", direction: "start", profileId: required(target.dataset.profileId), taskName: required(target.dataset.taskName) });
+    else if (action === "restart-task") launchActions.requestLaunchAction({ kind: "task", direction: "restart", profileId: required(target.dataset.profileId), taskName: required(target.dataset.taskName) });
     else if (action === "stop-task") launchActions.requestLaunchAction({ kind: "task", direction: "stop", profileId: required(target.dataset.profileId), taskName: required(target.dataset.taskName) });
     else if (action === "confirm-launch-action") await launchActions.confirmLaunchAction();
     else if (action === "jump-to-bottom") consoleController.jumpToBottom(target);

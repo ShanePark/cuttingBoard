@@ -27,6 +27,13 @@ export function uiIcon(name: UiIconName, size = 20, className = ""): string {
   return `<span class="ui-icon ui-icon-${escapeHtml(name)}${safeClass}" style="${style}" aria-hidden="true"></span>`;
 }
 
+export function restartIcon(size = 20, className = ""): string {
+  const edge = safeSize(size);
+  const safeClass = className ? ` ${escapeHtml(className)}` : "";
+  const playSize = Math.max(7, Math.round(edge * 0.5));
+  return `<span class="restart-icon${safeClass}" style="--restart-icon-size:${edge}px" aria-hidden="true"><span class="restart-icon-ring">${uiIcon("refresh", edge)}</span><span class="restart-icon-play">${uiIcon("play", playSize)}</span></span>`;
+}
+
 export function techIcon(tech: string, size = 48, className = ""): string {
   const requested = normaliseTech(tech);
   const edge = safeSize(size);

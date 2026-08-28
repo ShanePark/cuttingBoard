@@ -11,8 +11,9 @@ use crate::{
     launch::LaunchManager,
     models::{
         AppInfo, ContainerActionResult, ContainerListing, ContainerLogSnapshot, ContainerRequest,
-        LaunchProfile, ManagedTaskSnapshot, ServiceIdentity, ServiceLogSnapshot, ServiceRequest,
-        TaskRequest, TerminateRequest, TerminationResult, UiSettings, WorkspaceSnapshot,
+        LaunchProfile, ManagedTaskSnapshot, RestartServiceRequest, ServiceIdentity,
+        ServiceLogSnapshot, ServiceRequest, TaskRequest, TerminateRequest, TerminationResult,
+        UiSettings, WorkspaceSnapshot,
     },
     storage::{
         delete_profile as remove_profile, demo_profiles, load_profiles as read_profiles,
@@ -253,6 +254,26 @@ async fn stop_task(
 }
 
 #[tauri::command]
+async fn restart_task(
+    state: State<'_, AppState>,
+    request: TaskRequest,
+) -> Result<ManagedTaskSnapshot, String> {
+    reject_demo(state.inner())?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (profiles, workspace) = launch_context(&state)?;
+        lock(&state.0.launch)?.restart_task(
+            &profiles,
+            &request,
+            &state.0.logs_dir,
+            workspace.as_ref(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Restart task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn stop_profile(
     state: State<'_, AppState>,
     profile_id: String,
@@ -280,6 +301,18 @@ async fn terminate_service(
 }
 
 #[tauri::command]
+async fn restart_service(
+    state: State<'_, AppState>,
+    request: RestartServiceRequest,
+) -> Result<(), String> {
+    reject_demo(state.inner())?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || restart_discovered_service(&state, &request))
+        .await
+        .map_err(|error| format!("Restart task failed: {error}"))?
+}
+
+#[tauri::command]
 fn shutdown(state: State<'_, AppState>) -> Result<(), String> {
     lock(&state.0.launch)?.stop_all();
     Ok(())
@@ -303,6 +336,35 @@ fn terminate_discovered_service(
             "The service changed since the last scan. Refresh and try again.".to_string()
         })?;
     process_control::terminate_discovered_service(identity)
+}
+
+fn restart_discovered_service(
+    state: &AppState,
+    request: &RestartServiceRequest,
+) -> Result<(), String> {
+    let scan = lock(&state.0.scan)?;
+    let identity = scan
+        .service_index
+        .get(&request.service_id)
+        .cloned()
+        .ok_or_else(|| {
+            "The service cannot be restarted safely. Refresh and try again.".to_string()
+        })?;
+    let service = scan
+        .workspace
+        .as_ref()
+        .and_then(|workspace| {
+            workspace
+                .services
+                .iter()
+                .find(|service| service.id == request.service_id)
+        })
+        .cloned()
+        .ok_or_else(|| {
+            "The service changed since the last scan. Refresh and try again.".to_string()
+        })?;
+    drop(scan);
+    process_control::restart_discovered_service(&service, identity)
 }
 
 fn profiles_for_state(state: &AppState) -> Result<Vec<LaunchProfile>, String> {
@@ -450,8 +512,10 @@ pub fn run() {
             task_snapshots,
             start_task,
             stop_task,
+            restart_task,
             stop_profile,
             terminate_service,
+            restart_service,
             shutdown
         ])
         .build(tauri::generate_context!())

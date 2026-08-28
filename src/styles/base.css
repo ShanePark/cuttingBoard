@@ -125,4 +125,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   -webkit-mask: var(--ui-icon-image) center / contain no-repeat;
   mask: var(--ui-icon-image) center / contain no-repeat;
 }
+.restart-icon { position: relative; display: inline-block; width: var(--restart-icon-size); height: var(--restart-icon-size); flex: 0 0 var(--restart-icon-size); }
+.restart-icon-ring, .restart-icon-play { position: absolute; inset: 0; display: grid; place-items: center; }
+.restart-icon-ring > .ui-icon { width: var(--restart-icon-size); height: var(--restart-icon-size); flex-basis: var(--restart-icon-size); }
+.restart-icon-play > .ui-icon { width: calc(var(--restart-icon-size) * .5); height: calc(var(--restart-icon-size) * .5); flex-basis: calc(var(--restart-icon-size) * .5); transform: translateX(.35px); }
 .tech-icon { display: block; object-fit: contain; }

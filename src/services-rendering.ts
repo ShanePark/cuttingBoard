@@ -1,4 +1,4 @@
-import { techIcon, uiIcon } from "./icons";
+import { restartIcon, techIcon, uiIcon } from "./icons";
 import { escapeHtml as h } from "./html";
 import {
   FRESH_UPTIME_SECONDS,
@@ -83,10 +83,11 @@ export function servicesRenderSignature(context: ServicesRenderingContext): stri
       service.project?.id, service.project?.name, service.project?.root_path,
       service.project?.workspace_name, service.project?.workspace_root_path,
       service.process?.pid, service.process?.name,
-      service.process?.working_directory, service.process?.command,
+      service.process?.executable, service.process?.working_directory, service.process?.command,
       service.process?.launch_command, service.process?.create_time,
       service.active_profiles,
-      context.tile.operations.has(`stop:${service.id}`)
+      context.tile.operations.has(`stop:${service.id}`),
+      context.tile.operations.has(`restart:${service.id}`)
     ]),
     groups.map((group) => [
       group.id,
@@ -159,9 +160,20 @@ export function generatedTasksForGroup(services: ServiceSnapshot[]): LaunchTask[
   });
 }
 
+export function canRestartService(service: ServiceSnapshot): boolean {
+  return Boolean(
+    service.can_terminate
+    && service.process?.executable?.trim()
+    && service.process.working_directory?.trim()
+    && service.process.command.trim()
+  );
+}
+
 export function renderServiceTile(service: ServiceSnapshot, ordinal: number | undefined, ordinalTotal: number | undefined, actionScope: ServiceTileActionScope | undefined, context: ServiceTileRenderingContext): string {
   const scope = actionScope ?? { select: service.relevance === "dev", info: true, stop: service.can_terminate, open: Boolean(service.browser_url) };
-  const busy = context.operations.has(`stop:${service.id}`);
+  const stopping = context.operations.has(`stop:${service.id}`);
+  const restarting = context.operations.has(`restart:${service.id}`);
+  const busy = stopping || restarting;
   const uptime = currentUptime(service);
   const pip = busy ? "busy" : uptime === null ? "idle" : service.status === "limited" ? "limited" : "running";
   const selected = Boolean(scope.select) && context.consoleTargetKind === "service" && context.selectedServiceId === service.id;
@@ -175,8 +187,8 @@ export function renderServiceTile(service: ServiceSnapshot, ordinal: number | un
   const overlayMarkup = scope.select || !scope.info
     ? `<button class="tile-details-button${scope.select ? " service-select-button" : ""}" type="button" data-tile-action data-action="${tileAction}" data-service-id="${h(service.id)}"${scope.select ? ` aria-pressed="${selected ? "true" : "false"}"` : ""} aria-label="${h(tileActionLabel)}" title="${h(tileActionTitle)}"></button>`
     : "";
-  const controlsMarkup = `${scope.info ? `<button type="button" class="info-button icon-only-button service-details-button service-card-control" data-tile-action data-action="service-details" data-service-id="${h(service.id)}" aria-label="View ${h(service.display_name)} details" title="View service details">${uiIcon("info", 15)}</button>` : ""}${scope.stop && service.can_terminate ? `<button type="button" class="stop-button service-card-control" data-tile-action data-action="stop-service" data-service-id="${h(service.id)}" aria-label="${busy ? "Stopping" : "Stop"} ${h(service.display_name)}" title="${busy ? "Stopping process" : "Stop process"}" ${busy ? "disabled" : ""}>${uiIcon("stop", 15)}</button>` : ""}`;
-  const metricsMarkup = `<span class="metric metric-uptime${uptime !== null && uptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(uptimeText(service, busy))}</span></span><span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(service.process?.memory_bytes ?? null))}</span></span>`;
+  const controlsMarkup = `${scope.info ? `<button type="button" class="info-button icon-only-button service-details-button service-card-control" data-tile-action data-action="service-details" data-service-id="${h(service.id)}" aria-label="View ${h(service.display_name)} details" title="View service details">${uiIcon("info", 15)}</button>` : ""}${scope.stop && canRestartService(service) ? `<button type="button" class="restart-action icon-only-button service-card-control" data-tile-action data-action="restart-service" data-service-id="${h(service.id)}" aria-label="${restarting ? "Restarting" : "Restart"} ${h(service.display_name)}" title="${restarting ? "Restarting process" : "Restart process"}" ${busy ? "disabled" : ""}>${restartIcon(15)}</button>` : ""}${scope.stop && service.can_terminate ? `<button type="button" class="stop-button service-card-control" data-tile-action data-action="stop-service" data-service-id="${h(service.id)}" aria-label="${stopping ? "Stopping" : "Stop"} ${h(service.display_name)}" title="${stopping ? "Stopping process" : "Stop process"}" ${busy ? "disabled" : ""}>${uiIcon("stop", 15)}</button>` : ""}`;
+  const metricsMarkup = `<span class="metric metric-uptime${uptime !== null && uptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(uptimeText(service, stopping, restarting))}</span></span><span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(service.process?.memory_bytes ?? null))}</span></span>`;
   const trailingMarkup = scope.open ? renderOpenServiceButton(service, service.display_name) : "";
   return renderSharedServiceCard({
     category: service.category,
@@ -198,8 +210,9 @@ export function renderServiceTile(service: ServiceSnapshot, ordinal: number | un
   });
 }
 
-export function uptimeText(service: ServiceSnapshot, busy: boolean): string {
-  if (busy) return "Stopping…";
+export function uptimeText(service: ServiceSnapshot, stopping: boolean, restarting = false): string {
+  if (restarting) return "Restarting…";
+  if (stopping) return "Stopping…";
   const uptime = currentUptime(service);
   return uptime === null ? "—" : formatUptimeCompact(uptime);
 }

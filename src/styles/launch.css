@@ -100,6 +100,9 @@
 .task-card .task-card-action { flex: 0 0 32px; }
 .task-card .task-card-action.is-unavailable:disabled { border-color: var(--hairline); background: var(--surface-alt); color: var(--text-dim); cursor: default; }
 .task-card .start-action:disabled .ui-icon-refresh { animation: spin .8s linear infinite; }
+.restart-action { border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--hairline)); background: color-mix(in srgb, var(--accent) 9%, var(--surface-alt)); color: var(--accent); }
+.restart-action:hover, .restart-action:focus-visible { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--surface-alt)); }
+.restart-action:disabled .restart-icon-ring { animation: spin .8s linear infinite; }
 
 .split-view { min-width: 0; min-height: 100%; height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
 .split-view-list { min-width: 0; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }

@@ -1,4 +1,4 @@
-import { uiIcon } from "./icons";
+import { restartIcon, uiIcon } from "./icons";
 import { escapeHtml as h } from "./html";
 import { launchTaskCanStart, launchTaskCanStop, launchTaskIsActive } from "./launch-state";
 import { openModal } from "./modal";
@@ -8,7 +8,7 @@ import type {
 } from "./types";
 
 export type PendingLaunchAction =
-  | { kind: "task"; direction: "start" | "stop"; profileId: string; taskName: string }
+  | { kind: "task"; direction: "start" | "stop" | "restart"; profileId: string; taskName: string }
   | { kind: "profile"; direction: "start" | "stop"; profileId: string };
 
 export type LaunchActionsApi = {
@@ -16,6 +16,7 @@ export type LaunchActionsApi = {
   deleteProfile: (profileId: string) => Promise<LaunchProfile[]>;
   startTask: (profileId: string, taskName: string) => Promise<ManagedTaskSnapshot>;
   stopTask: (profileId: string, taskName: string) => Promise<ManagedTaskSnapshot>;
+  restartTask: (profileId: string, taskName: string) => Promise<ManagedTaskSnapshot>;
   stopProfile: (profileId: string) => Promise<ManagedTaskSnapshot[]>;
 };
 
@@ -90,15 +91,19 @@ export function createLaunchActions(context: LaunchActionsContext) {
       const state = context.snapshotFor(profile.id, task.name)?.state ?? "stopped";
       if (context.operations.has(`task:${profile.id}:${task.name}`)) return;
       if (action.direction === "start" && !launchTaskCanStart(state)) return;
-      if (action.direction === "stop" && !launchTaskCanStop(state)) return;
+      if ((action.direction === "stop" || action.direction === "restart") && !launchTaskCanStop(state) && state !== "external") return;
       pendingLaunchAction = action;
-      const title = action.direction === "start" ? "Start task?" : "Stop task?";
+      const title = action.direction === "start" ? "Start task?" : action.direction === "restart" ? "Restart task?" : "Stop task?";
       const description = action.direction === "start"
         ? `Start <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will launch the task process.`
-        : `Stop <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will terminate the task process.`;
+        : action.direction === "restart"
+          ? `Restart <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will stop and start the task process.`
+          : `Stop <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will terminate the task process.`;
       const button = action.direction === "start"
         ? `<button class="primary-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("play", 13)} Start</button>`
-        : `<button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("stop", 13)} Stop</button>`;
+        : action.direction === "restart"
+          ? `<button class="primary-button icon-button-label" type="button" data-action="confirm-launch-action">${restartIcon(13)} Restart</button>`
+          : `<button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("stop", 13)} Stop</button>`;
       context.openModal(title, `<p class="confirm-copy">${description}</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button>${button}</div>`);
       return;
     }
@@ -132,10 +137,10 @@ export function createLaunchActions(context: LaunchActionsContext) {
       const task = profile.tasks.find((item) => item.name === action.taskName);
       if (!task) throw new Error("The launch task is no longer available.");
       const state = context.snapshotFor(profile.id, task.name)?.state ?? "stopped";
-      if (context.operations.has(launchProfileOperationKey(profile.id)) || context.operations.has(`task:${profile.id}:${task.name}`) || (action.direction === "start" && !launchTaskCanStart(state)) || (action.direction === "stop" && !launchTaskCanStop(state))) {
+      if (context.operations.has(launchProfileOperationKey(profile.id)) || context.operations.has(`task:${profile.id}:${task.name}`) || (action.direction === "start" && !launchTaskCanStart(state)) || ((action.direction === "stop" || action.direction === "restart") && !launchTaskCanStop(state) && state !== "external")) {
         return;
       }
-      await runTask(profile.id, task.name, action.direction === "start");
+      await runTask(profile.id, task.name, action.direction);
       return;
     }
 
@@ -162,7 +167,7 @@ export function createLaunchActions(context: LaunchActionsContext) {
       context.setSelectedTask(id, firstStartable.name);
       for (const task of profile.tasks) {
         const state = context.snapshotFor(id, task.name)?.state ?? "stopped";
-        if (launchTaskCanStart(state)) await runTask(id, task.name, true, false, false);
+        if (launchTaskCanStart(state)) await runTask(id, task.name, "start", false, false);
       }
       await context.refreshLaunch(true);
     } finally {
@@ -188,14 +193,18 @@ export function createLaunchActions(context: LaunchActionsContext) {
     }
   }
 
-  async function runTask(profileId: string, taskName: string, start: boolean, refresh = true, select = true): Promise<void> {
+  async function runTask(profileId: string, taskName: string, direction: "start" | "stop" | "restart", refresh = true, select = true): Promise<void> {
     const key = `task:${profileId}:${taskName}`;
     if (context.operations.has(key)) return;
     if (select) context.setSelectedTask(profileId, taskName);
     context.operations.add(key);
     context.renderLaunch(true);
     try {
-      const snapshot = start ? await context.api.startTask(profileId, taskName) : await context.api.stopTask(profileId, taskName);
+      const snapshot = direction === "start"
+        ? await context.api.startTask(profileId, taskName)
+        : direction === "restart"
+          ? await context.api.restartTask(profileId, taskName)
+          : await context.api.stopTask(profileId, taskName);
       context.setSnapshots(mergeSnapshots(context.getSnapshots(), [snapshot]));
       if (snapshot.message) context.toast(snapshot.message, snapshot.state === "failed");
     } finally {

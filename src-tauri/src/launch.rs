@@ -312,6 +312,36 @@ impl LaunchManager {
             .ok_or_else(|| format!("{} is not running.", task.name))
     }
 
+    /// Restart a task that is currently running either under Cutting Board or
+    /// as a strictly matched external launch task.
+    ///
+    /// The workspace snapshot can still contain the process that was just
+    /// stopped. Starting with no workspace intentionally bypasses that stale
+    /// external-process check and makes the new process a managed task.
+    pub fn restart_task(
+        &mut self,
+        profiles: &[LaunchProfile],
+        request: &TaskRequest,
+        logs_dir: &Path,
+        workspace: Option<&WorkspaceSnapshot>,
+    ) -> Result<ManagedTaskSnapshot, String> {
+        self.refresh();
+        let (profile, task) = find_task(profiles, request)?;
+        let key = task_key(&profile.id, &task.name);
+        let managed_active = self
+            .tasks
+            .get(&key)
+            .is_some_and(|runtime| is_active(&runtime.state));
+        let external_active =
+            !managed_active && external_task_info(profile, task, workspace).is_some();
+        if !managed_active && !external_active {
+            return Err(format!("{} is not running.", task.name));
+        }
+
+        self.stop_task(profiles, request, workspace)?;
+        self.start_task(profiles, request, logs_dir, None)
+    }
+
     pub fn stop_profile(
         &mut self,
         profiles: &[LaunchProfile],
@@ -886,6 +916,170 @@ mod tests {
         assert!(service_belongs_to_runtime(service, Some(123)));
         assert!(!service_belongs_to_runtime(service, Some(42)));
         assert!(service_belongs_to_runtime(service, None));
+    }
+
+    #[test]
+    fn restart_rejects_stopped_and_failed_tasks() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = LaunchProfile {
+            id: "profile".into(),
+            name: "profile".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "web".into(),
+                cwd: ".".into(),
+                command: "echo ok".into(),
+                expected_port: None,
+            }],
+        };
+        let request = TaskRequest {
+            profile_id: profile.id.clone(),
+            task_name: "web".into(),
+        };
+
+        for state in ["stopped", "failed"] {
+            let mut manager = LaunchManager {
+                tasks: HashMap::from([(
+                    task_key("profile", "web"),
+                    RuntimeTask {
+                        child: None,
+                        pid: None,
+                        state: state.into(),
+                        started_at: None,
+                        message: None,
+                        log_path: temporary.path().join("web.log"),
+                    },
+                )]),
+            };
+
+            let error = manager
+                .restart_task(
+                    std::slice::from_ref(&profile),
+                    &request,
+                    temporary.path(),
+                    None,
+                )
+                .unwrap_err();
+            assert_eq!(error, "web is not running.");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_replaces_managed_task_and_appends_to_its_log() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = LaunchProfile {
+            id: "profile".into(),
+            name: "profile".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "web".into(),
+                cwd: ".".into(),
+                command: "sleep 30".into(),
+                expected_port: None,
+            }],
+        };
+        let request = TaskRequest {
+            profile_id: profile.id.clone(),
+            task_name: "web".into(),
+        };
+        let logs_dir = temporary.path().join("logs");
+        let mut manager = LaunchManager::default();
+
+        let first = manager
+            .start_task(std::slice::from_ref(&profile), &request, &logs_dir, None)
+            .unwrap();
+        let first_pid = first.main_pid.expect("managed task PID");
+
+        let restarted = manager
+            .restart_task(std::slice::from_ref(&profile), &request, &logs_dir, None)
+            .unwrap();
+        let restarted_pid = restarted.main_pid.expect("restarted task PID");
+
+        assert_eq!(restarted.state, "running");
+        assert_ne!(restarted_pid, first_pid);
+        let log = fs::read_to_string(logs_dir.join("profile-web.log")).unwrap();
+        assert_eq!(log.matches("=== Cutting Board start ").count(), 2);
+
+        manager.stop_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_replaces_a_strict_external_task_using_a_fresh_managed_runtime() {
+        use std::process::{Command, Stdio};
+
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = LaunchProfile {
+            id: "profile".into(),
+            name: "profile".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "web".into(),
+                cwd: ".".into(),
+                command: "sleep 30".into(),
+                expected_port: Some(5173),
+            }],
+        };
+        let request = TaskRequest {
+            profile_id: profile.id.clone(),
+            task_name: "web".into(),
+        };
+        let mut external_child = Command::new("sleep")
+            .arg("30")
+            .current_dir(temporary.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let external_pid = external_child.id();
+        let mut system = System::new();
+        let external_start = loop {
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[Pid::from_u32(external_pid)]),
+                true,
+                ProcessRefreshKind::nothing().without_tasks(),
+            );
+            if let Some(process) = system.process(Pid::from_u32(external_pid)) {
+                break process.start_time();
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let reaper = thread::spawn(move || external_child.wait().unwrap());
+
+        let mut workspace = workspace_with_project(5173, temporary.path());
+        workspace.services[0].process = Some(crate::models::ProcessInfo {
+            pid: external_pid,
+            parent_pid: None,
+            name: "sleep".into(),
+            executable: None,
+            working_directory: Some(temporary.path().to_string_lossy().into_owned()),
+            command: "sleep 30".into(),
+            launch_command: Some("sleep 30".into()),
+            create_time: external_start,
+            uptime_seconds: 0,
+            cpu_percent: None,
+            memory_bytes: None,
+            uid: None,
+        });
+        let logs_dir = temporary.path().join("logs");
+        let mut manager = LaunchManager::default();
+
+        let restarted = manager
+            .restart_task(
+                std::slice::from_ref(&profile),
+                &request,
+                &logs_dir,
+                Some(&workspace),
+            )
+            .unwrap();
+
+        reaper.join().unwrap();
+        assert_eq!(restarted.state, "running");
+        assert!(restarted.main_pid.is_some());
+        assert_eq!(restarted.external_pid, None);
+        manager.stop_all();
     }
 
     #[test]

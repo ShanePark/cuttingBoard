@@ -20,6 +20,11 @@ pub struct TerminateRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestartServiceRequest {
+    pub service_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceRequest {
     pub service_id: String,
 }

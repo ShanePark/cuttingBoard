@@ -1,4 +1,4 @@
-import { techIcon, uiIcon } from "./icons";
+import { restartIcon, techIcon, uiIcon } from "./icons";
 import { escapeHtml as h } from "./html";
 import {
   FRESH_UPTIME_SECONDS,
@@ -34,7 +34,7 @@ export type LaunchRenderingContext = {
   launchProfileOperationKey: (profileId: string) => string;
   launchProfileHasTaskOperation: (profile: LaunchProfile) => boolean;
   renderGroupTitle: (title: string, itemCount: number, action: string, attributes: string, displayTitle?: string, actionTitle?: string) => string;
-  uptimeText: (service: ServiceSnapshot, busy: boolean) => string;
+  uptimeText: (service: ServiceSnapshot, stopping: boolean, restarting?: boolean) => string;
 };
 
 export type LaunchConsoleRenderingContext = {
@@ -108,24 +108,31 @@ export function matchedServiceForTask(profile: LaunchProfile, task: LaunchTask, 
 export function renderTask(profile: LaunchProfile, task: LaunchTask, context: LaunchRenderingContext): string {
   const snapshot = context.snapshotFor(profile.id, task.name);
   const state: LaunchState = snapshot?.state ?? "stopped";
-  const active = launchTaskIsActive(state);
   const external = state === "external";
+  const externallyManaged = external || Boolean(snapshot?.external_pid);
+  const active = launchTaskIsActive(state) || externallyManaged;
   const matchedService = matchedServiceForTask(profile, task, context.services);
   const taskOperation = context.operations.has(`task:${profile.id}:${task.name}`);
-  const serviceOperation = matchedService ? context.operations.has(`stop:${matchedService.id}`) : false;
+  const serviceStopping = matchedService ? context.operations.has(`stop:${matchedService.id}`) : false;
+  const serviceRestarting = matchedService ? context.operations.has(`restart:${matchedService.id}`) : false;
+  const serviceOperation = serviceStopping || serviceRestarting;
   const profileOperation = context.operations.has(context.launchProfileOperationKey(profile.id));
   const busy = taskOperation || serviceOperation || profileOperation;
   const selected = context.selectedTaskKey === launchTaskKey(profile.id, task.name);
   const externalCanStop = external && Boolean(matchedService?.can_terminate);
-  const stopUnavailable = external ? !externalCanStop : !launchTaskCanStop(state);
+  const canStop = external ? externalCanStop : launchTaskCanStop(state);
+  const stopUnavailable = !canStop;
   const detailsAction = `<button type="button" class="info-button icon-only-button service-card-control task-card-action" data-tile-action data-action="task-details" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="View ${h(task.name)} details" title="View task details">${uiIcon("info", 15)}</button>`;
   const startAction = !active && !external
     ? `<button class="quiet-button start-action icon-only-button service-card-control task-card-action" type="button" data-tile-action data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="Start ${h(task.name)}" title="Start task" ${busy ? "disabled" : ""}>${uiIcon(busy ? "refresh" : "play", 15)}</button>`
     : "";
+  const restartAction = canStop
+    ? `<button class="restart-action icon-only-button service-card-control task-card-action" type="button" data-tile-action data-action="restart-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="${busy ? "Restarting" : "Restart"} ${h(task.name)}" title="${busy ? "Restarting task" : "Restart task"}" ${busy ? "disabled" : ""}>${restartIcon(15)}</button>`
+    : "";
   const stopAction = `<button class="stop-button service-card-control task-card-action${stopUnavailable ? " is-unavailable" : ""}" type="button" data-tile-action data-action="${externalCanStop ? "stop-service" : "stop-task"}"${externalCanStop ? ` data-service-id="${h(matchedService?.id ?? "")}"` : ` data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}"`} aria-label="${externalCanStop ? "Stop externally managed service" : `Stop ${task.name}`}" title="${active ? busy ? "Stopping task" : "Stop task" : externalCanStop ? "Stop externally managed service" : external ? "Cannot stop an externally managed task" : "Task is not running"}" ${stopUnavailable || busy ? "disabled" : ""}>${uiIcon("stop", 15)}</button>`;
   const matchedUptime = matchedService ? currentUptime(matchedService) : null;
   const metricsMarkup = matchedService
-    ? `<span class="metric metric-uptime${matchedUptime !== null && matchedUptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(context.uptimeText(matchedService, serviceOperation))}</span></span><span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(matchedService.process?.memory_bytes ?? null))}</span></span>`
+    ? `<span class="metric metric-uptime${matchedUptime !== null && matchedUptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(context.uptimeText(matchedService, serviceStopping, serviceRestarting))}</span></span><span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(matchedService.process?.memory_bytes ?? null))}</span></span>`
     : state === "external"
       ? `<span class="metric metric-state is-external" title="Running externally">${uiIcon("terminal", 13)}<span class="sr-only">Running externally</span></span>`
       : `<span class="metric metric-state ${busy ? "is-busy" : `state-${state}`}" title="Task state">${uiIcon(state === "running" ? "play" : "terminal", 13)}<span class="sr-only">State </span>${h(stateLabel(state))}</span>`;
@@ -143,7 +150,7 @@ export function renderTask(profile: LaunchProfile, task: LaunchTask, context: La
     iconMarkup: matchedService ? techIcon(matchedService.tech, 44) : uiIcon("terminal", 25),
     pipClass: busy ? "busy" : state === "external" ? "external" : state === "stopped" || state === "failed" ? "idle" : "running",
     title: task.name,
-    controlsMarkup: `${detailsAction}${startAction}${stopAction}`,
+    controlsMarkup: `${detailsAction}${startAction}${restartAction}${stopAction}`,
     metricsMarkup,
     ports: task.expected_port ? [task.expected_port] : [],
     emptyPortLabel: "No expected port",

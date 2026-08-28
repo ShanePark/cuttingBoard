@@ -1,7 +1,7 @@
-import { uiIcon } from "./icons";
+import { restartIcon, uiIcon } from "./icons";
 import { escapeHtml as h } from "./html";
 import { openModal } from "./modal";
-import { generatedTasksForGroup } from "./services-rendering";
+import { canRestartService, generatedTasksForGroup } from "./services-rendering";
 import {
   groupServices,
   launchTasksEquivalent,
@@ -17,6 +17,7 @@ import type {
 
 export type ServiceActionsApi = {
   terminate: (serviceId: string) => Promise<{ success: boolean; message: string }>;
+  restartService: (serviceId: string) => Promise<void>;
   saveProfile: (profile: LaunchProfile) => Promise<LaunchProfile[]>;
 };
 
@@ -37,6 +38,7 @@ export type ServiceActionsContext = {
 
 export function createServiceActions(context: ServiceActionsContext) {
   let pendingServiceStopId: string | null = null;
+  let pendingServiceRestartId: string | null = null;
   let pendingGroupSaveId: string | null = null;
   let pendingGroupStopId: string | null = null;
 
@@ -67,6 +69,7 @@ export function createServiceActions(context: ServiceActionsContext) {
 
   function resetPending(): void {
     pendingServiceStopId = null;
+    pendingServiceRestartId = null;
     pendingGroupSaveId = null;
     pendingGroupStopId = null;
   }
@@ -78,7 +81,7 @@ export function createServiceActions(context: ServiceActionsContext) {
   }
 
   function requestStopService(id: string): void {
-    if (pendingServiceStopId !== null || context.operations.has(`stop:${id}`)) return;
+    if (pendingServiceStopId !== null || pendingServiceRestartId !== null || context.operations.has(`stop:${id}`) || context.operations.has(`restart:${id}`)) return;
     const service = findService(id);
     if (!service.can_terminate) throw new Error("This process cannot be stopped safely.");
     pendingServiceStopId = id;
@@ -96,6 +99,7 @@ export function createServiceActions(context: ServiceActionsContext) {
     const service = findService(id);
     if (!service.can_terminate) throw new Error("This process cannot be stopped safely.");
     const key = `stop:${id}`;
+    if (context.operations.has(key) || context.operations.has(`restart:${id}`)) return;
     context.operations.add(key);
     context.renderServices(true);
     try {
@@ -105,6 +109,41 @@ export function createServiceActions(context: ServiceActionsContext) {
     } finally {
       context.operations.delete(key);
       context.renderServices(true);
+    }
+  }
+
+  function requestRestartService(id: string): void {
+    if (pendingServiceStopId !== null || pendingServiceRestartId !== null || context.operations.has(`stop:${id}`) || context.operations.has(`restart:${id}`)) return;
+    const service = findService(id);
+    if (!canRestartService(service)) throw new Error("This process does not expose enough launch information to restart safely.");
+    pendingServiceRestartId = id;
+    context.openModal("Restart service?", `<p class="confirm-copy">Restart <strong>${h(service.display_name)}</strong>? Process PID <span class="mono">${service.process?.pid ?? "unknown"}</span> will be stopped and started again with its current launch settings.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button icon-button-label" type="button" data-action="confirm-restart-service" data-service-id="${h(id)}">${restartIcon(13)} Restart</button></div>`);
+  }
+
+  async function confirmRestartService(id: string): Promise<void> {
+    if (pendingServiceRestartId !== id) return;
+    resetPending();
+    context.closeModal();
+    await restartService(id);
+  }
+
+  async function restartService(id: string): Promise<void> {
+    const service = findService(id);
+    if (!canRestartService(service)) throw new Error("This process does not expose enough launch information to restart safely.");
+    const key = `restart:${id}`;
+    if (context.operations.has(key) || context.operations.has(`stop:${id}`)) return;
+    context.operations.add(key);
+    context.renderServices(true);
+    try {
+      await context.api.restartService(id);
+      context.toast(`Restarted ${service.display_name}.`);
+    } finally {
+      try {
+        await context.refreshWorkspace(true);
+      } finally {
+        context.operations.delete(key);
+        context.renderServices(true);
+      }
     }
   }
 
@@ -199,6 +238,9 @@ export function createServiceActions(context: ServiceActionsContext) {
     requestStopService,
     confirmStopService,
     stopService,
+    requestRestartService,
+    confirmRestartService,
+    restartService,
     requestSaveGroup,
     confirmSaveGroup,
     saveGroup,
