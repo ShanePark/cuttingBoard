@@ -161,18 +161,118 @@ fn project_root(start: &Path) -> Option<(PathBuf, &'static str)> {
 }
 
 fn workspace_root(start: &Path) -> Option<PathBuf> {
+    const MAX_UPWARD_DEPTH: usize = 12;
     let mut current = Some(start);
-    for _ in 0..12 {
+    for depth in 0..MAX_UPWARD_DEPTH {
         let directory = current?;
         if is_excluded_project_root(directory) {
             break;
         }
         if directory.join(".git").exists() {
+            return registered_submodule_superproject(
+                directory,
+                MAX_UPWARD_DEPTH.saturating_sub(depth + 1),
+            )
+            .or_else(|| Some(directory.to_path_buf()));
+        }
+        current = directory.parent();
+    }
+    None
+}
+
+fn registered_submodule_superproject(
+    submodule_root: &Path,
+    max_upward_depth: usize,
+) -> Option<PathBuf> {
+    let mut current = submodule_root.parent();
+    for _ in 0..max_upward_depth {
+        let directory = current?;
+        if is_excluded_project_root(directory) {
+            break;
+        }
+        let gitmodules = directory.join(".gitmodules");
+        if directory.join(".git").exists()
+            && gitmodules.is_file()
+            && gitmodules_registers_submodule(&gitmodules, directory, submodule_root)
+        {
             return Some(directory.to_path_buf());
         }
         current = directory.parent();
     }
     None
+}
+
+fn gitmodules_registers_submodule(
+    gitmodules: &Path,
+    superproject_root: &Path,
+    submodule_root: &Path,
+) -> bool {
+    let Ok(contents) = fs::read_to_string(gitmodules) else {
+        return false;
+    };
+    let mut in_submodule_section = false;
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') {
+            let Some(section_end) = line.find(']') else {
+                in_submodule_section = false;
+                continue;
+            };
+            let section = line[1..section_end].trim();
+            in_submodule_section = section.strip_prefix("submodule").is_some_and(|suffix| {
+                let suffix = suffix.trim_start();
+                suffix.starts_with('"') || suffix.starts_with('\'')
+            });
+            continue;
+        }
+        if !in_submodule_section {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !key.trim().eq_ignore_ascii_case("path") {
+            continue;
+        }
+        let Some(path) = gitmodules_path_value(value) else {
+            continue;
+        };
+        let path = Path::new(&path);
+        if path.is_absolute() {
+            continue;
+        }
+        if superproject_root
+            .join(path)
+            .canonicalize()
+            .ok()
+            .is_some_and(|path| path == submodule_root)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn gitmodules_path_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value.starts_with('"') || value.starts_with('\'') {
+        let quote = value.as_bytes()[0] as char;
+        let end = value[1..].find(quote)? + 1;
+        let trailing = value[end + 1..].trim();
+        if !trailing.is_empty() && !trailing.starts_with('#') && !trailing.starts_with(';') {
+            return None;
+        }
+        let value = value[1..end].trim();
+        return (!value.is_empty()).then(|| value.to_owned());
+    }
+    let value = value.split(['#', ';']).next().unwrap_or_default().trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 pub(crate) fn is_excluded_project_root(path: &Path) -> bool {

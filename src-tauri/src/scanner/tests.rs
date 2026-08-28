@@ -505,12 +505,47 @@ fn nested_repository_uses_its_nearest_vcs_workspace() {
     fs::create_dir_all(inner.join("src")).unwrap();
     fs::create_dir(outer.join(".git")).unwrap();
     fs::create_dir(inner.join(".git")).unwrap();
+    fs::write(
+        outer.join(".gitmodules"),
+        "[submodule \"other\"]\n\tpath = other\n\turl = https://example.com/other.git\n",
+    )
+    .unwrap();
     fs::write(inner.join("Cargo.toml"), "[package]\nname = \"inner\"\n").unwrap();
 
     let project = detect_project(Some(&inner.join("src")), &[]).unwrap();
 
     assert_eq!(Path::new(&project.workspace_root_path), inner);
     assert_eq!(project.workspace_name, "inner");
+}
+
+#[test]
+fn registered_sibling_submodules_share_the_superproject_workspace() {
+    let temporary = tempfile::tempdir().unwrap();
+    let superproject = temporary.path().join("OASIS");
+    let front = superproject.join("front");
+    let server = superproject.join("services/server");
+    fs::create_dir_all(front.join("src")).unwrap();
+    fs::create_dir_all(server.join("src")).unwrap();
+    fs::create_dir(superproject.join(".git")).unwrap();
+    fs::write(front.join(".git"), "gitdir: ../.git/modules/front\n").unwrap();
+    fs::write(
+        server.join(".git"),
+        "gitdir: ../../.git/modules/services/server\n",
+    )
+    .unwrap();
+    fs::write(
+        superproject.join(".gitmodules"),
+        "# Registered child repositories\n\n[submodule \"front\"]\n\tpath = front\n\turl = https://example.com/front.git\n\n[submodule \"server\"]\n\tpath = \"services/server\" # A nested submodule path\n\turl = https://example.com/server.git\n",
+    )
+    .unwrap();
+
+    for child in [&front, &server] {
+        let project = detect_project(Some(&child.join("src")), &[]).unwrap();
+
+        assert_eq!(Path::new(&project.root_path), *child);
+        assert_eq!(Path::new(&project.workspace_root_path), superproject);
+        assert_eq!(project.workspace_name, "OASIS");
+    }
 }
 
 #[test]
