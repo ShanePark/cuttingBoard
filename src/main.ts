@@ -10,6 +10,7 @@ import { createLaunchActions, launchProfileBlocksEditing, launchProfileOperation
 import { createServiceActions } from "./service-actions";
 import { createKeyboardNavigation, focusContainerCard, focusServiceCard, focusTaskRow } from "./keyboard-navigation";
 import { createLaunchRefresh } from "./launch-refresh";
+import { createListScroll } from "./list-scroll";
 import { openModal, closeModal as closeModalView, trapModalFocus } from "./modal";
 import { createModalForms, SOURCE_URL } from "./modal-forms";
 import { updateSettingsFromRadio } from "./settings";
@@ -198,6 +199,11 @@ const { applyBoardLayout, installBoardObserver } = createBoardLayout({
   workspace: workspaceElement,
   onResize: () => consoleController.applyConsoleHeight()
 });
+
+const listScroll = createListScroll(
+  () => workspaceElement.querySelector<HTMLElement>(".split-view-list"),
+  () => workspaceElement.dataset.view ?? null
+);
 
 const modalForms = createModalForms({
   openModal,
@@ -613,6 +619,7 @@ function servicesRenderingContext(): ServicesRenderingContext {
 
 function renderServices(force = false): void {
   consoleController.captureServicesConsoleState();
+  listScroll.capture();
   const renderingContext = servicesRenderingContext();
   const signature = servicesRenderSignature(renderingContext);
   if (!force && signature === serviceSignature && workspaceElement.dataset.view === "services") {
@@ -634,6 +641,7 @@ function renderServices(force = false): void {
     return;
   }
   applyBoardLayout();
+  listScroll.restore("services");
   consoleController.restoreServicesConsoleState();
   updateLiveMetrics();
 }
@@ -725,6 +733,7 @@ function dockerRenderingContext(): DockerRenderingContext {
 
 function renderDocker(force = false): void {
   consoleController.captureDockerConsoleState();
+  listScroll.capture();
   const renderingContext = dockerRenderingContext();
   const signature = dockerRenderSignature(renderingContext);
   if (!force && signature === dockerSignature && workspaceElement.dataset.view === "docker") {
@@ -743,6 +752,7 @@ function renderDocker(force = false): void {
   if (!renderingContext.containerListing.available) {
     if (renderingContext.fallbackServices.length) {
       applyBoardLayout();
+      listScroll.restore("docker");
       consoleController.restoreDockerConsoleState();
       return;
     }
@@ -754,6 +764,7 @@ function renderDocker(force = false): void {
     return;
   }
   applyBoardLayout();
+  listScroll.restore("docker");
   consoleController.restoreDockerConsoleState();
 }
 
@@ -789,6 +800,7 @@ function updateDockerContainerStatuses(): void {
 
 function renderLaunch(force = false): void {
   consoleController.captureLaunchConsoleState();
+  listScroll.capture();
   const signature = JSON.stringify([
     profiles,
     taskSnapshots.map(({ log_tail: _logTail, ...snapshot }) => snapshot),
@@ -814,7 +826,8 @@ function renderLaunch(force = false): void {
   const selectedRenderingContext = launchRenderingContext();
   workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list"><div class="launch-list board">${profiles.map((profile) => renderProfile(profile, selectedRenderingContext)).join("")}${renderLaunchAddCard(Boolean(appInfo?.demo))}</div></div>${renderLaunchConsole(selected, consoleRenderingContext)}</div>`;
   applyBoardLayout();
-    consoleController.restoreLaunchConsoleScroll();
+  listScroll.restore("launch");
+  consoleController.restoreLaunchConsoleScroll();
 }
 
 function launchRenderingContext(): LaunchRenderingContext {
