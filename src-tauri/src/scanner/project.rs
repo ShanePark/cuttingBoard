@@ -304,7 +304,7 @@ fn project_name(root: &Path, source: &str) -> Option<String> {
                     .strip_prefix("module ")
                     .map(|value| clean_project_name(value.rsplit('/').next().unwrap_or(value)))
             }),
-        "pom.xml" => xml_tag(&fs::read_to_string(root.join(source)).ok()?, "artifactId")
+        "pom.xml" => pom_artifact_id(&fs::read_to_string(root.join(source)).ok()?)
             .map(|value| clean_project_name(&value)),
         _ => None,
     }
@@ -320,12 +320,37 @@ fn named_assignment(text: &str) -> Option<String> {
     })
 }
 
-fn xml_tag(text: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = text.find(&open)? + open.len();
-    let end = text[start..].find(&close)? + start;
-    Some(text[start..end].trim().to_string())
+/// A pom's own id is the `<artifactId>` directly under `<project>`. Taking the first one in
+/// the file instead reads `<parent><artifactId>`, which names every Maven child module after
+/// its parent; skipping to `</parent>` reads the first dependency for the poms that declare
+/// their parent after their own id. So walk the tags and take the one at project-child depth.
+fn pom_artifact_id(text: &str) -> Option<String> {
+    let mut rest = text;
+    let mut depth = 0usize;
+    while let Some(open) = rest.find('<') {
+        rest = &rest[open..];
+        if let Some(comment) = rest.strip_prefix("<!--") {
+            rest = &comment[comment.find("-->")? + 3..];
+            continue;
+        }
+        let body = &rest[1..];
+        let close = body.find('>')?;
+        let tag = body[..close].trim();
+        rest = &body[close + 1..];
+        if tag.starts_with('?') || tag.starts_with('!') || tag.ends_with('/') {
+            continue;
+        }
+        if tag.starts_with('/') {
+            depth = depth.saturating_sub(1);
+            continue;
+        }
+        depth += 1;
+        if depth == 2 && tag == "artifactId" {
+            let value = rest[..rest.find('<')?].trim();
+            return (!value.is_empty()).then(|| value.to_string());
+        }
+    }
+    None
 }
 
 fn clean_project_name(value: &str) -> String {

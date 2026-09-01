@@ -598,3 +598,103 @@ fn ssh_tunnel_in_a_project_is_a_proxy_service() {
     assert_eq!(result.tech, "ssh");
     assert_eq!(result.category, "proxy");
 }
+
+#[test]
+fn maven_module_is_named_after_its_own_artifact_id() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("kice");
+    let module = workspace.join("adm");
+    fs::create_dir_all(&module).unwrap();
+    fs::create_dir(workspace.join(".git")).unwrap();
+    fs::write(
+        module.join("pom.xml"),
+        concat!(
+            "<project>\n",
+            "  <parent>\n",
+            "    <groupId>kr.re.kisti.idr</groupId>\n",
+            "    <artifactId>root</artifactId>\n",
+            "  </parent>\n",
+            "  <artifactId>adm</artifactId>\n",
+            "</project>\n",
+        ),
+    )
+    .unwrap();
+
+    let project = detect_project(Some(&module), &[]).unwrap();
+
+    assert_eq!(project.name, "adm");
+    assert_eq!(project.workspace_name, "kice");
+}
+
+#[test]
+fn maven_pom_without_a_parent_keeps_its_artifact_id() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("kice");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("pom.xml"),
+        "<project>\n  <artifactId>root</artifactId>\n</project>\n",
+    )
+    .unwrap();
+
+    let project = detect_project(Some(&root), &[]).unwrap();
+
+    assert_eq!(project.name, "root");
+}
+
+#[test]
+fn maven_aggregator_declaring_its_parent_last_is_not_named_after_a_dependency() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("kice");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("pom.xml"),
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n",
+            "  <properties>\n",
+            "    <java.version>1.8</java.version>\n",
+            "  </properties>\n",
+            "  <artifactId>root</artifactId>\n",
+            "  <parent>\n",
+            "    <artifactId>spring-boot-starter-parent</artifactId>\n",
+            "    <relativePath/> <!-- lookup parent from repository -->\n",
+            "  </parent>\n",
+            "  <dependencies>\n",
+            "    <dependency>\n",
+            "      <artifactId>spring-boot-starter-web</artifactId>\n",
+            "    </dependency>\n",
+            "  </dependencies>\n",
+            "</project>\n",
+        ),
+    )
+    .unwrap();
+
+    let project = detect_project(Some(&root), &[]).unwrap();
+
+    assert_eq!(project.name, "root");
+}
+
+#[test]
+fn maven_module_id_survives_a_comment_containing_a_closing_bracket() {
+    let temporary = tempfile::tempdir().unwrap();
+    let module = temporary.path().join("serv");
+    fs::create_dir_all(&module).unwrap();
+    fs::write(
+        module.join("pom.xml"),
+        concat!(
+            "<project>\n",
+            "  <!-- a > b, and <artifactId>decoy</artifactId> -->\n",
+            "  <parent>\n",
+            "    <artifactId>root</artifactId>\n",
+            "  </parent>\n",
+            "  <artifactId>serv</artifactId>\n",
+            "</project>\n",
+        ),
+    )
+    .unwrap();
+
+    let project = detect_project(Some(&module), &[]).unwrap();
+
+    assert_eq!(project.name, "serv");
+}
