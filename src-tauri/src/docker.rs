@@ -91,6 +91,10 @@ pub fn stop_container(container_id: &str) -> ContainerActionResult {
     run_container_action(container_id, "stop", "Stopped")
 }
 
+pub fn restart_container(container_id: &str) -> ContainerActionResult {
+    run_container_action(container_id, "restart", "Restarted")
+}
+
 fn run_container_action(
     container_id: &str,
     action: &str,

@@ -6,6 +6,22 @@ pub struct LaunchTask {
     pub cwd: String,
     pub command: String,
     pub expected_port: Option<u16>,
+    /// Name of the Docker container this task stands for. Container tasks are started and stopped
+    /// through Docker instead of a shell command, so a project's containers can sit in the same
+    /// launch profile as the services they support.
+    #[serde(default)]
+    pub container: Option<String>,
+}
+
+impl LaunchTask {
+    /// The Docker container this task stands for, when it was saved from a container card rather
+    /// than from a process command.
+    pub fn container_name(&self) -> Option<&str> {
+        self.container
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

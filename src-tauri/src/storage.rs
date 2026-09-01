@@ -26,16 +26,36 @@ mod tests {
                     cwd: ".".into(),
                     command: "one".into(),
                     expected_port: None,
+                    container: None,
                 },
                 LaunchTask {
                     name: "api".into(),
                     cwd: ".".into(),
                     command: "two".into(),
                     expected_port: None,
+                    container: None,
                 },
             ],
         };
         assert!(profiles::validate_profile(&profile).is_err());
+    }
+
+    #[test]
+    fn a_container_task_is_saved_without_a_command() {
+        let profile = |command: &str, container: Option<&str>| LaunchProfile {
+            id: "x".into(),
+            name: "Example".into(),
+            project_root: "/tmp/example".into(),
+            tasks: vec![LaunchTask {
+                name: "app-db".into(),
+                cwd: ".".into(),
+                command: command.into(),
+                expected_port: Some(5432),
+                container: container.map(str::to_owned),
+            }],
+        };
+        assert!(profiles::validate_profile(&profile("", Some("app-db"))).is_ok());
+        assert!(profiles::validate_profile(&profile("", None)).is_err());
     }
 
     #[test]
@@ -77,6 +97,7 @@ mod tests {
                 cwd: ".".into(),
                 command: "java -cp /cache/spring-boot.jar ••• --spring.profiles.active=dev".into(),
                 expected_port: Some(8080),
+                container: None,
             }],
         };
         json::write_json_atomic(&profile_path, &vec![profile]).unwrap();
@@ -111,6 +132,7 @@ mod tests {
                 command: "/opt/java/bin/java -cp /cache/spring-boot.jar:/cache/liquibase/li…"
                     .into(),
                 expected_port: Some(8080),
+                container: None,
             }],
         };
         json::write_json_atomic(&profile_path, &vec![profile]).unwrap();

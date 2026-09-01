@@ -66,8 +66,14 @@ pub(super) fn validate_profile(profile: &LaunchProfile) -> Result<(), String> {
         if task.cwd.trim().is_empty() {
             return Err(format!("{} needs a working directory.", task.name));
         }
-        if task.command.trim().is_empty() {
-            return Err(format!("{} needs a command.", task.name));
+        match task.container_name() {
+            // A container task is answered by Docker, so it carries a container, not a command.
+            Some(container) if container.len() <= 128 => {}
+            Some(_) => return Err(format!("{} needs a shorter container name.", task.name)),
+            None if task.command.trim().is_empty() => {
+                return Err(format!("{} needs a command.", task.name));
+            }
+            None => {}
         }
     }
     Ok(())
@@ -84,12 +90,14 @@ pub fn demo_profiles() -> Vec<LaunchProfile> {
                 cwd: "backend".into(),
                 command: "./gradlew bootRun".into(),
                 expected_port: Some(8080),
+                container: None,
             },
             LaunchTask {
                 name: "Frontend".into(),
                 cwd: "frontend".into(),
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
+                container: None,
             },
         ],
     }]

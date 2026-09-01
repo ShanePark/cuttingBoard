@@ -234,6 +234,11 @@ pub(super) fn task_matches_service(
     task: &LaunchTask,
     service: &ServiceSnapshot,
 ) -> bool {
+    // A container task is answered by Docker, never by the process that publishes its port: the
+    // listening process belongs to the daemon, so signalling it would be the wrong target.
+    if task.container_name().is_some() {
+        return false;
+    }
     let Some(port) = task.expected_port else {
         return false;
     };

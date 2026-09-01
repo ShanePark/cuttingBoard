@@ -3,12 +3,13 @@ import { escapeHtml as h } from "./html";
 import { openModal } from "./modal";
 import { canRestartService, generatedTasksForGroup } from "./services-rendering";
 import {
-  groupServices,
   launchTasksEquivalent,
+  serviceBoardGroups,
   serviceTitle,
-  type ServiceGroup
+  type ServiceBoardGroup
 } from "./presentation";
 import type {
+  ContainerInfo,
   LaunchProfile,
   LaunchTask,
   ServiceSnapshot,
@@ -25,6 +26,7 @@ export type ServiceActionsContext = {
   api: ServiceActionsApi;
   operations: Set<string>;
   getWorkspace: () => WorkspaceSnapshot | null;
+  getContainers: () => readonly ContainerInfo[];
   getProfiles: () => readonly LaunchProfile[];
   setProfiles: (profiles: LaunchProfile[]) => void;
   refreshWorkspace: (force?: boolean) => Promise<void>;
@@ -48,23 +50,26 @@ export function createServiceActions(context: ServiceActionsContext) {
     return service;
   };
 
-  function groupForId(id: string): ServiceGroup {
-    const group = groupServices(context.getWorkspace()?.services.filter((service) => service.relevance === "dev") ?? [])
-      .find((item) => item.id === id);
+  function groupForId(id: string): ServiceBoardGroup {
+    // The same grouping the board renders, so a saved profile holds exactly the cards on screen.
+    const group = serviceBoardGroups(
+      context.getWorkspace()?.services.filter((service) => service.relevance === "dev") ?? [],
+      context.getContainers()
+    ).find((item) => item.id === id);
     if (!group) throw new Error("The workspace group is no longer available.");
     return group;
   }
 
-  function profileForGroup(group: ServiceGroup): LaunchProfile | undefined {
+  function profileForGroup(group: ServiceBoardGroup): LaunchProfile | undefined {
     if (!group.path) return undefined;
-    return context.getProfiles().find((profile) => profile.project_root === group.path && launchTasksEquivalent(profile.tasks, generatedTasksForGroup(group.services)));
+    return context.getProfiles().find((profile) => profile.project_root === group.path && launchTasksEquivalent(profile.tasks, generatedTasksForGroup(group)));
   }
 
-  function validateGroupProfile(group: ServiceGroup): LaunchTask[] {
+  function validateGroupProfile(group: ServiceBoardGroup): LaunchTask[] {
     if (!group.path) throw new Error("This workspace group has no project root and cannot be saved.");
     const incomplete = group.services.filter((service) => !service.process?.command.trim() || !service.process?.working_directory?.trim());
     if (incomplete.length) throw new Error(`Cannot save ${group.name}: ${incomplete.map((service) => serviceTitle(service) || service.display_name).join(", ")} ${incomplete.length === 1 ? "is missing" : "are missing"} a process command or working directory.`);
-    return generatedTasksForGroup(group.services);
+    return generatedTasksForGroup(group);
   }
 
   function resetPending(): void {

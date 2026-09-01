@@ -388,6 +388,7 @@ mod tests {
                 cwd: "frontend".into(),
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
+                container: None,
             }],
         };
         let workspace = workspace_with_project(5173, &frontend);
@@ -425,6 +426,7 @@ mod tests {
                 cwd: "frontend".into(),
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
+                container: None,
             }],
         };
         let workspace = workspace_with_project(5173, &frontend);
@@ -463,6 +465,7 @@ mod tests {
                 cwd: "frontend".into(),
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
+                container: None,
             }],
         };
         let workspace = workspace_with_project(5173, &frontend);
@@ -494,6 +497,7 @@ mod tests {
                 cwd: "frontend".into(),
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
+                container: None,
             }],
         };
         let workspace = workspace_with_project(5173, &frontend);

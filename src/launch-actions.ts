@@ -94,11 +94,12 @@ export function createLaunchActions(context: LaunchActionsContext) {
       if ((action.direction === "stop" || action.direction === "restart") && !launchTaskCanStop(state) && state !== "external") return;
       pendingLaunchAction = action;
       const title = action.direction === "start" ? "Start task?" : action.direction === "restart" ? "Restart task?" : "Stop task?";
+      // A container task is handed to Docker, so its copy talks about the container.
       const description = action.direction === "start"
-        ? `Start <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will launch the task process.`
+        ? `Start <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will ${task.container ? "start its Docker container" : "launch the task process"}.`
         : action.direction === "restart"
-          ? `Restart <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will stop and start the task process.`
-          : `Stop <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will terminate the task process.`;
+          ? `Restart <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will stop and start ${task.container ? "its Docker container" : "the task process"}.`
+          : `Stop <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will ${task.container ? "stop its Docker container" : "terminate the task process"}.`;
       const button = action.direction === "start"
         ? `<button class="primary-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("play", 13)} Start</button>`
         : action.direction === "restart"

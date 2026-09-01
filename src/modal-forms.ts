@@ -157,7 +157,13 @@ export function hasProfileForm(): boolean {
 export function renderTaskEditor(task: LaunchTask, readOnly = false): string {
   const inputState = readOnly ? "readonly" : "";
   const buttonState = readOnly ? "disabled" : "";
-  return `<fieldset class="task-editor"><button class="remove-task" type="button" data-action="remove-task-row" aria-label="Remove task" title="Remove task" ${buttonState}>${uiIcon("trash", 15)}</button><label>Name<input data-task-field="name" required value="${h(task.name)}" ${inputState}></label><label>Working directory<input data-task-field="cwd" required value="${h(task.cwd)}" ${inputState}></label><label>Command<input data-task-field="command" required value="${h(task.command)}" ${inputState}></label><label>Expected port (optional)<input data-task-field="expected_port" type="number" min="1" max="65535" value="${task.expected_port ?? ""}" ${inputState}></label></fieldset>`;
+  const container = task.container?.trim() ?? "";
+  // A container task is answered by Docker, so it carries the container it starts instead of a
+  // command. The field stays read-only: the binding comes from the Docker listing, not by hand.
+  const commandField = container
+    ? `<label>Container<input data-task-field="container" value="${h(container)}" readonly></label>`
+    : `<label>Command<input data-task-field="command" required value="${h(task.command)}" ${inputState}></label>`;
+  return `<fieldset class="task-editor"><button class="remove-task" type="button" data-action="remove-task-row" aria-label="Remove task" title="Remove task" ${buttonState}>${uiIcon("trash", 15)}</button><label>Name<input data-task-field="name" required value="${h(task.name)}" ${inputState}></label><label>Working directory<input data-task-field="cwd" required value="${h(task.cwd)}" ${inputState}></label>${commandField}<label>Expected port (optional)<input data-task-field="expected_port" type="number" min="1" max="65535" value="${task.expected_port ?? ""}" ${inputState}></label></fieldset>`;
 }
 
 export function readProfileForm(id: string | null): LaunchProfile | null {
@@ -167,7 +173,8 @@ export function readProfileForm(id: string | null): LaunchProfile | null {
   const tasks = [...form.querySelectorAll<HTMLElement>(".task-editor")].map((row) => {
     const value = (name: string): string => row.querySelector<HTMLInputElement>(`[data-task-field='${name}']`)?.value.trim() ?? "";
     const portValue = value("expected_port");
-    return { name: value("name"), cwd: value("cwd"), command: value("command"), expected_port: portValue ? Number(portValue) : null } satisfies LaunchTask;
+    const container = value("container");
+    return { name: value("name"), cwd: value("cwd"), command: value("command"), expected_port: portValue ? Number(portValue) : null, container: container || null } satisfies LaunchTask;
   });
   const profile: LaunchProfile = {
     id: id ?? crypto.randomUUID().replaceAll("-", ""),
@@ -175,7 +182,7 @@ export function readProfileForm(id: string | null): LaunchProfile | null {
     project_root: String(data.get("project_root") ?? "").trim(),
     tasks
   };
-  if (!profile.name || !profile.project_root || !tasks.length || tasks.some((task) => !task.name || !task.cwd || !task.command)) throw new Error("Complete every profile and task field.");
+  if (!profile.name || !profile.project_root || !tasks.length || tasks.some((task) => !task.name || !task.cwd || (!task.command && !task.container))) throw new Error("Complete every profile and task field.");
   return profile;
 }
 

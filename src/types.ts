@@ -110,6 +110,8 @@ export interface LaunchTask {
   cwd: string;
   command: string;
   expected_port: number | null;
+  /** Docker container this task stands for; container tasks are started and stopped through Docker. */
+  container?: string | null;
 }
 
 export interface LaunchProfile {

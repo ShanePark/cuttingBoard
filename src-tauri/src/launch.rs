@@ -2,6 +2,7 @@ use crate::models::{
     now_epoch, LaunchProfile, LaunchTask, ManagedTaskSnapshot, ServiceLogSnapshot, ServiceSnapshot,
     TaskRequest, WorkspaceSnapshot,
 };
+pub mod containers;
 mod external;
 mod logs;
 mod shell;
@@ -54,6 +55,10 @@ impl LaunchManager {
         let mut snapshots = Vec::new();
         for profile in profiles {
             for task in &profile.tasks {
+                // A container task is answered by Docker, so the manager never speaks for it.
+                if task.container_name().is_some() {
+                    continue;
+                }
                 let key = task_key(&profile.id, &task.name);
                 if let Some(runtime) = self
                     .tasks
@@ -658,6 +663,7 @@ mod tests {
                 cwd: "frontend".into(),
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
+                container: None,
             }],
         };
         let mut workspace = workspace_with_project(5173, &frontend);
@@ -706,6 +712,7 @@ mod tests {
             cwd: "frontend".into(),
             command: "echo ok".into(),
             expected_port: None,
+            container: None,
         };
         assert_eq!(
             resolve_cwd(&profile, &task).unwrap(),
@@ -727,6 +734,7 @@ mod tests {
                 cwd: "frontend".into(),
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
+                container: None,
             }],
         };
         let workspace = workspace_with_project(5173, &frontend);
@@ -751,6 +759,7 @@ mod tests {
                 cwd: "frontend".into(),
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
+                container: None,
             }],
         };
         let mut workspace = workspace_with_project(5173, temporary.path());
@@ -796,6 +805,7 @@ mod tests {
                 cwd: "frontend".into(),
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
+                container: None,
             }],
         };
         let mut workspace = workspace_with_project(5173, &frontend);
@@ -835,6 +845,7 @@ mod tests {
                 cwd: "frontend".into(),
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
+                container: None,
             }],
         };
         let workspace = workspace_with_project(5173, &frontend);
@@ -930,6 +941,7 @@ mod tests {
                 cwd: ".".into(),
                 command: "echo ok".into(),
                 expected_port: None,
+                container: None,
             }],
         };
         let request = TaskRequest {
@@ -977,6 +989,7 @@ mod tests {
                 cwd: ".".into(),
                 command: "sleep 30".into(),
                 expected_port: None,
+                container: None,
             }],
         };
         let request = TaskRequest {
@@ -1004,6 +1017,46 @@ mod tests {
         manager.stop_all();
     }
 
+    #[test]
+    fn a_container_task_gets_no_snapshot_from_the_manager() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = LaunchProfile {
+            id: "profile".into(),
+            name: "profile".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![
+                LaunchTask {
+                    name: "web".into(),
+                    cwd: ".".into(),
+                    command: "npm run dev".into(),
+                    expected_port: None,
+                    container: None,
+                },
+                LaunchTask {
+                    name: "app-db".into(),
+                    cwd: ".".into(),
+                    command: String::new(),
+                    expected_port: Some(5432),
+                    container: Some("app-db".into()),
+                },
+            ],
+        };
+        let mut manager = LaunchManager::default();
+
+        let snapshots = manager.snapshots(
+            std::slice::from_ref(&profile),
+            None,
+            &temporary.path().join("logs"),
+        );
+
+        // Docker answers for the container task, so a stopped snapshot here would shadow its state.
+        let names = snapshots
+            .iter()
+            .map(|snapshot| snapshot.task_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["web"]);
+    }
+
     #[cfg(unix)]
     #[test]
     fn restart_replaces_a_strict_external_task_using_a_fresh_managed_runtime() {
@@ -1019,6 +1072,7 @@ mod tests {
                 cwd: ".".into(),
                 command: "sleep 30".into(),
                 expected_port: Some(5173),
+                container: None,
             }],
         };
         let request = TaskRequest {

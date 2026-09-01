@@ -5,6 +5,7 @@ import {
   currentUptime,
   formatBytes,
   boardGroupCards,
+  containerLaunchTasks,
   formatUptimeCompact,
   serviceBoardGroups,
   serviceTitle,
@@ -143,9 +144,9 @@ export function renderGroupActions(group: ServiceBoardGroup, context: ServicesRe
   return `<div class="section-actions">${saveAction}<button class="section-action icon-only-button stop-group-action" type="button" data-action="stop-service-group" data-group-id="${h(group.id)}" title="${stopBusy ? "Stopping services" : terminableCount ? "Stop all stoppable services" : "No services can be stopped safely"}" aria-label="${stopBusy ? "Stopping" : terminableCount ? "Stop all" : "No stoppable"} services in ${h(group.name)}" ${stopDisabled ? "disabled" : ""}>${uiIcon(stopBusy ? "refresh" : "stop", 15)}</button></div>`;
 }
 
-export function generatedTasksForGroup(services: ServiceSnapshot[]): LaunchTask[] {
+export function generatedTasksForGroup(group: ServiceBoardGroup): LaunchTask[] {
   const usedNames = new Set<string>();
-  return services.map((service) => {
+  const services = group.services.map((service) => {
     const baseName = serviceTitle(service) || service.display_name;
     let name = baseName;
     let suffix = 2;
@@ -155,9 +156,12 @@ export function generatedTasksForGroup(services: ServiceSnapshot[]): LaunchTask[
       name,
       cwd: service.process?.working_directory ?? "",
       command: service.process?.launch_command ?? service.process?.command ?? "",
-      expected_port: uniquePorts(service)[0] ?? null
+      expected_port: uniquePorts(service)[0] ?? null,
+      container: null
     };
   });
+  // The group's containers travel with it, so one profile starts and stops the whole group.
+  return [...services, ...containerLaunchTasks(group.containers, services.map((task) => task.name))];
 }
 
 export function canRestartService(service: ServiceSnapshot): boolean {

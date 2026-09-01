@@ -147,7 +147,7 @@ export function renderTask(profile: LaunchProfile, task: LaunchTask, context: La
     ariaLabel: `${profile.name} · ${task.name}, ${stateLabel(state)}${task.expected_port ? `, port ${task.expected_port}` : ""}`,
     selected,
     busy,
-    iconMarkup: matchedService ? techIcon(matchedService.tech, 44) : uiIcon("terminal", 25),
+    iconMarkup: matchedService ? techIcon(matchedService.tech, 44) : task.container ? techIcon("docker", 44) : uiIcon("terminal", 25),
     pipClass: busy ? "busy" : state === "external" ? "external" : state === "stopped" || state === "failed" ? "idle" : "running",
     title: task.name,
     controlsMarkup: `${detailsAction}${startAction}${restartAction}${stopAction}`,

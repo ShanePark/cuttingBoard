@@ -8,7 +8,7 @@ mod storage;
 mod window;
 
 use crate::{
-    launch::LaunchManager,
+    launch::{containers as launch_containers, LaunchManager},
     models::{
         AppInfo, ContainerActionResult, ContainerListing, ContainerLogSnapshot, ContainerRequest,
         LaunchProfile, ManagedTaskSnapshot, RestartServiceRequest, ServiceIdentity,
@@ -212,10 +212,19 @@ fn delete_profile(
 }
 
 #[tauri::command]
-fn task_snapshots(state: State<'_, AppState>) -> Result<Vec<ManagedTaskSnapshot>, String> {
-    let profiles = profiles_for_state(state.inner())?;
-    let workspace = current_workspace(state.inner())?;
-    Ok(lock(&state.0.launch)?.snapshots(&profiles, workspace.as_ref(), &state.0.logs_dir))
+async fn task_snapshots(state: State<'_, AppState>) -> Result<Vec<ManagedTaskSnapshot>, String> {
+    let state = state.inner().clone();
+    // Reading container states asks Docker, so the poll runs off the UI thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let profiles = profiles_for_state(&state)?;
+        let workspace = current_workspace(&state)?;
+        let mut snapshots =
+            lock(&state.0.launch)?.snapshots(&profiles, workspace.as_ref(), &state.0.logs_dir);
+        snapshots.extend(launch_containers::snapshots(&profiles, state.0.demo));
+        Ok(snapshots)
+    })
+    .await
+    .map_err(|error| format!("Task snapshot failed: {error}"))?
 }
 
 #[tauri::command]
@@ -227,6 +236,9 @@ async fn start_task(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (profiles, workspace) = launch_context(&state)?;
+        if let Some(container) = launch_containers::container_for(&profiles, &request) {
+            return launch_containers::start(&request, &container, state.0.demo);
+        }
         lock(&state.0.launch)?.start_task(
             &profiles,
             &request,
@@ -247,6 +259,9 @@ async fn stop_task(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (profiles, workspace) = launch_context(&state)?;
+        if let Some(container) = launch_containers::container_for(&profiles, &request) {
+            return launch_containers::stop(&request, &container, state.0.demo);
+        }
         lock(&state.0.launch)?.stop_task(&profiles, &request, workspace.as_ref())
     })
     .await
@@ -262,6 +277,9 @@ async fn restart_task(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (profiles, workspace) = launch_context(&state)?;
+        if let Some(container) = launch_containers::container_for(&profiles, &request) {
+            return launch_containers::restart(&request, &container, state.0.demo);
+        }
         lock(&state.0.launch)?.restart_task(
             &profiles,
             &request,
@@ -282,7 +300,13 @@ async fn stop_profile(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (profiles, workspace) = launch_context(&state)?;
-        lock(&state.0.launch)?.stop_profile(&profiles, &profile_id, workspace.as_ref())
+        let mut snapshots = launch_containers::stop_profile(&profiles, &profile_id, state.0.demo)?;
+        snapshots.extend(lock(&state.0.launch)?.stop_profile(
+            &profiles,
+            &profile_id,
+            workspace.as_ref(),
+        )?);
+        Ok(snapshots)
     })
     .await
     .map_err(|error| format!("Stop profile failed: {error}"))?

@@ -1,4 +1,4 @@
-import type { ContainerInfo, ServiceSnapshot } from "./types";
+import type { ContainerInfo, LaunchTask, ServiceSnapshot } from "./types";
 
 export type ServiceGroup = {
   id: string;
@@ -100,3 +100,18 @@ export function imageTech(image: string): string {
   return IMAGE_TECH_TESTS.find(([needle]) => value.includes(needle))?.[1] ?? "docker";
 }
 
+/**
+ * Launch tasks for the containers of a board group. A container task carries the container it
+ * stands for instead of a command, so a saved profile starts and stops a project's containers
+ * alongside its services. Names that a service task already took are suffixed.
+ */
+export function containerLaunchTasks(containers: readonly ContainerInfo[], takenNames: readonly string[]): LaunchTask[] {
+  const used = new Set(takenNames.map((name) => name.toLowerCase()));
+  return containers.map((container) => {
+    let name = container.name;
+    let suffix = 2;
+    while (used.has(name.toLowerCase())) name = `${container.name} ${suffix++}`;
+    used.add(name.toLowerCase());
+    return { name, cwd: ".", command: "", expected_port: container.ports[0] ?? null, container: container.name };
+  });
+}

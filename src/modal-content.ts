@@ -43,13 +43,14 @@ export function renderTaskDetails(profile: LaunchProfile, task: LaunchTask, snap
   const cwd = external ? snapshot?.external_working_directory || task.cwd : task.cwd;
   const uptime = snapshot?.started_at ? formatUptimeCompact(Date.now() / 1000 - snapshot.started_at) : "";
   const message = snapshot?.message?.trim() ?? "";
+  const container = task.container?.trim() ?? "";
   return `
-    <div class="detail-identity"><div class="detail-icon" aria-hidden="true">${matchedService ? techIcon(matchedService.tech, 56) : uiIcon("terminal", 34)}</div><div><strong>${h(task.name)}</strong><span>${h(profile.name)} · ${h(stateLabel(state))}</span></div></div>
+    <div class="detail-identity"><div class="detail-icon" aria-hidden="true">${matchedService ? techIcon(matchedService.tech, 56) : container ? techIcon("docker", 56) : uiIcon("terminal", 34)}</div><div><strong>${h(task.name)}</strong><span>${h(profile.name)} · ${h(stateLabel(state))}</span></div></div>
     ${message ? `<div class="detail-warning">${h(message)}</div>` : ""}
     <dl class="detail-grid">
       <dt>State</dt><dd>${h(stateLabel(state))}</dd><dt>PID</dt><dd>${pid ?? "—"}</dd>
       <dt>Uptime</dt><dd>${h(uptime || "—")}</dd><dt>Expected port</dt><dd>${task.expected_port ?? "—"}</dd>
-      <dt>Command</dt><dd class="mono">${h(task.command || "—")}</dd><dt>Working directory</dt><dd class="mono">${h(cwd || "—")}</dd>
+      ${container ? `<dt>Container</dt><dd class="mono">${h(container)}</dd>` : `<dt>Command</dt><dd class="mono">${h(task.command || "—")}</dd>`}<dt>Working directory</dt><dd class="mono">${h(cwd || "—")}</dd>
       <dt>Project root</dt><dd class="mono">${h(profile.project_root)}</dd>
       ${external ? `<dt>External log</dt><dd class="mono">${h(snapshot?.external_log_path ?? "—")}</dd>` : ""}
       ${matchedService ? `<dt>Detected service</dt><dd>${h(serviceTitle(matchedService) || matchedService.display_name)}</dd><dt>Memory</dt><dd>${formatBytes(matchedService.process?.memory_bytes ?? null)}</dd>` : ""}

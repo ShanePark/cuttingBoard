@@ -250,6 +250,7 @@ const serviceActions = createServiceActions({
   api,
   operations,
   getWorkspace: () => workspace,
+  getContainers: () => containerListing?.available ? containerListing.containers : [],
   getProfiles: () => profiles,
   setProfiles: (next) => { profiles = next; },
   refreshWorkspace,
