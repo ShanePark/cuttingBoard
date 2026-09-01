@@ -229,14 +229,14 @@ export function createLaunchActions(context: LaunchActionsContext) {
   function requestDeleteProfile(id: string): void {
     if (pendingDeleteProfileId !== null) return;
     const profile = findProfile(id);
-    if (blocksEditing(profile)) throw new Error("Stop every task in this profile before deleting it.");
     pendingDeleteProfileId = id;
-    context.openModal("Delete launch profile?", `<p class="confirm-copy">Delete <strong>${h(profile.name)}</strong>? This removes its saved commands.</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button" type="button" data-action="confirm-delete-profile" data-profile-id="${h(id)}">Delete</button></div>`);
+    // A running profile can still be deleted; the tasks Cutting Board started are stopped with it.
+    const runningNote = blocksEditing(profile) ? " Tasks Cutting Board started for it are stopped first." : "";
+    context.openModal("Delete launch profile?", `<p class="confirm-copy">Delete <strong>${h(profile.name)}</strong>? This removes its saved commands.${runningNote}</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button><button class="primary-button danger-confirm-button" type="button" data-action="confirm-delete-profile" data-profile-id="${h(id)}">Delete</button></div>`);
   }
 
   async function confirmDeleteProfile(id: string): Promise<void> {
     if (pendingDeleteProfileId !== id) return;
-    if (blocksEditing(findProfile(id))) throw new Error("Stop every task in this profile before deleting it.");
     resetPending();
     context.closeModal();
     context.setProfiles(await context.api.deleteProfile(id));

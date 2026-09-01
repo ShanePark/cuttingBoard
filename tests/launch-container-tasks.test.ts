@@ -75,3 +75,14 @@ test("only Docker reports the state of a container task", () => {
   assert.match(manager, /if task\.container_name\(\)\.is_some\(\) \{\n\s+continue;/);
   assert.match(actions, /task\.container \? "start its Docker container" : "launch the task process"/);
 });
+
+test("a launch profile can be deleted while its tasks are running", () => {
+  const actions = readFileSync(new URL("../src/launch-actions.ts", import.meta.url), "utf8");
+  const forms = readFileSync(new URL("../src/modal-forms.ts", import.meta.url), "utf8");
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+
+  assert.doesNotMatch(actions, /before deleting it/);
+  assert.match(actions, /Tasks Cutting Board started for it are stopped first/);
+  assert.match(forms, /title="Delete profile" \$\{appInfo\?\.demo \? "disabled" : ""\}/);
+  assert.match(lib, /lock\(&state\.0\.launch\)\?\.discard_profile\(&profile_id\)/);
+});

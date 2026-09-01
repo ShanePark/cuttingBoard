@@ -117,9 +117,9 @@ export function createModalForms(context: ModalFormsContext) {
     const disabled = active ? "disabled" : "";
     const appInfo = context.getAppInfo();
     const deleteAction = profile
-      ? `<button class="secondary-button danger-button icon-button-label profile-delete-action" type="button" data-action="delete-profile" data-profile-id="${h(profile.id)}" aria-label="Delete ${h(profile.name)}" title="Delete profile" ${appInfo?.demo || active ? "disabled" : ""}>${uiIcon("trash", 15)} Delete</button>`
+      ? `<button class="secondary-button danger-button icon-button-label profile-delete-action" type="button" data-action="delete-profile" data-profile-id="${h(profile.id)}" aria-label="Delete ${h(profile.name)}" title="Delete profile" ${appInfo?.demo ? "disabled" : ""}>${uiIcon("trash", 15)} Delete</button>`
       : "";
-    const activeNote = active ? `<p class="form-note">This profile is read-only while any task is running. Stop every task before editing, saving, or deleting it.</p>` : "";
+    const activeNote = active ? `<p class="form-note">This profile is read-only while any task is running. Stop every task before editing or saving it. Deleting it is still allowed and stops the tasks Cutting Board started.</p>` : "";
     context.openModal(profile ? "Edit Launch Profile" : "Add Launch Profile", `<form id="profile-form" class="form-stack${active ? " is-readonly" : ""}" onsubmit="return false">
     <label>Profile name<input name="name" required maxlength="80" value="${h(profile?.name ?? "")}" ${readOnly}></label>
     <label>Project root<div class="field-with-button"><input id="project-root" name="project_root" required value="${h(profile?.project_root ?? "")}" ${readOnly}><button class="secondary-button" type="button" data-action="choose-root" ${disabled}>Choose</button></div></label>

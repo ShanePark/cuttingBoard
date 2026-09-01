@@ -385,6 +385,28 @@ impl LaunchManager {
         Ok(snapshots)
     }
 
+    /// Forgets a profile's tasks, stopping the ones Cutting Board started. A profile can be
+    /// deleted while it runs, and this keeps that from leaving a managed process behind with no
+    /// card left to stop it from. Processes Cutting Board merely recognised are left running.
+    pub fn discard_profile(&mut self, profile_id: &str) {
+        self.refresh();
+        let prefix = format!("{profile_id}\0");
+        let keys = self
+            .tasks
+            .keys()
+            .filter(|key| key.starts_with(&prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            let Some(mut runtime) = self.tasks.remove(&key) else {
+                continue;
+            };
+            if is_active(&runtime.state) {
+                let _ = terminate_runtime(&mut runtime);
+            }
+        }
+    }
+
     pub fn profile_is_active(
         &mut self,
         profiles: &[LaunchProfile],
@@ -1015,6 +1037,42 @@ mod tests {
         assert_eq!(log.matches("=== Cutting Board start ").count(), 2);
 
         manager.stop_all();
+    }
+
+    #[test]
+    fn discarding_a_profile_stops_and_forgets_its_running_tasks() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = LaunchProfile {
+            id: "profile".into(),
+            name: "profile".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "web".into(),
+                cwd: ".".into(),
+                command: "sleep 30".into(),
+                expected_port: None,
+                container: None,
+            }],
+        };
+        let request = TaskRequest {
+            profile_id: profile.id.clone(),
+            task_name: "web".into(),
+        };
+        let mut manager = LaunchManager::default();
+        manager
+            .start_task(
+                std::slice::from_ref(&profile),
+                &request,
+                &temporary.path().join("logs"),
+                None,
+            )
+            .unwrap();
+        assert!(manager.profile_is_active(std::slice::from_ref(&profile), &profile.id, None));
+
+        manager.discard_profile(&profile.id);
+
+        assert!(manager.tasks.is_empty());
+        assert!(!manager.profile_is_active(std::slice::from_ref(&profile), &profile.id, None));
     }
 
     #[test]

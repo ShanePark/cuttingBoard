@@ -196,19 +196,20 @@ fn save_profile(
 }
 
 #[tauri::command]
-fn delete_profile(
+async fn delete_profile(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<Vec<LaunchProfile>, String> {
     reject_demo(state.inner())?;
-    let profiles = read_profiles(&state.0.profiles_path)?;
-    ensure_profile_inactive(
-        state.inner(),
-        &profiles,
-        &profile_id,
-        "Stop every task in this profile before deleting it.",
-    )?;
-    remove_profile(&state.0.profiles_path, &profile_id)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Deleting is allowed while the profile runs. The tasks Cutting Board started are stopped
+        // first so the delete never leaves a process running that no view can reach any more.
+        lock(&state.0.launch)?.discard_profile(&profile_id);
+        remove_profile(&state.0.profiles_path, &profile_id)
+    })
+    .await
+    .map_err(|error| format!("Delete profile failed: {error}"))?
 }
 
 #[tauri::command]
