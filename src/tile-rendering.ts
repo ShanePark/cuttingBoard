@@ -45,6 +45,11 @@ export function renderOpenServiceButton(service: ServiceSnapshot, label: string)
   return `<button type="button" class="service-link icon-only-button service-card-control" data-tile-action data-action="open-service" data-service-id="${escapeHtml(service.id)}" aria-label="Open ${escapeHtml(label)} in the browser" title="Open ${escapeHtml(service.browser_url)}">${uiIcon("external", 15)}</button>`;
 }
 
+/** The number of cards a group holds, shown next to its name so the tab count adds up on screen. */
+export function renderGroupCount(count: number): string {
+  return `<span class="section-count">${count}</span>`;
+}
+
 export function renderTileOrdinal(ordinal?: number, total?: number): string {
   if (!ordinal || !total || total < 2) return "";
   return `<span class="tile-ordinal" title="Item ${ordinal} of ${total}" aria-label="Item ${ordinal} of ${total}">${ordinal}</span>`;

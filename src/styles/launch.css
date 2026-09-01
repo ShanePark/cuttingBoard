@@ -58,7 +58,7 @@
 .inline-notice { display: flex; align-items: baseline; gap: 10px; margin: 16px 24px 0; padding: 12px 14px; border: 1px solid var(--warning); border-radius: 10px; background: color-mix(in srgb, var(--warning) 9%, var(--surface)); color: var(--text-muted); font-size: 12px; }
 .inline-notice strong { color: var(--warning); }
 
-.launch-list { display: grid; gap: 14px; padding: 18px 20px 26px; }
+.launch-list { display: grid; gap: calc(14px - 4px * var(--tile-density)); padding: calc(18px - 5px * var(--tile-density)) calc(20px - 6px * var(--tile-density)) 26px; }
 .launch-add-card {
   position: relative;
   grid-column: span 1;
@@ -81,10 +81,10 @@
 .launch-add-icon { width: 52px; height: 52px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--hairline)); border-radius: 15px; background: color-mix(in srgb, var(--accent) 10%, var(--surface-alt)); color: var(--accent); }
 .launch-add-action strong { color: var(--text); font-size: 14px; }
 .launch-add-info { position: absolute; z-index: 1; top: 12px; right: 12px; }
-.launch-profile { padding: 16px; }
-.launch-profile-header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; margin-bottom: 14px; }
+.launch-profile { padding: calc(16px - 5px * var(--tile-density)); }
+.launch-profile-header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; margin-bottom: calc(14px - 4px * var(--tile-density)); }
 .launch-profile-heading { min-width: 0; flex: 1 1 220px; display: flex; align-items: center; gap: 8px; }
-.launch-profile-heading h2 { min-width: 0; flex: 1 1 auto; margin: 0; overflow: hidden; color: var(--text); font-size: 12px; line-height: 1; font-weight: 700; letter-spacing: .055em; text-overflow: ellipsis; white-space: nowrap; }
+.launch-profile-heading h2 { min-width: 0; flex: 1 1 auto; margin: 0; overflow: hidden; color: var(--text); font-size: 12px; line-height: 1; font-weight: 700; letter-spacing: .055em; white-space: nowrap; }
 .launch-profile-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 6px; margin-left: auto; }
 .launch-profile-actions .primary-button, .launch-profile-actions .secondary-button { min-height: 36px; padding: 7px 10px; border-radius: 9px; font-size: 11px; }
 .launch-profile-actions .section-action { white-space: nowrap; }
@@ -93,7 +93,7 @@
 .bulk-action-icon > .ui-icon { position: absolute; inset: 0; width: 15px; height: 15px; }
 .bulk-action-icon-back { transform: translate(-2px, -1px); opacity: .62; }
 .bulk-action-icon-front { transform: translate(2px, 1px); }
-.task-list { display: grid; grid-template-columns: repeat(var(--section-span, 1), minmax(0, 1fr)); gap: 10px; }
+.task-list { display: grid; grid-template-columns: repeat(var(--section-span, 1), minmax(0, 1fr)); gap: calc(10px - 3px * var(--tile-density)); }
 .task-card { cursor: pointer; }
 .task-card:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 38%, transparent), 0 6px 17px var(--shadow); outline: none; }
 .task-card.state-failed.is-selected { border-color: color-mix(in srgb, var(--danger) 72%, var(--border)); box-shadow: inset 3px 0 0 var(--danger), 0 7px 22px var(--shadow); }

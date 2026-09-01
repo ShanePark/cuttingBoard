@@ -8,6 +8,8 @@ export type ServiceGroup = {
   services: ServiceSnapshot[];
 };
 
+export type ServiceBoardGroup = ServiceGroup & { containers: ContainerInfo[] };
+
 export function uniquePorts(service: ServiceSnapshot): number[] {
   return [...new Set(service.endpoints.map((endpoint) => endpoint.port))].sort((a, b) => a - b);
 }
@@ -58,6 +60,21 @@ export function pathIsEqualOrNested(path: string, root: string): boolean {
   return parent === "/" ? candidate.startsWith("/") : candidate === parent || candidate.startsWith(`${parent}/`);
 }
 
+/**
+ * The groups the services board shows, in the order it shows them: every project with its own
+ * services and the containers that belong to the same project. The tab count measures the same
+ * set, so the badge cannot drift from the cards on screen.
+ */
+export function serviceBoardGroups(services: readonly ServiceSnapshot[], containers: readonly ContainerInfo[]): ServiceBoardGroup[] {
+  return groupServices([...services])
+    .map((group) => ({ ...group, containers: relatedContainersForGroup(group.services, [...containers]) }))
+    .sort((left, right) => boardGroupCards(right) - boardGroupCards(left) || left.name.localeCompare(right.name));
+}
+
+export function boardGroupCards(group: ServiceBoardGroup): number {
+  return group.services.length + group.containers.length;
+}
+
 export function relatedContainersForGroup(services: ServiceSnapshot[], containers: ContainerInfo[]): ContainerInfo[] {
   const roots = services
     .map((service) => service.project?.root_path?.trim() || (!service.project ? service.process?.working_directory?.trim() : ""))
@@ -82,3 +99,4 @@ export function imageTech(image: string): string {
   const value = image.toLowerCase();
   return IMAGE_TECH_TESTS.find(([needle]) => value.includes(needle))?.[1] ?? "docker";
 }
+

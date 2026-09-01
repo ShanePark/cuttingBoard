@@ -96,28 +96,49 @@
 /* One board-wide column track: a group spans as many columns as it has cards, so a
    one-card group and a two-card group pack onto the same row when three columns fit. */
 .board {
+  /* board-layout.ts raises --tile-density from 0 to 1 as a board fills up; every tile metric
+     below interpolates between its roomy and its compact value from that single number. */
+  --tile-density: 0;
+  --tech-icon-size: calc(44px - 12px * var(--tile-density));
   min-height: 100%;
   display: grid;
   grid-template-columns: repeat(var(--board-columns, 1), minmax(0, 1fr));
   grid-auto-flow: row dense;
   align-content: start;
   align-items: start;
-  gap: 14px;
-  padding: 18px 20px 26px;
+  gap: calc(14px - 4px * var(--tile-density));
+  padding: calc(18px - 5px * var(--tile-density)) calc(20px - 6px * var(--tile-density)) 26px;
 }
 .service-section {
   grid-column: span var(--section-span, 1);
   min-width: 0;
-  padding: 13px 14px 14px;
+  padding: calc(13px - 3px * var(--tile-density)) calc(14px - 4px * var(--tile-density)) calc(14px - 4px * var(--tile-density));
   border: 1px solid var(--hairline);
-  border-radius: 18px;
+  border-radius: calc(18px - 3px * var(--tile-density));
   background: var(--panel);
 }
-.section-header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; min-height: 36px; margin: 0 3px 12px; }
+.section-header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; min-height: calc(36px - 6px * var(--tile-density)); margin: 0 3px calc(12px - 4px * var(--tile-density)); }
 .section-accent { flex: 0 0 3px; width: 3px; height: 14px; border-radius: 2px; background: var(--other); }
-.section-header h2 { min-width: 0; margin: 0; overflow: hidden; color: var(--text); font-size: 12px; line-height: 1; font-weight: 700; letter-spacing: .055em; text-overflow: ellipsis; white-space: nowrap; }
+.section-header h2 { display: flex; align-items: center; gap: 7px; min-width: 0; margin: 0; overflow: hidden; color: var(--text); font-size: 12px; line-height: 1; font-weight: 700; letter-spacing: .055em; white-space: nowrap; }
 .section-header h2:has(.group-title-button) { flex: 1 1 auto; }
-.group-title-button { max-width: 100%; margin: -7px -9px; padding: 7px 9px; overflow: hidden; border: 1px solid transparent; border-radius: 8px; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+/* The name gives up room to the count, which stays whole however narrow the header gets. */
+.group-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.section-count {
+  flex: 0 0 auto;
+  min-width: calc(21px - 3px * var(--tile-density));
+  height: calc(19px - 3px * var(--tile-density));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-dim) 20%, transparent);
+  color: var(--text-dim);
+  font-size: calc(10.5px - 1px * var(--tile-density));
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+.group-title-button { min-width: 0; max-width: 100%; margin: -7px -9px; padding: 7px 9px; overflow: hidden; border: 1px solid transparent; border-radius: 8px; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .group-title-button:hover, .group-title-button:focus-visible { border-color: var(--border); background: var(--surface-hover); outline: none; }
 .section-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; margin-left: auto; }
 .section-action { min-width: 38px; min-height: 38px; padding: 5px 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; font-size: 11px; font-weight: 700; cursor: pointer; }
@@ -148,7 +169,7 @@
 .save-group-action.icon-only-button:hover, .save-group-action.icon-only-button:focus-visible { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--surface-alt)); color: var(--accent-hover); }
 .stop-group-action.icon-only-button { border-color: color-mix(in srgb, var(--danger) 38%, var(--hairline)); background: color-mix(in srgb, var(--danger) 9%, var(--surface-alt)); color: var(--danger); }
 .stop-group-action.icon-only-button:hover, .stop-group-action.icon-only-button:focus-visible { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 17%, var(--surface-alt)); }
-.tile-grid { display: grid; grid-template-columns: repeat(var(--section-span, 1), minmax(0, 1fr)); align-items: stretch; gap: 10px; }
+.tile-grid { display: grid; grid-template-columns: repeat(var(--section-span, 1), minmax(0, 1fr)); align-items: stretch; gap: calc(10px - 3px * var(--tile-density)); }
 
 .service-tile {
   --cat: var(--other);
@@ -156,10 +177,10 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px 14px 12px;
+  gap: calc(10px - 4px * var(--tile-density));
+  padding: calc(14px - 4px * var(--tile-density)) calc(14px - 3px * var(--tile-density)) calc(12px - 3px * var(--tile-density));
   border: 1px solid var(--hairline);
-  border-radius: 16px;
+  border-radius: calc(16px - 3px * var(--tile-density));
   background-color: var(--surface);
   background-image: radial-gradient(128% 118% at 0 0, color-mix(in srgb, var(--cat) 12%, transparent), transparent 58%);
   box-shadow: 0 1px 2px var(--shadow);
@@ -180,21 +201,21 @@
 .service-card-actions .service-card-control { align-self: center; }
 .service-card-actions .stop-button:hover { transform: none; }
 
-.tile-top { display: flex; align-items: center; gap: 12px; }
+.tile-top { display: flex; align-items: center; gap: calc(12px - 3px * var(--tile-density)); }
 .icon-well.service-icon .tile-ordinal {
   position: absolute;
   z-index: 2;
   right: auto;
   bottom: -6px;
   left: -6px;
-  min-width: 24px;
-  height: 24px;
+  min-width: calc(24px - 4px * var(--tile-density));
+  height: calc(24px - 4px * var(--tile-density));
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 6px;
+  padding: 0 calc(6px - 1px * var(--tile-density));
   border: 1px solid color-mix(in srgb, var(--cat) 46%, var(--hairline));
-  border-radius: 8px;
+  border-radius: calc(8px - 1px * var(--tile-density));
   background: color-mix(in srgb, var(--cat) 17%, var(--surface));
   color: color-mix(in srgb, var(--cat) 78%, var(--text));
   font-size: 11px;
@@ -206,15 +227,17 @@
 .tile-heading { flex: 1 1 auto; min-width: 0; }
 .icon-well {
   position: relative;
-  width: 62px;
-  height: 62px;
+  width: calc(62px - 16px * var(--tile-density));
+  height: calc(62px - 16px * var(--tile-density));
   display: grid;
   place-items: center;
   border: 1px solid var(--icon-plate-border);
-  border-radius: 18px;
+  border-radius: calc(18px - 5px * var(--tile-density));
   background: var(--icon-plate);
 }
-.icon-well .tech-icon { width: 44px; height: 44px; }
+.icon-well .tech-icon { width: var(--tech-icon-size); height: var(--tech-icon-size); }
+/* The generic icon sized by its own markup still has to follow the well it sits in. */
+.icon-well > .ui-icon { width: calc(var(--tech-icon-size) * .57); height: calc(var(--tech-icon-size) * .57); flex-basis: calc(var(--tech-icon-size) * .57); }
 .status-pip { position: absolute; right: -3px; bottom: -3px; width: 13px; height: 13px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 2.5px var(--surface); }
 .status-pip::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: inherit; animation: pip-pulse 2.6s ease-out infinite; }
 .status-pip.state-limited { background: var(--warning); }
@@ -231,8 +254,8 @@
   margin: 0;
   overflow: hidden;
   color: var(--text);
-  font-size: 15px;
-  line-height: 19px;
+  font-size: calc(15px - 2px * var(--tile-density));
+  line-height: calc(19px - 3px * var(--tile-density));
   font-weight: 700;
   letter-spacing: -.015em;
   overflow-wrap: anywhere;
@@ -242,8 +265,8 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 5px 15px;
-  padding: 8px 11px;
+  gap: calc(5px - 1px * var(--tile-density)) calc(15px - 4px * var(--tile-density));
+  padding: calc(8px - 2px * var(--tile-density)) calc(11px - 2px * var(--tile-density));
   border: 1px solid color-mix(in srgb, var(--hairline) 60%, transparent);
   border-radius: 12px;
   background: var(--inset);
@@ -257,7 +280,7 @@
 .metric-state.is-busy { color: var(--warning); }
 .metric-state.is-external { color: var(--violet); }
 
-.tile-foot { min-height: 26px; margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.tile-foot { min-height: calc(26px - 4px * var(--tile-density)); margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
 .port-row { min-width: 0; display: flex; align-items: center; gap: 6px; }
 .port-chip {
   height: 23px;

@@ -14,7 +14,7 @@ import {
   launchStatePriority,
   stateLabel
 } from "./launch-state";
-import { renderOpenServiceButton, renderSharedServiceCard } from "./tile-rendering";
+import { renderGroupCount, renderOpenServiceButton, renderSharedServiceCard } from "./tile-rendering";
 import type {
   LaunchProfile,
   LaunchState,
@@ -72,7 +72,7 @@ export function renderProfile(profile: LaunchProfile, context: LaunchRenderingCo
   return `<section class="launch-profile service-section" data-tiles="${profile.tasks.length}" aria-labelledby="launch-profile-${h(profile.id)}">
     <header class="section-header launch-profile-header">
       <span class="section-accent accent-runtime" aria-hidden="true"></span>
-      <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${context.renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name.toUpperCase(), "View profile details")}</h2></div>
+      <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${context.renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name.toUpperCase(), "View profile details")}${renderGroupCount(profile.tasks.length)}</h2></div>
       <div class="section-actions launch-profile-actions">
         ${runAll}${stopAll}
         <button class="section-action icon-only-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" aria-label="Edit ${h(profile.name)}" title="Edit profile" ${context.appIsDemo ? "disabled" : ""}>${uiIcon("settings", 15)}</button>

@@ -1,7 +1,7 @@
 import { techIcon, uiIcon } from "./icons";
 import { escapeHtml as h } from "./html";
 import { imageTech, uniquePorts } from "./presentation";
-import { renderTileFoot, renderTileHeading, renderTileOrdinal } from "./tile-rendering";
+import { renderGroupCount, renderTileFoot, renderTileHeading, renderTileOrdinal } from "./tile-rendering";
 import type { ContainerInfo, ContainerListing, ServiceSnapshot } from "./types";
 
 export type DockerLogState = {
@@ -82,7 +82,7 @@ export function renderDockerView(context: DockerRenderingContext): string {
   }
   if (!context.containerListing.available) {
     if (fallback.length) {
-      return `<div class="docker-view split-view"><div class="split-view-list"><div class="inline-notice"><strong>Docker could not be queried.</strong><span>${h(context.containerListing.message ?? "Docker is unavailable.")}</span></div><div class="board"><section class="service-section" data-tiles="${fallback.length}" aria-labelledby="container-listeners-title"><header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-listeners-title">CONTAINER LISTENERS</h2></header><div class="tile-grid">${fallback.map((service, index) => context.renderFallbackServiceTile(service, index + 1, fallback.length)).join("")}</div></section></div></div>${consoleMarkup}</div>`;
+      return `<div class="docker-view split-view"><div class="split-view-list"><div class="inline-notice"><strong>Docker could not be queried.</strong><span>${h(context.containerListing.message ?? "Docker is unavailable.")}</span></div><div class="board"><section class="service-section" data-tiles="${fallback.length}" aria-labelledby="container-listeners-title"><header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-listeners-title"><span class="group-title-text">CONTAINER LISTENERS</span>${renderGroupCount(fallback.length)}</h2></header><div class="tile-grid">${fallback.map((service, index) => context.renderFallbackServiceTile(service, index + 1, fallback.length)).join("")}</div></section></div></div>${consoleMarkup}</div>`;
     }
     return `<div class="docker-view split-view"><div class="split-view-list">${context.emptyState("Docker is unavailable", context.containerListing.message ?? "The Docker CLI could not be queried.")}</div>${consoleMarkup}</div>`;
   }
@@ -92,7 +92,7 @@ export function renderDockerView(context: DockerRenderingContext): string {
   const groups = groupContainers(context.containerListing.containers);
   return `<div class="docker-view split-view"><div class="split-view-list"><div class="board">${groups.map((group) => `
     <section class="service-section" data-tiles="${group.containers.length}" aria-labelledby="container-group-${h(encodeURIComponent(group.name))}">
-      <header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-group-${h(encodeURIComponent(group.name))}">${context.renderGroupTitle(group.name, group.containers.length, "container-group-details", `data-group-name="${h(group.name)}"`, group.name.toUpperCase())}</h2></header>
+      <header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-group-${h(encodeURIComponent(group.name))}">${context.renderGroupTitle(group.name, group.containers.length, "container-group-details", `data-group-name="${h(group.name)}"`, group.name.toUpperCase())}${renderGroupCount(group.containers.length)}</h2></header>
       <div class="tile-grid">${group.containers.map((container, index) => renderContainerTile(container, index + 1, group.containers.length, true, context.tile)).join("")}</div>
     </section>`).join("")}</div></div>${consoleMarkup}</div>`;
 }

@@ -4,15 +4,15 @@ import {
   FRESH_UPTIME_SECONDS,
   currentUptime,
   formatBytes,
+  boardGroupCards,
   formatUptimeCompact,
-  groupServices,
-  relatedContainersForGroup,
+  serviceBoardGroups,
   serviceTitle,
   uniquePorts,
-  type ServiceGroup
+  type ServiceBoardGroup
 } from "./presentation";
 import { renderContainerTile, renderDockerConsole, type ContainerTab, type DockerConsoleRenderingContext, type DockerTileRenderingContext } from "./docker-rendering";
-import { renderOpenServiceButton, renderSharedServiceCard } from "./tile-rendering";
+import { renderGroupCount, renderOpenServiceButton, renderSharedServiceCard } from "./tile-rendering";
 import type {
   ContainerInfo,
   LaunchProfile,
@@ -69,7 +69,7 @@ export type ServicesRenderingContext = {
   tile: ServiceTileRenderingContext;
   console: ServicesConsoleRenderingContext;
   containerOperationBusy: (id: string) => boolean;
-  profileForGroup: (group: ServiceGroup) => LaunchProfile | undefined;
+  profileForGroup: (group: ServiceBoardGroup) => LaunchProfile | undefined;
   loadingState: (message: string) => string;
   emptyState: (title: string, message: string) => string;
 };
@@ -116,7 +116,7 @@ export function renderServicesView(context: ServicesRenderingContext): string {
     <section class="service-section" data-tiles="${group.services.length + group.containers.length}" aria-labelledby="group-${h(encodeURIComponent(group.id))}">
       <header class="section-header">
         <span class="section-accent accent-${h(group.accent)}"></span>
-        <h2 id="group-${h(encodeURIComponent(group.id))}">${renderGroupTitle(group.name, group.services.length, "group-details", `data-group-id="${h(group.id)}"`, group.name.toUpperCase())}</h2>
+        <h2 id="group-${h(encodeURIComponent(group.id))}">${renderGroupTitle(group.name, group.services.length, "group-details", `data-group-id="${h(group.id)}"`, group.name.toUpperCase())}${renderGroupCount(boardGroupCards(group))}</h2>
         ${renderGroupActions(group, context)}
       </header>
       <div class="tile-grid">${renderServiceGroupTiles(group, context)}</div>
@@ -127,10 +127,10 @@ export function renderGroupTitle(title: string, itemCount: number, action: strin
   const escapedTitle = h(title);
   return itemCount > 1
     ? `<button class="group-title-button" type="button" data-action="${h(action)}" ${attributes} aria-label="View ${escapedTitle} details" title="${h(actionTitle)}">${h(displayTitle)}</button>`
-    : h(displayTitle);
+    : `<span class="group-title-text" title="${escapedTitle}">${h(displayTitle)}</span>`;
 }
 
-export function renderGroupActions(group: ServiceGroup, context: ServicesRenderingContext): string {
+export function renderGroupActions(group: ServiceBoardGroup, context: ServicesRenderingContext): string {
   const saveBusy = context.tile.operations.has(`group-save:${group.id}`);
   const stopBusy = context.tile.operations.has(`group-stop:${group.id}`);
   const profilePresent = context.profileForGroup(group) !== undefined;
@@ -276,18 +276,11 @@ export function renderServiceLogOutput(service: ServiceSnapshot | null, context:
 
 type ServiceTileActionScope = { select?: boolean; info?: boolean; stop?: boolean; open?: boolean };
 
-function serviceGroups(context: ServicesRenderingContext): Array<ServiceGroup & { containers: ContainerInfo[] }> {
-  return groupServices([...context.services]).map((group) => ({
-    ...group,
-    containers: relatedContainersForGroup(group.services, [...context.containers])
-  })).sort((left, right) => {
-    const leftTiles = left.services.length + left.containers.length;
-    const rightTiles = right.services.length + right.containers.length;
-    return rightTiles - leftTiles || left.name.localeCompare(right.name);
-  });
+function serviceGroups(context: ServicesRenderingContext): ServiceBoardGroup[] {
+  return serviceBoardGroups(context.services, context.containers);
 }
 
-function renderServiceGroupTiles(group: ServiceGroup & { containers: ContainerInfo[] }, context: ServicesRenderingContext): string {
+function renderServiceGroupTiles(group: ServiceBoardGroup, context: ServicesRenderingContext): string {
   const total = group.services.length + group.containers.length;
   const ordinalTotal = total > 1 ? total : undefined;
   const tileContext: DockerTileRenderingContext = {

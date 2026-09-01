@@ -41,7 +41,9 @@ export function techIcon(tech: string, size = 48, className = ""): string {
 
   if (Object.hasOwn(iconManifest.devicon, requested)) {
     const icon = iconManifest.devicon[requested as keyof typeof iconManifest.devicon];
-    return `<i class="tech-icon devicon devicon-${escapeHtml(icon.name)}-${escapeHtml(icon.variant)} colored${safeClass}" style="font-size:${edge}px" aria-hidden="true"></i>`;
+    // The requested size is the fallback: a container such as a board tile sets --tech-icon-size
+    // to scale its icons, and the inline font-size is the only lever a devicon glyph has.
+    return `<i class="tech-icon devicon devicon-${escapeHtml(icon.name)}-${escapeHtml(icon.variant)} colored${safeClass}" style="font-size:var(--tech-icon-size, ${edge}px)" aria-hidden="true"></i>`;
   }
 
   const id = Object.hasOwn(iconManifest.tech, requested) ? requested : "service";
