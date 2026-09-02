@@ -5,8 +5,7 @@ import {
   currentUptime,
   formatBytes,
   launchTaskTech,
-  pathIsEqualOrNested,
-  uniquePorts
+  matchedServiceForTask
 } from "./presentation";
 import {
   launchProfileIsIdle,
@@ -86,29 +85,6 @@ export function renderProfile(profile: LaunchProfile, context: LaunchRenderingCo
     </header>
     <div class="task-list" role="list" aria-label="Tasks in ${h(profile.name)}">${profile.tasks.map((task) => renderTask(profile, task, context)).join("")}</div>
   </section>`;
-}
-
-export function pathsMatch(left: string | null | undefined, right: string | null | undefined): boolean {
-  const candidate = left?.trim();
-  const parent = right?.trim();
-  if (!candidate || !parent || candidate === "." || parent === ".") return false;
-  return candidate === parent || pathIsEqualOrNested(candidate, parent) || pathIsEqualOrNested(parent, candidate);
-}
-
-export function matchedServiceForTask(profile: LaunchProfile, task: LaunchTask, services: readonly ServiceSnapshot[]): ServiceSnapshot | null {
-  const devServices = services.filter((service) => service.relevance === "dev");
-  const expectedPort = task.expected_port;
-  const taskRoots = [task.cwd, profile.project_root];
-  const scored = devServices.map((service) => {
-    const ports = uniquePorts(service);
-    if (expectedPort !== null && expectedPort !== undefined && !ports.includes(expectedPort)) return { service, score: -1 };
-    const serviceRoots = [service.process?.working_directory, service.project?.root_path];
-    const pathMatch = taskRoots.some((taskRoot) => serviceRoots.some((serviceRoot) => pathsMatch(taskRoot, serviceRoot)));
-    const projectMatch = pathsMatch(profile.project_root, service.project?.root_path);
-    const score = (expectedPort !== null && expectedPort !== undefined ? 4 : 0) + (pathMatch ? 5 : 0) + (projectMatch ? 2 : 0);
-    return { service, score };
-  }).filter(({ score }) => score > 0).sort((left, right) => right.score - left.score || left.service.id.localeCompare(right.service.id));
-  return scored[0]?.service ?? null;
 }
 
 export function renderTask(profile: LaunchProfile, task: LaunchTask, context: LaunchRenderingContext): string {

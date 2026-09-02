@@ -1,4 +1,4 @@
-import type { ContainerInfo, LaunchTask, ServiceSnapshot } from "./types";
+import type { ContainerInfo, LaunchProfile, LaunchTask, ServiceSnapshot } from "./types";
 
 export type ServiceGroup = {
   id: string;
@@ -58,6 +58,52 @@ export function pathIsEqualOrNested(path: string, root: string): boolean {
   const parent = normalisePath(root);
   if (!candidate || !parent) return false;
   return parent === "/" ? candidate.startsWith("/") : candidate === parent || candidate.startsWith(`${parent}/`);
+}
+
+/** Whether two paths name the same directory or one lies inside the other. */
+export function pathsMatch(left: string | null | undefined, right: string | null | undefined): boolean {
+  const candidate = left?.trim();
+  const parent = right?.trim();
+  if (!candidate || !parent || candidate === "." || parent === ".") return false;
+  return candidate === parent || pathIsEqualOrNested(candidate, parent) || pathIsEqualOrNested(parent, candidate);
+}
+
+/** The directory a task runs from: its own when absolute, otherwise a directory inside the profile's project. */
+export function launchTaskRoot(profile: LaunchProfile, task: LaunchTask): string {
+  const cwd = task.cwd.trim();
+  return isAbsolutePath(cwd) ? cwd : `${profile.project_root}/${cwd}`;
+}
+
+/**
+ * The running service that backs a task, by the rule the backend uses to report a task as running
+ * outside Cutting Board (task_matches_service in src-tauri/src/launch/external.rs): the service
+ * listens on the task's port and runs from the task's directory, one inside it or one containing
+ * it, judged by the process's working directory or the project it was scanned under. The card's
+ * metrics and the task's state then rest on the same evidence, so a service that merely shares
+ * the port never shows a running uptime on a task the backend reports as stopped. Docker answers
+ * for a container task, so no process backs one, and only the dev services the board shows count.
+ */
+export function matchedServiceForTask(profile: LaunchProfile, task: LaunchTask, services: readonly ServiceSnapshot[]): ServiceSnapshot | null {
+  const port = task.expected_port;
+  if (port === null || port === undefined || task.container?.trim()) return null;
+  const taskRoot = launchTaskRoot(profile, task);
+  const scored = services
+    .filter((service) => service.relevance === "dev" && uniquePorts(service).includes(port))
+    .map((service) => ({ service, score: serviceRootScore(service, taskRoot) }))
+    .filter(({ score }) => score > 0)
+    .sort((left, right) => right.score - left.score || left.service.id.localeCompare(right.service.id));
+  return scored[0]?.service ?? null;
+}
+
+// A process's own directory is stronger evidence than the project it was scanned under.
+function serviceRootScore(service: ServiceSnapshot, taskRoot: string): number {
+  if (pathsMatch(service.process?.working_directory, taskRoot)) return 2;
+  const project = service.project;
+  return project && (pathsMatch(project.root_path, taskRoot) || pathsMatch(project.workspace_root_path, taskRoot)) ? 1 : 0;
+}
+
+function isAbsolutePath(path: string): boolean {
+  return /^(?:[\\/]|[A-Za-z]:[\\/])/.test(path);
 }
 
 /**

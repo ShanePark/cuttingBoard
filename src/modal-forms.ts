@@ -11,7 +11,7 @@ import {
   infoCopy
 } from "./modal-content";
 import { openModal } from "./modal";
-import { matchedServiceForTask } from "./launch-rendering";
+import { matchedServiceForTask } from "./presentation";
 import type {
   AppInfo,
   ContainerInfo,
