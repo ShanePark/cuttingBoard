@@ -6,6 +6,7 @@ pub struct AppInfo {
     pub demo: bool,
     pub settings_path: String,
     pub profiles_path: String,
+    pub update_supported: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

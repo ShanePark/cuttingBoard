@@ -5,6 +5,7 @@ mod models;
 mod process_control;
 mod scanner;
 mod storage;
+mod update;
 mod window;
 
 use crate::{
@@ -55,6 +56,7 @@ fn app_info(state: State<'_, AppState>) -> AppInfo {
         demo: state.0.demo,
         settings_path: state.0.settings_path.to_string_lossy().into_owned(),
         profiles_path: state.0.profiles_path.to_string_lossy().into_owned(),
+        update_supported: update::is_supported(),
     }
 }
 
@@ -442,6 +444,10 @@ fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
 }
 
 pub fn run() {
+    if update::run_helper_if_requested() {
+        return;
+    }
+
     let options = match cli::parse_cli() {
         Ok(options) => options,
         Err(error) => {
@@ -542,7 +548,9 @@ pub fn run() {
             stop_profile,
             terminate_service,
             restart_service,
-            shutdown
+            shutdown,
+            update::check_for_update,
+            update::update_and_restart
         ])
         .build(tauri::generate_context!())
         .expect("error while building Cutting Board")

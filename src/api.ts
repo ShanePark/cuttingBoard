@@ -8,6 +8,7 @@ import type {
   ManagedTaskSnapshot,
   ServiceLogSnapshot,
   TerminationResult,
+  UpdateCheckResult,
   UiSettings,
   WorkspaceSnapshot
 } from "./types";
@@ -39,5 +40,7 @@ export const api = {
   restartTask: (profileId: string, taskName: string) =>
     invoke<ManagedTaskSnapshot>("restart_task", { request: { profile_id: profileId, task_name: taskName } }),
   stopProfile: (profileId: string) => invoke<ManagedTaskSnapshot[]>("stop_profile", { profileId }),
+  checkForUpdate: () => invoke<UpdateCheckResult>("check_for_update"),
+  updateAndRestart: () => invoke<void>("update_and_restart"),
   shutdown: () => invoke<void>("shutdown")
 };

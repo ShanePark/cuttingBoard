@@ -139,6 +139,13 @@ export interface AppInfo {
   demo: boolean;
   settings_path: string;
   profiles_path: string;
+  update_supported: boolean;
+}
+
+export interface UpdateCheckResult {
+  available: boolean;
+  current_commit: string;
+  latest_commit: string;
 }
 
 export interface TerminationResult {

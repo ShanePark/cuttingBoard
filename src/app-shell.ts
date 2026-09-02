@@ -9,7 +9,10 @@ export function renderAppShell(): string {
         <button class="tab" type="button" data-tab="docker" aria-label="Docker" title="Docker">${uiIcon("docker", 18)}<span class="tab-label">Docker</span><span class="tab-count" id="docker-count">0</span></button>
         <button class="tab" type="button" data-tab="launch" aria-label="Launch" title="Launch">${uiIcon("play", 18)}<span class="tab-label">Launch</span><span class="tab-count" id="launch-count">0</span></button>
       </nav>
-      <button class="gear-button" type="button" data-action="settings" aria-label="Settings" title="Settings">${uiIcon("settings", 18)}</button>
+      <div class="toolbar-actions" aria-label="Application actions">
+        <button id="update-button" class="update-button" type="button" data-action="update" aria-label="Update Cutting Board" title="Update available — build and restart" hidden>${uiIcon("refresh", 18)}</button>
+        <button class="gear-button" type="button" data-action="settings" aria-label="Settings" title="Settings">${uiIcon("settings", 18)}</button>
+      </div>
     </header>
     <main id="workspace" class="workspace" aria-live="polite"></main>
     <nav id="bottom-tabs" class="bottom-tabs" aria-label="Panels"></nav>

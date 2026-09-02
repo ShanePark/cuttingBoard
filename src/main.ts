@@ -16,6 +16,7 @@ import { createListScroll } from "./list-scroll";
 import { openModal, closeModal as closeModalView, trapModalFocus } from "./modal";
 import { createModalForms, SOURCE_URL } from "./modal-forms";
 import { updateSettingsFromRadio } from "./settings";
+import { createUpdateController, UPDATE_CHECK_INTERVAL_MS } from "./update-controller";
 import {
   launchConsoleOutputKind,
   ensureSelectedTask,
@@ -111,6 +112,7 @@ let dockerBusy = false;
 let scanTimer: number | null = null;
 let consoleLogTimer: number | null = null;
 let uptimeTimer: number | null = null;
+let updateCheckTimer: number | null = null;
 let settingsSaveQueue = Promise.resolve();
 let settingsSaveRequestId = 0;
 let serviceSignature = "";
@@ -175,6 +177,34 @@ const {
   toast,
   showFatal
 } = uiSupport;
+
+const updateButton = byId("update-button") as HTMLButtonElement;
+const updateController = createUpdateController(
+  {
+    checkForUpdate: api.checkForUpdate,
+    updateAndRestart: api.updateAndRestart
+  },
+  {
+    setUpdateAvailable: (available) => {
+      updateButton.hidden = !available;
+    },
+    setUpdateBusy: (busy) => {
+      updateButton.disabled = busy;
+      updateButton.classList.toggle("is-busy", busy);
+      if (busy) {
+        updateButton.setAttribute("aria-busy", "true");
+        updateButton.setAttribute("aria-label", "Updating Cutting Board");
+        updateButton.title = "Updating Cutting Board — building and restarting";
+      } else {
+        updateButton.removeAttribute("aria-busy");
+        updateButton.setAttribute("aria-label", "Update Cutting Board");
+        updateButton.title = "Update available — build and restart";
+      }
+    },
+    showUpdateStarted: () => toast("Updating Cutting Board…"),
+    showError: (message) => toast(message, true)
+  }
+);
 
 const consoleController = createConsoleController({
   elements: {
@@ -315,6 +345,7 @@ async function bootstrap(): Promise<void> {
     installTimers();
     installBoardObserver();
     settingsReady = true;
+    if (appInfo.update_supported && !appInfo.demo) void updateController.checkForUpdate();
   } catch (error) {
     showFatal(error);
   }
@@ -327,6 +358,11 @@ function installTimers(): void {
   consoleLogTimer = window.setInterval(() => void pollActiveConsoleLogs(), CONSOLE_LOG_POLL_INTERVAL);
   if (uptimeTimer !== null) window.clearInterval(uptimeTimer);
   uptimeTimer = window.setInterval(updateLiveMetrics, 1000);
+  if (updateCheckTimer !== null) window.clearInterval(updateCheckTimer);
+  updateCheckTimer = null;
+  if (appInfo?.update_supported && !appInfo.demo) {
+    updateCheckTimer = window.setInterval(() => void updateController.checkForUpdate(), UPDATE_CHECK_INTERVAL_MS);
+  }
 }
 
 async function pollActiveConsoleLogs(): Promise<void> {
@@ -970,6 +1006,7 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "settings") {
       if (settingsReady) modalForms.showSettings();
     }
+    else if (action === "update" && appInfo?.update_supported && !appInfo.demo) await updateController.updateAndRestart();
     else if (action === "toggle-settings-info") modalForms.toggleSettingsInfo(target);
     else if (action === "show-info") modalForms.showInfo(required(target.dataset.infoKind));
     else if (action === "profile-details") modalForms.showProfileDetails(findProfile(required(target.dataset.profileId)));
