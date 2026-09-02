@@ -8,6 +8,7 @@ import { createConsoleController, type ConsoleOutputPatch } from "./console-cont
 import { createContainerActions } from "./container-actions";
 import { createLaunchActions, launchProfileBlocksEditing, launchProfileOperationKey } from "./launch-actions";
 import { patchLaunchSelection } from "./launch-dom";
+import { orderLaunchProfiles } from "./launch-state";
 import { createServiceActions } from "./service-actions";
 import { createKeyboardNavigation, focusContainerCard, focusServiceCard, focusTaskRow } from "./keyboard-navigation";
 import { createLaunchRefresh } from "./launch-refresh";
@@ -828,7 +829,8 @@ function renderLaunch(force = false): void {
   const selected = ensureSelectedTask(profiles, selectedTaskKey, snapshotFor);
   selectedTaskKey = selected ? launchTaskKey(selected.profile.id, selected.task.name) : null;
   const selectedRenderingContext = launchRenderingContext();
-  workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list"><div class="launch-list board">${profiles.map((profile) => renderProfile(profile, selectedRenderingContext)).join("")}${renderLaunchAddCard(Boolean(appInfo?.demo))}</div></div>${renderLaunchConsole(selected, consoleRenderingContext)}</div>`;
+  const orderedProfiles = orderLaunchProfiles(profiles, snapshotFor);
+  workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list"><div class="launch-list board">${orderedProfiles.map((profile) => renderProfile(profile, selectedRenderingContext)).join("")}${renderLaunchAddCard(Boolean(appInfo?.demo))}</div></div>${renderLaunchConsole(selected, consoleRenderingContext)}</div>`;
   applyBoardLayout();
   listScroll.restore("launch");
   consoleController.restoreLaunchConsoleScroll();

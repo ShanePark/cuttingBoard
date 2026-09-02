@@ -1,6 +1,6 @@
 import { restartIcon, uiIcon } from "./icons";
 import { escapeHtml as h } from "./html";
-import { launchTaskCanStart, launchTaskCanStop, launchTaskIsActive } from "./launch-state";
+import { launchProfileIsActive, launchTaskCanStart, launchTaskCanStop } from "./launch-state";
 import { openModal } from "./modal";
 import type {
   LaunchProfile,
@@ -51,10 +51,7 @@ export function launchProfileBlocksEditing(
   profile: LaunchProfile,
   snapshotFor: (profileId: string, taskName: string) => ManagedTaskSnapshot | undefined
 ): boolean {
-  return profile.tasks.some((task) => {
-    const state = snapshotFor(profile.id, task.name)?.state ?? "stopped";
-    return launchTaskIsActive(state) || state === "external";
-  });
+  return launchProfileIsActive(profile.tasks.map((task) => snapshotFor(profile.id, task.name)?.state ?? "stopped"));
 }
 
 export function mergeSnapshots(current: readonly ManagedTaskSnapshot[], next: readonly ManagedTaskSnapshot[]): ManagedTaskSnapshot[] {
