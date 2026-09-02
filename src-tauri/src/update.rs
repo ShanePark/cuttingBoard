@@ -10,10 +10,16 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(target_os = "macos")]
+use tauri::Emitter;
+
 const EMBEDDED_SOURCE_ROOT: &str = env!("CUTTING_BOARD_SOURCE_ROOT");
 const EMBEDDED_BUILD_COMMIT: &str = env!("CUTTING_BOARD_BUILD_COMMIT");
 const UPDATE_HELPER_ARGUMENT: &str = "--update-helper";
 const UPDATE_BUILD_COMMAND: &str = "npm run tauri build -- --bundles app";
+const UPDATE_PROGRESS_EVENT: &str = "update-progress";
+const UPDATE_PROGRESS_TOTAL: u8 = 4;
+const UPDATE_RESTART_GRACE: Duration = Duration::from_millis(180);
 const HELPER_WAIT_ATTEMPTS: usize = 120;
 const HELPER_WAIT_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -24,6 +30,51 @@ pub(crate) struct UpdateStatus {
     pub available: bool,
     pub current_commit: String,
     pub latest_commit: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct UpdateProgress {
+    pub stage: String,
+    pub step: u8,
+    pub total: u8,
+    pub message: String,
+}
+
+impl UpdateProgress {
+    fn validating() -> Self {
+        Self::new("validating", 1, "Checking the local source for updates…")
+    }
+
+    fn building() -> Self {
+        Self::new("building", 2, "Building the latest release…")
+    }
+
+    fn preparing() -> Self {
+        Self::new("preparing", 3, "Preparing the updated app…")
+    }
+
+    fn restarting() -> Self {
+        Self::new("restarting", 4, "Restarting Cutting Board…")
+    }
+
+    fn new(stage: &str, step: u8, message: &str) -> Self {
+        Self {
+            stage: stage.into(),
+            step,
+            total: UPDATE_PROGRESS_TOTAL,
+            message: message.into(),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn emit_update_progress(app: &tauri::AppHandle, progress: UpdateProgress) {
+    if let Err(error) = app.emit(UPDATE_PROGRESS_EVENT, progress) {
+        // Progress is advisory. A webview listener can disappear while the
+        // app is shutting down, but that must not prevent the safe updater
+        // helper from completing its work.
+        eprintln!("Could not report update progress: {error}");
+    }
 }
 
 #[derive(Debug)]
@@ -155,21 +206,28 @@ pub(crate) async fn update_and_restart() -> Result<(), String> {
 #[tauri::command]
 pub(crate) async fn update_and_restart(app: tauri::AppHandle) -> Result<(), String> {
     let _guard = UpdateGuard::acquire()?;
-    let plan = tauri::async_runtime::spawn_blocking(prepare_update)
+    emit_update_progress(&app, UpdateProgress::validating());
+    let progress_app = app.clone();
+    let plan = tauri::async_runtime::spawn_blocking(move || prepare_update(&progress_app))
         .await
         .map_err(|error| format!("Update task failed: {error}"))??;
 
+    emit_update_progress(&app, UpdateProgress::preparing());
     spawn_update_helper(&plan)?;
 
     // The helper waits for this process to exit before replacing the installed
     // bundle. ExitRequested still runs through the existing shutdown path,
     // which stops managed tasks and persists window state.
+    emit_update_progress(&app, UpdateProgress::restarting());
+    // Give the webview a bounded moment to paint the final stage before this
+    // process exits and the detached helper takes over.
+    let _ = tauri::async_runtime::spawn_blocking(|| thread::sleep(UPDATE_RESTART_GRACE)).await;
     app.exit(0);
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn prepare_update() -> Result<UpdatePlan, String> {
+fn prepare_update(app: &tauri::AppHandle) -> Result<UpdatePlan, String> {
     if !is_supported() {
         return Err(
             "Self-updating is unavailable because the source repository could not be found.".into(),
@@ -197,6 +255,7 @@ fn prepare_update() -> Result<UpdatePlan, String> {
         );
     }
 
+    emit_update_progress(app, UpdateProgress::building());
     run_release_build(source_root)?;
 
     // A commit or worktree edit during the build means the produced app is no
@@ -826,6 +885,32 @@ mod tests {
         assert!(commits_differ("abc", "def"));
         assert!(!commits_differ("", "def"));
         assert!(!commits_differ("abc", ""));
+    }
+
+    #[test]
+    fn progress_stages_are_ordered_and_complete() {
+        let progress = [
+            UpdateProgress::validating(),
+            UpdateProgress::building(),
+            UpdateProgress::preparing(),
+            UpdateProgress::restarting(),
+        ];
+
+        assert_eq!(
+            progress
+                .iter()
+                .map(|item| item.stage.as_str())
+                .collect::<Vec<_>>(),
+            ["validating", "building", "preparing", "restarting"]
+        );
+        assert_eq!(
+            progress.iter().map(|item| item.step).collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+        assert!(progress
+            .iter()
+            .all(|item| item.total == UPDATE_PROGRESS_TOTAL));
+        assert!(progress.iter().all(|item| !item.message.is_empty()));
     }
 
     #[test]

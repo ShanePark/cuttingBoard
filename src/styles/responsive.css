@@ -43,4 +43,10 @@
   .settings-section { padding: 16px; }
   .theme-options { grid-template-columns: 1fr; }
   .modal-actions > button { flex: 1 1 140px; }
+  .update-progress-backdrop { padding: 10px; }
+  .update-progress-dialog { width: min(100%, calc(100vw - 20px)); max-height: calc(100dvh - 20px); padding: 21px 17px; border-radius: 19px; }
+  .update-progress-spinner { width: 50px; height: 50px; flex-basis: 50px; border-radius: 14px; }
+  .update-progress-heading h2 { font-size: 18px; }
+  .update-progress-summary { margin-top: 22px; }
+  .update-progress-stage { min-height: 54px; padding-inline: 9px; }
 }

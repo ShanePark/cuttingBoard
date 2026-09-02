@@ -1,4 +1,5 @@
 import "./styles.css";
+import { listen } from "@tauri-apps/api/event";
 import { open as choosePath } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
@@ -17,6 +18,7 @@ import { openModal, closeModal as closeModalView, trapModalFocus } from "./modal
 import { createModalForms, SOURCE_URL } from "./modal-forms";
 import { updateSettingsFromRadio } from "./settings";
 import { createUpdateController, UPDATE_CHECK_INTERVAL_MS } from "./update-controller";
+import { createUpdateProgressView, type UpdateProgressEvent } from "./update-progress";
 import {
   launchConsoleOutputKind,
   ensureSelectedTask,
@@ -179,6 +181,8 @@ const {
 } = uiSupport;
 
 const updateButton = byId("update-button") as HTMLButtonElement;
+const updateProgressView = createUpdateProgressView();
+const updateProgressListenerReady = listen<UpdateProgressEvent>("update-progress", (event) => updateProgressView.update(event.payload)).catch(() => undefined);
 const updateController = createUpdateController(
   {
     checkForUpdate: api.checkForUpdate,
@@ -201,8 +205,11 @@ const updateController = createUpdateController(
         updateButton.title = "Update available — build and restart";
       }
     },
-    showUpdateStarted: () => toast("Updating Cutting Board…"),
-    showError: (message) => toast(message, true)
+    showUpdateStarted: () => updateProgressView.start(),
+    showError: (message) => {
+      updateProgressView.fail();
+      toast(`Update failed: ${message}`, true);
+    }
   }
 );
 
@@ -315,12 +322,47 @@ const keyboardNavigation = createKeyboardNavigation({
   selectContainer
 });
 
-root.addEventListener("click", (event) => void handleClick(event));
-root.addEventListener("change", (event) => handleChange(event));
-root.addEventListener("keydown", keyboardNavigation.handleKeyboard);
-root.addEventListener("pointerdown", (event) => consoleController.handleResizeStart(event));
-root.addEventListener("scroll", (event) => consoleController.handleScroll(event), true);
+root.addEventListener("click", (event) => {
+  if (updateProgressView.isActive()) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  void handleClick(event);
+});
+root.addEventListener("change", (event) => {
+  if (updateProgressView.isActive()) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  handleChange(event);
+});
+root.addEventListener("keydown", (event) => {
+  if (updateProgressView.isActive()) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  keyboardNavigation.handleKeyboard(event);
+});
+root.addEventListener("pointerdown", (event) => {
+  if (updateProgressView.isActive()) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  consoleController.handleResizeStart(event);
+});
+root.addEventListener("scroll", (event) => {
+  if (!updateProgressView.isActive()) consoleController.handleScroll(event);
+}, true);
 document.addEventListener("keydown", (event) => {
+  if (updateProgressView.isActive()) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
   if (!document.querySelector(".modal-backdrop")) return;
   if (event.key === "Escape") closeModal();
   else if (event.key === "Tab") trapModalFocus(event);
@@ -342,6 +384,7 @@ async function bootstrap(): Promise<void> {
     renderHeaderCounts();
     await refreshWorkspace(true);
     consoleController.applyConsoleHeight();
+    await updateProgressListenerReady;
     installTimers();
     installBoardObserver();
     settingsReady = true;

@@ -168,3 +168,110 @@ button:disabled { opacity: .45; cursor: default; }
 #toast-root { position: fixed; z-index: 200; right: 18px; bottom: 38px; pointer-events: none; }
 .toast { max-width: 420px; padding: 11px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-alt); color: var(--text); box-shadow: 0 10px 36px var(--shadow); font-size: 11px; }
 .toast.is-error { border-color: var(--danger); color: var(--danger); }
+
+/* The update surface deliberately lives outside .modal: it cannot be dismissed while the native
+   release build is replacing the application, so every interaction stays on this progress state. */
+.update-progress-backdrop {
+  position: fixed;
+  z-index: 300;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 28%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 42%),
+    color-mix(in srgb, var(--canvas) 82%, #000 18%);
+  backdrop-filter: blur(10px);
+  cursor: wait;
+}
+body.is-update-progress .app-shell { pointer-events: none; user-select: none; }
+.update-progress-dialog {
+  width: min(520px, calc(100vw - 48px));
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding: 28px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--surface) 96%, var(--accent));
+  box-shadow: 0 30px 100px color-mix(in srgb, var(--shadow) 92%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text);
+  cursor: default;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  animation: update-progress-dialog-in 180ms ease-out both;
+}
+.update-progress-dialog:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.update-progress-intro { display: flex; align-items: center; gap: 16px; }
+.update-progress-spinner {
+  position: relative;
+  width: 58px;
+  height: 58px;
+  display: grid;
+  flex: 0 0 58px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--hairline));
+  border-radius: 17px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-alt));
+  color: var(--accent);
+}
+.update-progress-spinner::before,
+.update-progress-spinner::after,
+.update-progress-spinner span {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+  content: "";
+}
+.update-progress-spinner::before {
+  width: 27px;
+  height: 27px;
+  border: 3px solid color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.update-progress-spinner::after {
+  width: 27px;
+  height: 27px;
+  border: 3px solid transparent;
+  border-top-color: currentColor;
+  border-right-color: currentColor;
+  animation: update-progress-spin 850ms linear infinite;
+}
+.update-progress-spinner span {
+  width: 5px;
+  height: 5px;
+  background: currentColor;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 80%, transparent);
+}
+.update-progress-heading { min-width: 0; }
+.update-progress-kicker { margin: 0 0 6px; color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .13em; }
+.update-progress-heading h2 { margin: 0; color: var(--text); font-size: 21px; letter-spacing: -.02em; }
+.update-progress-heading p:last-child { margin: 7px 0 0; overflow: hidden; color: var(--text-muted); font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.update-progress-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 28px; color: var(--text-muted); font-size: 11px; font-weight: 700; }
+.update-progress-step-label { color: var(--text); font-variant-numeric: tabular-nums; }
+.update-progress-elapsed { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.update-progress-elapsed time { color: var(--text-muted); }
+.update-progress-track { position: relative; height: 8px; margin-top: 10px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--surface-alt) 82%, var(--canvas)); }
+.update-progress-fill { position: absolute; inset: 0 auto 0 0; width: 25%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-hover)); box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 46%, transparent); transition: width 260ms ease; }
+.update-progress-shimmer { position: absolute; inset: 0; width: 42%; border-radius: inherit; background: linear-gradient(90deg, transparent, color-mix(in srgb, #fff 46%, transparent), transparent); opacity: .45; animation: update-progress-shimmer 1.5s ease-in-out infinite; }
+.update-progress-stages { display: grid; gap: 2px; margin: 22px 0 0; padding: 0; list-style: none; }
+.update-progress-stage { position: relative; min-height: 58px; display: flex; align-items: center; gap: 12px; padding: 9px 11px; border: 1px solid transparent; border-radius: 13px; color: var(--text-dim); transition: background 160ms ease, border-color 160ms ease, color 160ms ease; }
+.update-progress-stage[data-state="current"] { border-color: color-mix(in srgb, var(--accent) 26%, var(--hairline)); background: color-mix(in srgb, var(--accent) 8%, var(--surface-alt)); color: var(--text); }
+.update-progress-stage[data-state="complete"] { color: var(--text-muted); }
+.update-progress-stage-mark { width: 27px; height: 27px; display: grid; flex: 0 0 27px; place-items: center; border: 1px solid var(--border); border-radius: 50%; color: var(--text-dim); font-size: 10px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.update-progress-stage[data-state="current"] .update-progress-stage-mark { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 17%, transparent); color: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 9%, transparent); animation: update-progress-current-pulse 1.8s ease-in-out infinite; }
+.update-progress-stage[data-state="complete"] .update-progress-stage-mark { border-color: color-mix(in srgb, var(--ok) 55%, var(--hairline)); background: color-mix(in srgb, var(--ok) 17%, transparent); color: var(--ok); font-size: 14px; }
+.update-progress-stage-copy { min-width: 0; display: grid; gap: 3px; }
+.update-progress-stage-copy strong { color: inherit; font-size: 12px; }
+.update-progress-stage-copy small { overflow: hidden; color: var(--text-dim); font-size: 11px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.update-progress-footnote { display: flex; align-items: center; gap: 8px; margin: 22px 0 0; color: var(--text-dim); font-size: 11px; line-height: 1.45; }
+.update-progress-footnote-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent); }
+@keyframes update-progress-dialog-in { from { opacity: 0; transform: translateY(7px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes update-progress-spin { to { transform: rotate(360deg); } }
+@keyframes update-progress-shimmer { 0% { transform: translateX(-130%); } 55%, 100% { transform: translateX(310%); } }
+@keyframes update-progress-current-pulse { 0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 8%, transparent); } 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 4%, transparent); } }
+@media (prefers-reduced-motion: reduce) {
+  .update-progress-dialog, .update-progress-spinner::after, .update-progress-shimmer, .update-progress-stage[data-state="current"] .update-progress-stage-mark { animation: none; }
+  .update-progress-fill { transition: none; }
+}

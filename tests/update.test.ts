@@ -2,11 +2,18 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createUpdateController } from "../src/update-controller.ts";
+import {
+  formatUpdateElapsed,
+  normaliseUpdateProgress,
+  renderUpdateProgressOverlay,
+  updateProgressStageIndex
+} from "../src/update-progress.ts";
 import type { UpdateCheckResult } from "../src/types.ts";
 
 const apiSource = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
 const shellSource = readFileSync(new URL("../src/app-shell.ts", import.meta.url), "utf8");
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const progressSource = readFileSync(new URL("../src/update-progress.ts", import.meta.url), "utf8");
 
 function updateResult(available: boolean): UpdateCheckResult {
   return {
@@ -37,6 +44,76 @@ test("the frontend exposes native update commands and polls every 30 seconds", (
   assert.match(mainSource, /void updateController\.checkForUpdate\(\)/);
   assert.match(mainSource, /window\.setInterval\(\(\) => void updateController\.checkForUpdate\(\), UPDATE_CHECK_INTERVAL_MS\)/);
   assert.match(mainSource, /appInfo\?\.update_supported && !appInfo\.demo/);
+});
+
+test("the update progress surface is an accessible blocking dialog with all four stages", () => {
+  const overlay = renderUpdateProgressOverlay();
+  assert.match(overlay, /class="update-progress-backdrop"[^>]*role="presentation"/);
+  assert.match(overlay, /class="update-progress-dialog"[^>]*role="dialog"[^>]*aria-modal="true"/);
+  assert.match(overlay, /id="update-progress-message" role="status" aria-live="polite"/);
+  assert.match(overlay, /data-update-stage="validating"/);
+  assert.match(overlay, /data-update-stage="building"/);
+  assert.match(overlay, /data-update-stage="preparing"/);
+  assert.match(overlay, /data-update-stage="restarting"/);
+  assert.match(progressSource, /document\.body\.classList\.add\("is-update-progress"\)/);
+});
+
+test("progress payloads are normalized to a safe stage, step, and message", () => {
+  assert.deepEqual(normaliseUpdateProgress({ stage: "preparing", step: 3, total: 4, message: " Staging… " }), {
+    stage: "preparing",
+    step: 3,
+    total: 4,
+    message: "Staging…"
+  });
+  assert.deepEqual(normaliseUpdateProgress({ stage: "unknown", step: 99, total: 0, message: "" }), {
+    stage: "validating",
+    step: 4,
+    total: 4,
+    message: "Checking the latest local commit"
+  });
+  assert.equal(updateProgressStageIndex("restarting"), 3);
+  assert.equal(formatUpdateElapsed(0), "0s");
+  assert.equal(formatUpdateElapsed(65), "1m 5s");
+  assert.equal(formatUpdateElapsed(3665), "1h 1m");
+});
+
+test("main subscribes to progress events and blocks input while the update surface is active", () => {
+  assert.match(mainSource, /listen<UpdateProgressEvent>\("update-progress", \(event\) => updateProgressView\.update\(event\.payload\)\)/);
+  assert.match(mainSource, /if \(updateProgressView\.isActive\(\)\) \{[\s\S]*event\.preventDefault\(\);[\s\S]*event\.stopPropagation\(\);/);
+  assert.match(mainSource, /showUpdateStarted: \(\) => updateProgressView\.start\(\)/);
+  assert.match(mainSource, /updateProgressView\.fail\(\);[\s\S]*toast\(`Update failed:/);
+});
+
+test("bootstrap waits for progress listener setup without making listener errors fatal", () => {
+  assert.match(mainSource, /const updateProgressListenerReady = listen<UpdateProgressEvent>\([\s\S]*\.catch\(\(\) => undefined\)/);
+  assert.match(mainSource, /await updateProgressListenerReady;/);
+  assert.ok(mainSource.indexOf("await updateProgressListenerReady;") < mainSource.indexOf("installTimers();"));
+});
+
+test("an update announces progress before starting the native build", async () => {
+  const pending = deferred<void>();
+  const sequence: string[] = [];
+  const controller = createUpdateController(
+    {
+      checkForUpdate: async () => updateResult(true),
+      updateAndRestart: () => {
+        sequence.push("native");
+        return pending.promise;
+      }
+    },
+    {
+      setUpdateAvailable: () => {},
+      setUpdateBusy: (busy) => { if (busy) sequence.push("busy"); },
+      showUpdateStarted: () => sequence.push("progress"),
+      showError: () => {}
+    }
+  );
+
+  await controller.checkForUpdate();
+  const update = controller.updateAndRestart();
+  assert.deepEqual(sequence, ["busy", "progress", "native"]);
+  pending.resolve();
+  await update;
 });
 
 test("update checks do not overlap and expose a matching commit as available", async () => {
