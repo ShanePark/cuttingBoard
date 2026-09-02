@@ -63,7 +63,7 @@ button:disabled { opacity: .45; cursor: default; }
 .confirm-copy { margin: 0; color: var(--text-muted); line-height: 1.5; }
 .confirm-copy strong { color: var(--text); }
 .detail-identity { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
-.detail-icon { width: 64px; height: 64px; display: grid; place-items: center; border: 1px solid var(--icon-plate-border); border-radius: 15px; background: var(--icon-plate); }
+.detail-icon { width: 64px; height: 64px; display: grid; place-items: center; border: 1px solid var(--icon-plate-border); border-radius: 15px; background: var(--icon-plate); color: var(--icon-plate-ink); }
 .detail-icon .tech-icon { width: 56px; height: 56px; }
 .detail-identity strong, .detail-identity span { display: block; }
 .detail-identity strong { font-size: 17px; }

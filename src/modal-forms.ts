@@ -57,7 +57,7 @@ export function createModalForms(context: ModalFormsContext) {
     if (!task) throw new Error("The launch task no longer exists.");
     const snapshot = context.snapshotFor(profile.id, taskName);
     const matchedService = matchedServiceForTask(profile, task, context.getServices());
-    context.openModal(task.name, renderTaskDetails(profile, task, snapshot, matchedService));
+    context.openModal(task.name, renderTaskDetails(profile, task, snapshot, matchedService, context.getContainers()));
   }
 
   function showInfo(kind: string): void {

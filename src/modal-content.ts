@@ -4,6 +4,7 @@ import {
   currentUptime,
   formatBytes,
   formatUptimeCompact,
+  launchTaskTech,
   relatedContainersForGroup,
   serviceTitle,
   techLabel,
@@ -36,7 +37,7 @@ export function renderProfileDetails(profile: LaunchProfile): string {
   return `<div class="info-modal-copy"><p>Saved commands and project context for this launch profile.</p><dl class="detail-grid"><dt>Project root</dt><dd class="mono">${h(profile.project_root)}</dd><dt>Tasks</dt><dd>${profile.tasks.length}</dd></dl><h3 class="detail-heading">Commands</h3><ul class="detail-list">${taskItems || "<li><span>No tasks configured</span></li>"}</ul></div>${DONE_ACTION}`;
 }
 
-export function renderTaskDetails(profile: LaunchProfile, task: LaunchTask, snapshot: ManagedTaskSnapshot | undefined, matchedService: ServiceSnapshot | null): string {
+export function renderTaskDetails(profile: LaunchProfile, task: LaunchTask, snapshot: ManagedTaskSnapshot | undefined, matchedService: ServiceSnapshot | null, containers: readonly ContainerInfo[]): string {
   const state = snapshot?.state ?? "stopped";
   const external = state === "external";
   const pid = external ? snapshot?.external_pid ?? snapshot?.main_pid ?? null : snapshot?.main_pid ?? null;
@@ -44,8 +45,9 @@ export function renderTaskDetails(profile: LaunchProfile, task: LaunchTask, snap
   const uptime = snapshot?.started_at ? formatUptimeCompact(Date.now() / 1000 - snapshot.started_at) : "";
   const message = snapshot?.message?.trim() ?? "";
   const container = task.container?.trim() ?? "";
+  const tech = launchTaskTech(task, matchedService, containers);
   return `
-    <div class="detail-identity"><div class="detail-icon" aria-hidden="true">${matchedService ? techIcon(matchedService.tech, 56) : container ? techIcon("docker", 56) : uiIcon("terminal", 34)}</div><div><strong>${h(task.name)}</strong><span>${h(profile.name)} · ${h(stateLabel(state))}</span></div></div>
+    <div class="detail-identity"><div class="detail-icon" aria-hidden="true">${tech ? techIcon(tech, 56) : uiIcon("terminal", 34)}</div><div><strong>${h(task.name)}</strong><span>${h(profile.name)} · ${h(stateLabel(state))}</span></div></div>
     ${message ? `<div class="detail-warning">${h(message)}</div>` : ""}
     <dl class="detail-grid">
       <dt>State</dt><dd>${h(stateLabel(state))}</dd><dt>PID</dt><dd>${pid ?? "—"}</dd>

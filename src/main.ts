@@ -807,6 +807,8 @@ function renderLaunch(force = false): void {
     profiles,
     taskSnapshots.map(({ log_tail: _logTail, ...snapshot }) => snapshot),
     appInfo?.demo,
+    // Container task icons follow the image behind the container, so the listing is part of the view.
+    containerListing?.available ? containerListing.containers.map((container) => `${container.name}=${container.image}`).sort() : [],
     [...operations],
     consoleController.activePanel()
   ]);
@@ -838,6 +840,7 @@ function launchRenderingContext(): LaunchRenderingContext {
     operations,
     selectedTaskKey,
     services: workspace?.services ?? [],
+    containers: containerListing?.available ? containerListing.containers : [],
     snapshotFor,
     launchProfileOperationKey,
     launchProfileHasTaskOperation: launchActions.hasTaskOperation,

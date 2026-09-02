@@ -234,6 +234,8 @@
   border: 1px solid var(--icon-plate-border);
   border-radius: calc(18px - 5px * var(--tile-density));
   background: var(--icon-plate);
+  /* The plate stays light in both themes, so a glyph drawn in the theme's text colour needs its own ink. */
+  color: var(--icon-plate-ink);
 }
 .icon-well .tech-icon { width: var(--tech-icon-size); height: var(--tech-icon-size); }
 /* The generic icon sized by its own markup still has to follow the well it sits in. */

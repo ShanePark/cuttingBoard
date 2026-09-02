@@ -30,6 +30,7 @@
   --other: #9EA0A5;
   --icon-plate: #F7F8FA;
   --icon-plate-border: #D8DCE3;
+  --icon-plate-ink: #3A3A3C;
   --panel: #16161A;
   --inset: #232327;
   --shadow: rgba(0, 0, 0, 0.38);
@@ -63,6 +64,7 @@
   --other: #636366;
   --icon-plate: #F7F8FA;
   --icon-plate-border: #D8DCE3;
+  --icon-plate-ink: #3A3A3C;
   --panel: #F8F8FB;
   --inset: #F3F3F7;
   --shadow: rgba(0, 0, 0, 0.16);
@@ -97,6 +99,7 @@
     --other: #636366;
     --icon-plate: #F7F8FA;
     --icon-plate-border: #D8DCE3;
+    --icon-plate-ink: #3A3A3C;
     --panel: #F8F8FB;
     --inset: #F3F3F7;
     --shadow: rgba(0, 0, 0, 0.16);

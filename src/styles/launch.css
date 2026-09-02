@@ -110,3 +110,23 @@
 .launch-view, .services-view, .docker-view { min-height: 100%; height: 100%; }
 .launch-view > .split-view-list, .services-view > .split-view-list, .docker-view > .split-view-list { min-height: 0; }
 .launch-view > .split-view-list > .launch-list { width: 100%; }
+
+/* An idle profile has nothing running: the section sinks toward the canvas and names its state. */
+.launch-profile.is-idle { border-color: color-mix(in srgb, var(--hairline) 70%, transparent); background: color-mix(in srgb, var(--panel) 40%, var(--canvas)); }
+.launch-profile.is-idle .section-accent { background: var(--text-dim); opacity: .4; }
+.launch-profile.is-idle .launch-profile-heading h2 { color: var(--text-dim); }
+.section-state { flex: 0 0 auto; height: calc(19px - 3px * var(--tile-density)); display: inline-flex; align-items: center; padding: 0 7px; border: 1px solid color-mix(in srgb, var(--text-dim) 40%, transparent); border-radius: 999px; color: var(--text-dim); font-size: calc(9.5px - 1px * var(--tile-density)); letter-spacing: .08em; text-transform: uppercase; }
+/* A stopped task sinks below its section and loses its colour; only its controls keep full strength. */
+.task-card.state-stopped { background-image: none; }
+.task-card.state-stopped:not(.is-selected) { --task-idle-surface: color-mix(in srgb, var(--panel) 55%, var(--canvas)); background-color: var(--task-idle-surface); }
+.task-card.state-stopped:not(.is-selected) .status-pip { box-shadow: 0 0 0 2.5px var(--task-idle-surface); }
+/* The plate keeps its light ground so the glyph stays recognisable; the whole well just fades and loses saturation. */
+.task-card.state-stopped .icon-well { border-color: var(--hairline); opacity: .68; }
+.task-card.state-stopped .icon-well .tech-icon { filter: saturate(.35); }
+.task-card.state-stopped .tile-name { color: var(--text-dim); }
+.task-card.state-stopped .tile-metrics { border-style: dashed; background: transparent; }
+.task-card.state-stopped .port-chip { background: var(--surface-alt); color: var(--text-dim); }
+.task-card .metric-state.state-stopped { color: var(--text-dim); }
+.task-card .metric-state.state-running { color: var(--ok); }
+.task-card .metric-state.state-failed { color: var(--danger); }
+.task-card .metric-state.state-starting, .task-card .metric-state.state-stopping { color: var(--warning); }

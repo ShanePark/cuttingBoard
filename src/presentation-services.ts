@@ -115,3 +115,89 @@ export function containerLaunchTasks(containers: readonly ContainerInfo[], taken
     return { name, cwd: ".", command: "", expected_port: container.ports[0] ?? null, container: container.name };
   });
 }
+
+/**
+ * Framework evidence anywhere in a command, checked before the runtime that hosts it: a Spring
+ * Boot classpath reads as Spring rather than Java, and `node …/vite dev` as Vite rather than Node.
+ * Needles match whole terms only, so "vite" is found in ".bin/vite" but not in "invited".
+ */
+const COMMAND_FRAMEWORK_TESTS: ReadonlyArray<readonly [string, string]> = [
+  ["spring-boot", "spring"], ["springframework", "spring"], ["bootrun", "spring"],
+  ["quarkus", "java"], ["micronaut", "java"], ["catalina", "tomcat"],
+  ["next dev", "nextjs"], ["next-server", "nextjs"], ["nuxt", "nuxt"], ["astro", "astro"], ["remix", "remix"],
+  ["storybook", "storybook"], ["svelte-kit", "svelte"], ["sveltekit", "svelte"], ["ng serve", "angular"], ["angular", "angular"],
+  ["vite", "vite"], ["webpack-dev-server", "nodejs"], ["react-scripts", "nodejs"],
+  ["django", "django"], ["manage.py runserver", "django"], ["fastapi", "fastapi"], ["uvicorn", "fastapi"],
+  ["gunicorn", "python"], ["hypercorn", "python"], ["daphne", "python"], ["flask", "flask"],
+  ["rails", "rails"], ["puma", "rails"], ["artisan", "laravel"],
+  ["jupyter-lab", "jupyter"], ["jupyter-notebook", "jupyter"],
+  ["cargo run", "rust"], ["target/debug", "rust"], ["target/release", "rust"], ["go run", "go"]
+];
+
+/** The technology a command's executable, or one of its first arguments, stands for by name. */
+const RUNTIME_TECH: Readonly<Record<string, string>> = {
+  java: "java", "java.exe": "java", gradlew: "gradle", gradle: "gradle", mvn: "maven", mvnw: "maven",
+  node: "nodejs", nodejs: "nodejs", npm: "nodejs", npx: "nodejs", pnpm: "nodejs", yarn: "nodejs", nodemon: "nodejs", "ts-node": "nodejs", tsx: "nodejs",
+  python: "python", python3: "python", poetry: "python", pipenv: "python", uv: "python",
+  ruby: "ruby", bundle: "ruby", rake: "ruby", php: "php", composer: "php", dotnet: "dotnet",
+  cargo: "rust", go: "go", deno: "deno", bun: "bun", bunx: "bun",
+  docker: "docker", "docker-compose": "docker", podman: "docker", ssh: "ssh", autossh: "ssh",
+  solr: "solr", "kafka-server-start.sh": "kafka", "redis-server": "redis", postgres: "postgresql", pg_ctl: "postgresql",
+  mysqld: "mysql", mongod: "mongodb", nginx: "nginx", caddy: "caddy", ollama: "ollama"
+};
+
+const COMMAND_PREFIXES = new Set(["sudo", "env", "nohup", "exec"]);
+
+/** The technology a saved command stands for, or null when nothing recognisable is in it. */
+export function commandTech(command: string): string | null {
+  const text = command.trim().toLowerCase();
+  if (!text) return null;
+  for (const [needle, tech] of COMMAND_FRAMEWORK_TESTS) if (hasTerm(text, needle)) return tech;
+  for (const name of commandIdentity(text)) {
+    const tech = RUNTIME_TECH[name];
+    if (tech) return tech;
+  }
+  return null;
+}
+
+/**
+ * The technology a task card shows. A running task takes it from the service backing it, a
+ * container task from its image, and anything else from the saved command, so a stopped task
+ * still shows what it is instead of a bare terminal.
+ */
+export function launchTaskTech(task: LaunchTask, matchedService: ServiceSnapshot | null, containers: readonly ContainerInfo[]): string | null {
+  if (matchedService) return matchedService.tech;
+  const containerName = task.container?.trim();
+  if (containerName) {
+    const container = containers.find((item) => item.name === containerName);
+    return container ? imageTech(container.image) : "docker";
+  }
+  return commandTech(task.command);
+}
+
+// Mirrors the scanner's process identity: the executable plus the first two non-flag arguments,
+// each reduced to its basename, after skipping environment assignments and wrappers.
+function commandIdentity(command: string): string[] {
+  const tokens = command.split(/\s+/).filter(Boolean);
+  let start = 0;
+  while (start < tokens.length && (/^[a-z_][a-z0-9_]*=/.test(tokens[start]!) || COMMAND_PREFIXES.has(tokens[start]!))) start += 1;
+  const names = [tokens[start], ...tokens.slice(start + 1).filter((token) => !token.startsWith("-")).slice(0, 2)];
+  return names.filter((token): token is string => Boolean(token)).map((token) => token.split(/[\\/]/).pop() ?? token);
+}
+
+function hasTerm(text: string, needle: string): boolean {
+  let from = 0;
+  while (from <= text.length) {
+    const index = text.indexOf(needle, from);
+    if (index === -1) return false;
+    const before = text[index - 1];
+    const after = text[index + needle.length];
+    if (!(before && isWordCharacter(before)) && !(after && isWordCharacter(after))) return true;
+    from = index + 1;
+  }
+  return false;
+}
+
+function isWordCharacter(character: string): boolean {
+  return /[a-z0-9]/.test(character);
+}

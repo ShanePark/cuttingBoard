@@ -12,6 +12,11 @@ export function launchTaskCanStop(state: LaunchState): boolean {
   return launchTaskIsActive(state);
 }
 
+/** A profile is idle when it has tasks and none of them is running, starting, stopping, or external. */
+export function launchProfileIsIdle(states: readonly LaunchState[]): boolean {
+  return states.length > 0 && states.every(launchTaskCanStart);
+}
+
 export function launchStatePriority(state: LaunchState): number {
   return ({ running: 0, starting: 1, stopping: 2, external: 3, failed: 4, stopped: 5 })[state];
 }

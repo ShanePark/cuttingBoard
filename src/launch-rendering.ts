@@ -4,10 +4,12 @@ import {
   FRESH_UPTIME_SECONDS,
   currentUptime,
   formatBytes,
+  launchTaskTech,
   pathIsEqualOrNested,
   uniquePorts
 } from "./presentation";
 import {
+  launchProfileIsIdle,
   launchTaskCanStart,
   launchTaskCanStop,
   launchTaskIsActive,
@@ -16,6 +18,7 @@ import {
 } from "./launch-state";
 import { renderGroupCount, renderOpenServiceButton, renderSharedServiceCard } from "./tile-rendering";
 import type {
+  ContainerInfo,
   LaunchProfile,
   LaunchState,
   LaunchTask,
@@ -30,6 +33,7 @@ export type LaunchRenderingContext = {
   operations: ReadonlySet<string>;
   selectedTaskKey: string | null;
   services: readonly ServiceSnapshot[];
+  containers: readonly ContainerInfo[];
   snapshotFor: (profileId: string, taskName: string) => ManagedTaskSnapshot | undefined;
   launchProfileOperationKey: (profileId: string) => string;
   launchProfileHasTaskOperation: (profile: LaunchProfile) => boolean;
@@ -62,6 +66,8 @@ export function renderProfile(profile: LaunchProfile, context: LaunchRenderingCo
   const snapshots = profile.tasks.map((task) => context.snapshotFor(profile.id, task.name));
   const canStop = snapshots.some((snapshot) => snapshot && launchTaskCanStop(snapshot.state));
   const canStart = profile.tasks.some((task) => launchTaskCanStart(context.snapshotFor(profile.id, task.name)?.state ?? "stopped"));
+  // Nothing in the profile is running, so the whole group recedes and says so in its header.
+  const idle = launchProfileIsIdle(snapshots.map((snapshot) => snapshot?.state ?? "stopped"));
   const profileBusy = context.operations.has(context.launchProfileOperationKey(profile.id)) || context.launchProfileHasTaskOperation(profile);
   const runAll = profile.tasks.length > 1 && canStart
     ? `<button class="primary-button icon-only-button bulk-action-button" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}" aria-label="${canStop ? "Start remaining tasks" : "Run all tasks"}" title="${profileBusy ? "Starting tasks" : canStop ? "Start remaining tasks" : "Run all tasks"}" ${profileBusy ? "disabled" : ""}>${bulkActionIcon("play")}</button>`
@@ -69,10 +75,10 @@ export function renderProfile(profile: LaunchProfile, context: LaunchRenderingCo
   const stopAll = profile.tasks.length > 1 && canStop
     ? `<button class="secondary-button danger-button icon-only-button bulk-action-button" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}" aria-label="Stop all tasks" title="${profileBusy ? "Stopping tasks" : "Stop all tasks"}" ${profileBusy ? "disabled" : ""}>${bulkActionIcon("stop")}</button>`
     : "";
-  return `<section class="launch-profile service-section" data-tiles="${profile.tasks.length}" aria-labelledby="launch-profile-${h(profile.id)}">
+  return `<section class="launch-profile service-section${idle ? " is-idle" : ""}" data-tiles="${profile.tasks.length}" aria-labelledby="launch-profile-${h(profile.id)}">
     <header class="section-header launch-profile-header">
       <span class="section-accent accent-runtime" aria-hidden="true"></span>
-      <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${context.renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name.toUpperCase(), "View profile details")}${renderGroupCount(profile.tasks.length)}</h2></div>
+      <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${context.renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name.toUpperCase(), "View profile details")}${renderGroupCount(profile.tasks.length)}${idle ? `<span class="section-state">Stopped</span>` : ""}</h2></div>
       <div class="section-actions launch-profile-actions">
         ${runAll}${stopAll}
         <button class="section-action icon-only-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" aria-label="Edit ${h(profile.name)}" title="Edit profile" ${context.appIsDemo ? "disabled" : ""}>${uiIcon("settings", 15)}</button>
@@ -112,6 +118,7 @@ export function renderTask(profile: LaunchProfile, task: LaunchTask, context: La
   const externallyManaged = external || Boolean(snapshot?.external_pid);
   const active = launchTaskIsActive(state) || externallyManaged;
   const matchedService = matchedServiceForTask(profile, task, context.services);
+  const tech = launchTaskTech(task, matchedService, context.containers);
   const taskOperation = context.operations.has(`task:${profile.id}:${task.name}`);
   const serviceStopping = matchedService ? context.operations.has(`stop:${matchedService.id}`) : false;
   const serviceRestarting = matchedService ? context.operations.has(`restart:${matchedService.id}`) : false;
@@ -147,7 +154,7 @@ export function renderTask(profile: LaunchProfile, task: LaunchTask, context: La
     ariaLabel: `${profile.name} · ${task.name}, ${stateLabel(state)}${task.expected_port ? `, port ${task.expected_port}` : ""}`,
     selected,
     busy,
-    iconMarkup: matchedService ? techIcon(matchedService.tech, 44) : task.container ? techIcon("docker", 44) : uiIcon("terminal", 25),
+    iconMarkup: tech ? techIcon(tech, 44) : uiIcon("terminal", 25),
     pipClass: busy ? "busy" : state === "external" ? "external" : state === "stopped" || state === "failed" ? "idle" : "running",
     title: task.name,
     controlsMarkup: `${detailsAction}${startAction}${restartAction}${stopAction}`,
