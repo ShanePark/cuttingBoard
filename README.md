@@ -42,6 +42,7 @@ The app is built with [Tauri 2](https://v2.tauri.app/), a TypeScript/Vite fronte
 - Start and stop tasks individually or together, with an optional expected port for each task.
 - Track the process session Cutting Board started, inspect live output, and keep task logs locally.
 - Detects a task's expected port when another process is already using it; externally owned processes are never stopped by the profile manager.
+- Shows the output of a process started elsewhere when it writes to a file: redirected stdout/stderr or an open log file, such as a Spring Boot app with `logging.file.name`.
 
 <p align="center">
   <img src="assets/cutting-board-launch-profiles.png" alt="Cutting Board Launch Profiles view with task controls and live output" width="960" />

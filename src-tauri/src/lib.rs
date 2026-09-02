@@ -263,7 +263,7 @@ async fn stop_task(
         if let Some(container) = launch_containers::container_for(&profiles, &request) {
             return launch_containers::stop(&request, &container, state.0.demo);
         }
-        lock(&state.0.launch)?.stop_task(&profiles, &request, workspace.as_ref())
+        lock(&state.0.launch)?.stop_task(&profiles, &request, &state.0.logs_dir, workspace.as_ref())
     })
     .await
     .map_err(|error| format!("Stop task failed: {error}"))?
@@ -305,6 +305,7 @@ async fn stop_profile(
         snapshots.extend(lock(&state.0.launch)?.stop_profile(
             &profiles,
             &profile_id,
+            &state.0.logs_dir,
             workspace.as_ref(),
         )?);
         Ok(snapshots)

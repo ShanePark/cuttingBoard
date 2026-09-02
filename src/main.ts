@@ -7,6 +7,7 @@ import { createBoardLayout } from "./board-layout";
 import { createConsoleController, type ConsoleOutputPatch } from "./console-controller";
 import { createContainerActions } from "./container-actions";
 import { createLaunchActions, launchProfileBlocksEditing, launchProfileOperationKey } from "./launch-actions";
+import { patchLaunchSelection } from "./launch-dom";
 import { createServiceActions } from "./service-actions";
 import { createKeyboardNavigation, focusContainerCard, focusServiceCard, focusTaskRow } from "./keyboard-navigation";
 import { createLaunchRefresh } from "./launch-refresh";
@@ -858,7 +859,12 @@ function selectTask(profileId: string, taskName: string, focus = false): void {
   const ref = launchTaskRefs(profiles).find(({ profile, task }) => profile.id === profileId && task.name === taskName);
   if (!ref) throw new Error("The launch task no longer exists.");
   setSelectedTask(profileId, taskName);
-  renderLaunch(true);
+  // Patch the selection in place: a full rebuild re-lays out every card and repaints the board just to move a highlight.
+  if (patchLaunchSelection(workspaceElement, selectedTaskKey, renderLaunchConsole(ref, launchConsoleRenderingContext()))) {
+    consoleController.restoreLaunchConsoleScroll();
+  } else {
+    renderLaunch(true);
+  }
   if (focus) focusTaskRow(profileId, taskName);
 }
 

@@ -9,9 +9,12 @@ mod shell;
 
 use external::{
     external_log_path, external_snapshot, external_task_info, service_belongs_to_runtime,
-    stop_external_task, task_matches_service,
+    stop_external_task, task_matches_service, ExternalTaskInfo,
 };
-use logs::{read_log_tail, recover_external_task_log, recovered_managed_log_path, safe_name};
+use logs::{
+    read_log_tail, recovered_external_task_log_path, recovered_managed_log_path, safe_name,
+    LogSource, LogSourceCache, LogSourceKind,
+};
 use shell::shell_command;
 
 use std::{
@@ -42,6 +45,7 @@ struct RuntimeTask {
 #[derive(Debug, Default)]
 pub struct LaunchManager {
     tasks: HashMap<String, RuntimeTask>,
+    log_sources: LogSourceCache,
 }
 
 impl LaunchManager {
@@ -67,7 +71,7 @@ impl LaunchManager {
                 {
                     snapshots.push(snapshot_from(&profile.id, &task.name, runtime));
                 } else if let Some(mut external) = external_task_info(profile, task, workspace) {
-                    recover_external_task_log(
+                    self.attach_external_log(
                         &mut external,
                         logs_dir,
                         profiles,
@@ -95,6 +99,45 @@ impl LaunchManager {
             }
         }
         snapshots
+    }
+
+    /// Attach the output of a process Cutting Board did not start: a file it writes to, or the
+    /// task log of an earlier Cutting Board session that started it.
+    fn attach_external_log(
+        &mut self,
+        external: &mut ExternalTaskInfo,
+        logs_dir: &Path,
+        profiles: &[LaunchProfile],
+        profile: &LaunchProfile,
+        task: &LaunchTask,
+        workspace: Option<&WorkspaceSnapshot>,
+    ) {
+        let (Some(pid), Some(started_at)) = (external.pid, external.started_at) else {
+            return;
+        };
+        let source = self.log_sources.resolve(pid, started_at, || {
+            external_log_path(pid)
+                .map(|path| LogSource {
+                    kind: LogSourceKind::Process,
+                    path,
+                })
+                .or_else(|| {
+                    recovered_external_task_log_path(
+                        logs_dir, profiles, profile, task, workspace, started_at,
+                    )
+                    .map(|path| LogSource {
+                        kind: LogSourceKind::Managed,
+                        path,
+                    })
+                })
+        });
+        let Some(source) = source else {
+            return;
+        };
+        if let Ok(tail) = read_log_tail(&source.path) {
+            external.log_path = Some(source.path);
+            external.log_tail = tail;
+        }
     }
 
     /// Read output for a discovered service, preferring an active managed task
@@ -143,50 +186,46 @@ impl LaunchManager {
             .map(|process| process.create_time)
             .unwrap_or_default();
         ensure_process_identity(pid, start_time)?;
-        if let Some(path) = external_log_path(pid) {
-            ensure_process_identity(pid, start_time)?;
-            match read_log_tail(&path) {
-                Ok(logs) => {
-                    ensure_process_identity(pid, start_time)?;
-                    return Ok(ServiceLogSnapshot {
-                        logs,
-                        source_path: Some(path.to_string_lossy().into_owned()),
-                        available: true,
-                        message: None,
-                    });
-                }
-                Err(_) => {
-                    return Ok(unavailable_service_logs(
-                        "A stdout/stderr log file was found, but it could not be read.",
-                    ));
-                }
-            }
-        }
-
-        if let Some(path) = recovered_managed_log_path(logs_dir, profiles, service, start_time) {
-            ensure_process_identity(pid, start_time)?;
-            match read_log_tail(&path) {
-                Ok(logs) => {
-                    ensure_process_identity(pid, start_time)?;
-                    return Ok(ServiceLogSnapshot {
-                        logs,
-                        source_path: Some(path.to_string_lossy().into_owned()),
-                        available: true,
-                        message: None,
-                    });
-                }
-                Err(_) => {
-                    return Ok(unavailable_service_logs(
-                        "A Cutting Board task log was found, but it could not be read.",
-                    ));
-                }
-            }
-        }
-
+        let source = self.log_sources.resolve(pid, start_time, || {
+            external_log_path(pid)
+                .map(|path| LogSource {
+                    kind: LogSourceKind::Process,
+                    path,
+                })
+                .or_else(|| {
+                    recovered_managed_log_path(logs_dir, profiles, service, start_time).map(
+                        |path| LogSource {
+                            kind: LogSourceKind::Managed,
+                            path,
+                        },
+                    )
+                })
+        });
         ensure_process_identity(pid, start_time)?;
-        Ok(unavailable_service_logs(
-            "No readable log output is connected to this service. Terminal and pipe output cannot be recovered after launch.",
-        ))
+        let Some(source) = source else {
+            return Ok(unavailable_service_logs(
+                "No readable log file is connected to this service. Output sent to a terminal or an IDE cannot be recovered after launch; a log file the process writes to, such as logging.file.name for a Spring Boot app, appears here.",
+            ));
+        };
+        match read_log_tail(&source.path) {
+            Ok(logs) => {
+                ensure_process_identity(pid, start_time)?;
+                Ok(ServiceLogSnapshot {
+                    logs,
+                    source_path: Some(source.path.to_string_lossy().into_owned()),
+                    available: true,
+                    message: None,
+                })
+            }
+            Err(_) => Ok(unavailable_service_logs(match source.kind {
+                LogSourceKind::Process => {
+                    "A log file the process writes to was found, but it could not be read."
+                }
+                LogSourceKind::Managed => {
+                    "A Cutting Board task log was found, but it could not be read."
+                }
+            })),
+        }
     }
 
     pub fn start_task(
@@ -198,7 +237,8 @@ impl LaunchManager {
     ) -> Result<ManagedTaskSnapshot, String> {
         self.refresh();
         let (profile, task) = find_task(profiles, request)?;
-        if let Some(external) = external_task_info(profile, task, workspace) {
+        if let Some(mut external) = external_task_info(profile, task, workspace) {
+            self.attach_external_log(&mut external, logs_dir, profiles, profile, task, workspace);
             return Ok(external_snapshot(&profile.id, &task.name, external));
         }
         let key = task_key(&profile.id, &task.name);
@@ -288,6 +328,7 @@ impl LaunchManager {
         &mut self,
         profiles: &[LaunchProfile],
         request: &TaskRequest,
+        logs_dir: &Path,
         workspace: Option<&WorkspaceSnapshot>,
     ) -> Result<ManagedTaskSnapshot, String> {
         self.refresh();
@@ -307,7 +348,8 @@ impl LaunchManager {
             return Ok(snapshot_from(&profile.id, &task.name, runtime));
         }
 
-        if let Some(external) = external_task_info(profile, task, workspace) {
+        if let Some(mut external) = external_task_info(profile, task, workspace) {
+            self.attach_external_log(&mut external, logs_dir, profiles, profile, task, workspace);
             return stop_external_task(&profile.id, &task.name, external);
         }
 
@@ -343,7 +385,7 @@ impl LaunchManager {
             return Err(format!("{} is not running.", task.name));
         }
 
-        self.stop_task(profiles, request, workspace)?;
+        self.stop_task(profiles, request, logs_dir, workspace)?;
         self.start_task(profiles, request, logs_dir, None)
     }
 
@@ -351,6 +393,7 @@ impl LaunchManager {
         &mut self,
         profiles: &[LaunchProfile],
         profile_id: &str,
+        logs_dir: &Path,
         workspace: Option<&WorkspaceSnapshot>,
     ) -> Result<Vec<ManagedTaskSnapshot>, String> {
         let profile = profiles
@@ -379,7 +422,7 @@ impl LaunchManager {
                     .and_then(|task| external_task_info(profile, task, workspace))
                     .is_some()
             {
-                snapshots.push(self.stop_task(profiles, &request, workspace)?);
+                snapshots.push(self.stop_task(profiles, &request, logs_dir, workspace)?);
             }
         }
         Ok(snapshots)
@@ -704,6 +747,7 @@ mod tests {
             uid: None,
         });
         let manager = LaunchManager {
+            log_sources: LogSourceCache::default(),
             tasks: HashMap::from([(
                 task_key("profile", "frontend"),
                 RuntimeTask {
@@ -872,6 +916,7 @@ mod tests {
         };
         let workspace = workspace_with_project(5173, &frontend);
         let mut manager = LaunchManager {
+            log_sources: LogSourceCache::default(),
             tasks: HashMap::from([(
                 task_key("profile", "frontend"),
                 RuntimeTask {
@@ -973,6 +1018,7 @@ mod tests {
 
         for state in ["stopped", "failed"] {
             let mut manager = LaunchManager {
+                log_sources: LogSourceCache::default(),
                 tasks: HashMap::from([(
                     task_key("profile", "web"),
                     RuntimeTask {

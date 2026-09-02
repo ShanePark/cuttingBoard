@@ -1,43 +1,114 @@
 use crate::models::{LaunchProfile, LaunchTask, ServiceSnapshot};
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System, UpdateKind};
 
-use super::external::{path_matches_task, task_matches_service, ExternalTaskInfo};
+use super::external::{path_matches_task, task_matches_service};
 
-pub(super) fn recover_external_task_log(
-    external: &mut ExternalTaskInfo,
+/// Where a task's output comes from when Cutting Board did not start the process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LogSourceKind {
+    /// A file the process itself writes to.
+    Process,
+    /// A Cutting Board task log left by an earlier session that started the process.
+    Managed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LogSource {
+    pub(super) kind: LogSourceKind,
+    pub(super) path: PathBuf,
+}
+
+/// Remembers, per process, where its output was found. Finding it means listing the process's
+/// open files and scanning task logs, which is far too slow to repeat for every poll.
+#[derive(Debug, Default)]
+pub(super) struct LogSourceCache {
+    entries: HashMap<(u32, u64), CachedLogSource>,
+}
+
+#[derive(Debug)]
+struct CachedLogSource {
+    source: Option<LogSource>,
+    probed_at: Instant,
+    used_at: Instant,
+}
+
+/// A process usually opens its log file right after it starts, so a fruitless search is repeated
+/// after a short wait rather than on every poll.
+const LOG_SOURCE_RETRY_AFTER: Duration = Duration::from_secs(15);
+/// An entry nobody has asked about for this long belongs to a process that has gone away.
+const LOG_SOURCE_EXPIRE_AFTER: Duration = Duration::from_secs(10 * 60);
+
+impl LogSourceCache {
+    /// The remembered source for the process, or the result of `probe` when there is none, the
+    /// remembered file has disappeared, or the last fruitless search is old enough to repeat.
+    pub(super) fn resolve(
+        &mut self,
+        pid: u32,
+        started_at: u64,
+        probe: impl FnOnce() -> Option<LogSource>,
+    ) -> Option<LogSource> {
+        let now = Instant::now();
+        self.entries.retain(|_, entry| {
+            now.saturating_duration_since(entry.used_at) < LOG_SOURCE_EXPIRE_AFTER
+        });
+        let key = (pid, started_at);
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.used_at = now;
+            match &entry.source {
+                Some(source)
+                    if fs::metadata(&source.path).is_ok_and(|metadata| metadata.is_file()) =>
+                {
+                    return Some(source.clone());
+                }
+                None if now.saturating_duration_since(entry.probed_at) < LOG_SOURCE_RETRY_AFTER => {
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        let source = probe();
+        self.entries.insert(
+            key,
+            CachedLogSource {
+                source: source.clone(),
+                probed_at: now,
+                used_at: now,
+            },
+        );
+        source
+    }
+
+    #[cfg(test)]
+    fn age_probe(&mut self, pid: u32, started_at: u64, by: Duration) {
+        if let Some(entry) = self.entries.get_mut(&(pid, started_at)) {
+            entry.probed_at = entry.probed_at.checked_sub(by).unwrap_or(entry.probed_at);
+        }
+    }
+}
+
+/// The Cutting Board task log of an earlier session that started the process behind this task.
+pub(super) fn recovered_external_task_log_path(
     logs_dir: &Path,
     profiles: &[LaunchProfile],
     profile: &LaunchProfile,
     task: &LaunchTask,
     workspace: Option<&crate::models::WorkspaceSnapshot>,
-) {
-    if external.log_path.is_some() {
-        return;
-    }
-    let Some(process_start) = external.started_at else {
-        return;
-    };
-    let Some(service) = workspace.and_then(|snapshot| {
+    process_start: u64,
+) -> Option<PathBuf> {
+    let service = workspace.and_then(|snapshot| {
         snapshot
             .services
             .iter()
             .find(|service| task_matches_service(profile, task, service))
-    }) else {
-        return;
-    };
-    let Some(path) = recovered_managed_log_path(logs_dir, profiles, service, process_start) else {
-        return;
-    };
-    let Ok(logs) = read_log_tail(&path) else {
-        return;
-    };
-    external.log_path = Some(path);
-    external.log_tail = logs;
+    })?;
+    recovered_managed_log_path(logs_dir, profiles, service, process_start)
 }
 
 pub(super) fn read_log_tail(path: &Path) -> io::Result<String> {
@@ -515,5 +586,59 @@ mod tests {
         let path = recovered_managed_log_path(&logs_dir, &[profile], &workspace.services[0], 1005);
 
         assert_eq!(path, Some(logs_dir.join("legacy-profile-frontend.log")));
+    }
+
+    #[test]
+    fn log_source_cache_reuses_a_found_file_and_forgets_a_deleted_one() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("app.log");
+        fs::write(&path, "output").unwrap();
+        let source = LogSource {
+            kind: LogSourceKind::Process,
+            path: path.clone(),
+        };
+        let mut cache = LogSourceCache::default();
+        let mut probes = 0;
+
+        for _ in 0..3 {
+            let found = cache.resolve(7, 100, || {
+                probes += 1;
+                Some(source.clone())
+            });
+            assert_eq!(found, Some(source.clone()));
+        }
+        assert_eq!(probes, 1);
+
+        fs::remove_file(&path).unwrap();
+        let found = cache.resolve(7, 100, || {
+            probes += 1;
+            None
+        });
+        assert_eq!(found, None);
+        assert_eq!(probes, 2);
+    }
+
+    #[test]
+    fn log_source_cache_waits_before_searching_again_after_a_miss() {
+        let mut cache = LogSourceCache::default();
+        let probes = std::cell::Cell::new(0);
+        let resolve = |cache: &mut LogSourceCache, pid, started_at| {
+            cache.resolve(pid, started_at, || {
+                probes.set(probes.get() + 1);
+                None
+            })
+        };
+
+        for _ in 0..3 {
+            assert_eq!(resolve(&mut cache, 7, 100), None);
+        }
+        assert_eq!(probes.get(), 1);
+        // A different start time is a different process, even with a recycled pid.
+        assert_eq!(resolve(&mut cache, 7, 200), None);
+        assert_eq!(probes.get(), 2);
+
+        cache.age_probe(7, 100, LOG_SOURCE_RETRY_AFTER);
+        assert_eq!(resolve(&mut cache, 7, 100), None);
+        assert_eq!(probes.get(), 3);
     }
 }

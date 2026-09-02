@@ -2,6 +2,7 @@ use crate::models::{
     LaunchProfile, LaunchTask, ManagedTaskSnapshot, ServiceSnapshot, WorkspaceSnapshot,
 };
 use std::{
+    cmp::Reverse,
     fs::{self, OpenOptions},
     io,
     path::{Path, PathBuf},
@@ -36,24 +37,16 @@ pub(super) fn external_task_info(
             .find(|service| task_matches_service(profile, task, service))
     })?;
     let process = service.process.as_ref()?;
-    let pid = Some(process.pid);
-    let started_at = Some(process.create_time);
-    let uid = process.uid;
-    let working_directory = process.working_directory.clone();
-    let (log_path, log_tail) = external_log_path(process.pid)
-        .and_then(|path| {
-            super::logs::read_log_tail(&path)
-                .ok()
-                .map(|tail| (Some(path), tail))
-        })
-        .unwrap_or_else(|| (None, String::new()));
+    // Finding the process's output is left to the caller: it means listing the process's open
+    // files, which is far too slow to repeat for every poll and for every caller that only asks
+    // whether the task is running.
     Some(ExternalTaskInfo {
-        pid,
-        started_at,
-        uid,
-        working_directory,
-        log_path,
-        log_tail,
+        pid: Some(process.pid),
+        started_at: Some(process.create_time),
+        uid: process.uid,
+        working_directory: process.working_directory.clone(),
+        log_path: None,
+        log_tail: String::new(),
     })
 }
 
@@ -306,12 +299,18 @@ pub(super) fn service_belongs_to_runtime(
     false
 }
 
+/// A file the process writes its output to: stdout or stderr redirected to a regular file, or
+/// failing that the log file it wrote to most recently. That second case is how a Spring Boot
+/// app with `logging.file.name`, or any app with a file appender, exposes output that otherwise
+/// only reaches the IDE or terminal that started it.
 #[cfg(unix)]
 pub(super) fn external_log_path(pid: u32) -> Option<PathBuf> {
     const TIMEOUT: Duration = Duration::from_secs(2);
     const POLL_INTERVAL: Duration = Duration::from_millis(20);
+    // `-b` skips the blocking stat of every mount point, which costs about a second on a machine
+    // with Docker volumes, and `-w` silences the warnings that skip would print.
     let mut child = Command::new("lsof")
-        .args(["-nP", "-a", "-p", &pid.to_string(), "-d", "1,2", "-Ffn"])
+        .args(["-b", "-w", "-nP", "-a", "-p", &pid.to_string(), "-Ffatn"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -338,7 +337,7 @@ pub(super) fn external_log_path(pid: u32) -> Option<PathBuf> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    first_readable_external_log_path(parse_lsof_output_paths(&text))
+    preferred_log_file(parse_lsof_open_files(&text))
 }
 
 #[cfg(not(unix))]
@@ -346,41 +345,123 @@ pub(super) fn external_log_path(_pid: u32) -> Option<PathBuf> {
     None
 }
 
+/// One numbered descriptor from `lsof -Ffatn`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OpenFile {
+    pub(super) fd: u32,
+    pub(super) writable: bool,
+    /// False once lsof reported a type other than a regular file; the path is checked again on
+    /// disk before it is used.
+    pub(super) regular: bool,
+    pub(super) path: PathBuf,
+}
+
 #[cfg(unix)]
-pub(super) fn parse_lsof_output_paths(text: &str) -> Vec<(u8, PathBuf)> {
-    let mut fd = None;
-    let mut paths = Vec::new();
+pub(super) fn parse_lsof_open_files(text: &str) -> Vec<OpenFile> {
+    let mut files = Vec::new();
+    let mut current: Option<OpenFile> = None;
     for line in text.lines() {
         let Some(field) = line.get(..1) else {
             continue;
         };
         let value = &line[1..];
         match field {
-            "f" => fd = parse_lsof_fd(value),
-            "n" if matches!(fd, Some(1 | 2)) => {
-                paths.push((fd.expect("checked above"), PathBuf::from(value)));
+            "f" => {
+                files.extend(current.take().filter(OpenFile::has_path));
+                // Named descriptors such as cwd, txt and mem are not output targets.
+                current = parse_lsof_fd(value).map(|fd| OpenFile {
+                    fd,
+                    writable: false,
+                    regular: true,
+                    path: PathBuf::new(),
+                });
+            }
+            "a" => {
+                if let Some(file) = current.as_mut() {
+                    file.writable = matches!(value.trim(), "w" | "u");
+                }
+            }
+            "t" => {
+                if let Some(file) = current.as_mut() {
+                    file.regular = value.trim() == "REG";
+                }
+            }
+            "n" => {
+                if let Some(file) = current.as_mut() {
+                    file.path = PathBuf::from(value);
+                }
             }
             _ => {}
         }
     }
-    paths
+    files.extend(current.filter(OpenFile::has_path));
+    files
+}
+
+impl OpenFile {
+    fn has_path(&self) -> bool {
+        !self.path.as_os_str().is_empty()
+    }
 }
 
 #[cfg(unix)]
-pub(super) fn parse_lsof_fd(value: &str) -> Option<u8> {
+pub(super) fn parse_lsof_fd(value: &str) -> Option<u32> {
     let digits = value
         .chars()
         .take_while(|character| character.is_ascii_digit())
         .collect::<String>();
-    matches!(digits.as_str(), "1" | "2").then(|| digits.parse().expect("known fd"))
+    digits.parse().ok()
 }
 
-pub(super) fn first_readable_external_log_path(mut paths: Vec<(u8, PathBuf)>) -> Option<PathBuf> {
-    paths.sort_by_key(|(fd, _)| *fd);
-    let mut seen = Vec::new();
-    for (_, path) in paths {
+fn is_standard_output(fd: u32) -> bool {
+    matches!(fd, 1 | 2)
+}
+
+/// Whether an open file is plausibly a log rather than data the process keeps: `app.log`,
+/// `app.log.1`, `nohup.out`, or a text file inside a `log` or `logs` directory such as a Tomcat
+/// access log.
+pub(super) fn looks_like_log_file(path: &Path) -> bool {
+    let Some(name) = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+    else {
+        return false;
+    };
+    if name.contains(".log") || name.ends_with(".out") {
+        return true;
+    }
+    let in_log_directory = path
+        .parent()
+        .and_then(Path::file_name)
+        .map(|directory| directory.to_string_lossy().to_ascii_lowercase())
+        .is_some_and(|directory| directory == "log" || directory == "logs");
+    in_log_directory && (name.ends_with(".txt") || name.contains("log"))
+}
+
+/// The output file to read: stdout before stderr, then the log file written most recently.
+pub(super) fn preferred_log_file(files: Vec<OpenFile>) -> Option<PathBuf> {
+    let mut candidates = files
+        .into_iter()
+        .filter(|file| {
+            file.regular
+                && (is_standard_output(file.fd)
+                    || (file.writable && looks_like_log_file(&file.path)))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_cached_key(|file| {
+        let modified = if is_standard_output(file.fd) {
+            None
+        } else {
+            fs::metadata(&file.path)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+        };
+        (!is_standard_output(file.fd), Reverse(modified), file.fd)
+    });
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for OpenFile { path, .. } in candidates {
         let comparison_path = path.canonicalize().unwrap_or_else(|_| path.clone());
-        if seen.iter().any(|candidate| candidate == &comparison_path) {
+        if seen.contains(&comparison_path) {
             continue;
         }
         seen.push(comparison_path);
@@ -410,38 +491,106 @@ pub(super) fn path_matches_task(candidate: &str, task_root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
+
+    fn open_file(fd: u32, writable: bool, path: &Path) -> OpenFile {
+        OpenFile {
+            fd,
+            writable,
+            regular: true,
+            path: path.to_path_buf(),
+        }
+    }
 
     #[cfg(unix)]
     #[test]
-    fn external_log_path_prefers_stdout_and_skips_non_regular_files() {
+    fn lsof_parser_reads_numbered_descriptors_with_access_and_type() {
+        let output = "p42\nfcwd\na \ntDIR\nn/srv/app\nf1\naw\ntREG\nn/srv/app/stdout.log\nf7\nau\ntREG\nn/srv/app/logs/app.log\nf8\nar\ntCHR\nn/dev/null\n";
+
+        assert_eq!(
+            parse_lsof_open_files(output),
+            vec![
+                open_file(1, true, Path::new("/srv/app/stdout.log")),
+                open_file(7, true, Path::new("/srv/app/logs/app.log")),
+                OpenFile {
+                    fd: 8,
+                    writable: false,
+                    regular: false,
+                    path: "/dev/null".into(),
+                },
+            ]
+        );
+        assert_eq!(parse_lsof_fd("10w"), Some(10));
+        assert_eq!(parse_lsof_fd("cwd"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preferred_log_file_prefers_stdout_and_skips_non_regular_files() {
         let temporary = tempfile::tempdir().unwrap();
         let stdout = temporary.path().join("stdout.log");
         let stderr = temporary.path().join("stderr.log");
         fs::write(&stdout, "stdout").unwrap();
         fs::write(&stderr, "stderr").unwrap();
         let output = format!(
-            "f2w\nn{}\nf1w\nn{}\nf2w\nn{}\n",
+            "f2\naw\ntDIR\nn{}\nf1\naw\ntREG\nn{}\nf2\naw\ntREG\nn{}\n",
             temporary.path().display(),
             stdout.display(),
             stderr.display()
         );
 
-        let paths = parse_lsof_output_paths(&output);
-        assert_eq!(first_readable_external_log_path(paths), Some(stdout));
         assert_eq!(
-            first_readable_external_log_path(vec![
-                (1, temporary.path().to_path_buf()),
-                (2, stderr.clone()),
+            preferred_log_file(parse_lsof_open_files(&output)),
+            Some(stdout)
+        );
+        assert_eq!(
+            preferred_log_file(vec![
+                open_file(1, true, temporary.path()),
+                open_file(2, true, &stderr),
             ]),
             Some(stderr)
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn lsof_fd_parser_does_not_treat_fd_ten_as_stdout() {
-        assert_eq!(parse_lsof_fd("10w"), None);
-        assert_eq!(parse_lsof_fd("1w"), Some(1));
-        assert_eq!(parse_lsof_fd("2r"), Some(2));
+    fn preferred_log_file_falls_back_to_the_newest_writable_log_file() {
+        let temporary = tempfile::tempdir().unwrap();
+        let older = temporary.path().join("app.log");
+        let newer = temporary.path().join("spring.log");
+        let read_only = temporary.path().join("other.log");
+        let data = temporary.path().join("cache.db");
+        for path in [&older, &newer, &read_only, &data] {
+            fs::write(path, "contents").unwrap();
+        }
+        let hour_ago = SystemTime::now() - Duration::from_secs(60 * 60);
+        OpenOptions::new()
+            .write(true)
+            .open(&older)
+            .unwrap()
+            .set_modified(hour_ago)
+            .unwrap();
+        let files = vec![
+            open_file(3, true, &data),
+            open_file(4, true, &older),
+            open_file(5, false, &read_only),
+            open_file(12, true, &newer),
+        ];
+
+        assert_eq!(preferred_log_file(files), Some(newer));
+        assert_eq!(preferred_log_file(vec![open_file(3, true, &data)]), None);
+    }
+
+    #[test]
+    fn log_file_names_are_recognised() {
+        assert!(looks_like_log_file(Path::new("/srv/app/logs/app.log")));
+        assert!(looks_like_log_file(Path::new(
+            "/srv/app/app.log.2026-09-02"
+        )));
+        assert!(looks_like_log_file(Path::new("/srv/app/nohup.out")));
+        assert!(looks_like_log_file(Path::new(
+            "/srv/tomcat/logs/localhost_access_log.2026-09-02.txt"
+        )));
+        assert!(!looks_like_log_file(Path::new("/srv/app/catalog.db")));
+        assert!(!looks_like_log_file(Path::new("/srv/app/data/output.txt")));
     }
 }

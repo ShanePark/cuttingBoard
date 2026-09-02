@@ -47,7 +47,8 @@ pub struct ManagedTaskSnapshot {
     /// Working directory reported for a detected external process.
     #[serde(default)]
     pub external_working_directory: Option<String>,
-    /// Readable regular file connected to the external process's stdout/stderr.
+    /// Readable file that carries the external process's output: its redirected stdout/stderr,
+    /// a log file it writes to, or the task log of an earlier Cutting Board session.
     #[serde(default)]
     pub external_log_path: Option<String>,
 }

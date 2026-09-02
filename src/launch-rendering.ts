@@ -229,7 +229,7 @@ export function renderConsoleOutput(snapshot: ManagedTaskSnapshot | undefined, s
     if (log.length > 0) return `<pre class="console-log">${h(log)}</pre>`;
     const message = snapshot?.external_log_path
       ? "No output is available from the configured external log source yet."
-      : "External process output is not captured.";
+      : "This process was started outside Cutting Board, so its output goes to whatever started it, such as an IDE or a terminal. Output appears here once the process writes to a log file (for a Spring Boot app, set logging.file.name) or when the task is started from this profile.";
     return `<div class="console-message is-external"><span class="console-message-icon">${uiIcon("terminal", 18)}</span><strong>${snapshot?.external_log_path ? "Waiting for external output" : "Output unavailable"}</strong><span>${message}</span></div>`;
   }
   const message = snapshot?.message?.trim() ?? "";
