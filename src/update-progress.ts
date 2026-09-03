@@ -28,6 +28,7 @@ export interface UpdateProgressEvent {
   step: number;
   total: number;
   message: string;
+  detail?: string;
 }
 
 export interface NormalizedUpdateProgress {
@@ -35,6 +36,7 @@ export interface NormalizedUpdateProgress {
   step: number;
   total: number;
   message: string;
+  detail?: string;
 }
 
 export interface UpdateProgressView {
@@ -65,7 +67,10 @@ export function normaliseUpdateProgress(payload: unknown): NormalizedUpdateProgr
   const message = typeof value.message === "string" && value.message.trim()
     ? value.message.trim()
     : UPDATE_PROGRESS_STAGES[updateProgressStageIndex(stage)]!.detail;
-  return { stage, step, total, message };
+  const detail = typeof value.detail === "string" && value.detail.trim()
+    ? value.detail.trim()
+    : undefined;
+  return detail ? { stage, step, total, message, detail } : { stage, step, total, message };
 }
 
 export function formatUpdateElapsed(seconds: number): string {
@@ -84,7 +89,7 @@ export function renderUpdateProgressOverlay(): string {
     return `<li class="update-progress-stage" data-update-stage="${stage.id}" data-state="${current ? "current" : "pending"}"${current ? " aria-current=\"step\"" : ""} aria-label="${escapeProgressText(`${stage.label}: ${current ? "in progress" : "pending"}`)}"><span class="update-progress-stage-mark" aria-hidden="true">${current ? "" : index + 1}</span><span class="update-progress-stage-copy"><strong>${escapeProgressText(stage.label)}</strong><small>${escapeProgressText(stage.detail)}</small></span></li>`;
   }).join("");
 
-  return `<div class="update-progress-backdrop" data-update-progress-overlay role="presentation"><section class="update-progress-dialog" role="dialog" aria-modal="true" aria-busy="true" aria-labelledby="update-progress-title" aria-describedby="update-progress-message" tabindex="-1"><div class="update-progress-intro"><div class="update-progress-spinner" aria-hidden="true"><span></span></div><div class="update-progress-heading"><p class="update-progress-kicker">APPLICATION UPDATE</p><h2 id="update-progress-title">Updating Cutting Board</h2><p id="update-progress-message" role="status" aria-live="polite" aria-atomic="true">Checking the latest local commit…</p></div></div><div class="update-progress-summary"><span class="update-progress-step-label" data-update-step>Step 1 of ${DEFAULT_TOTAL}</span><span class="update-progress-elapsed"><span>Elapsed</span><time data-update-elapsed datetime="PT0S">0s</time></span></div><div class="update-progress-track" role="progressbar" aria-label="Update progress" aria-valuemin="1" aria-valuemax="${DEFAULT_TOTAL}" aria-valuenow="1" aria-valuetext="Step 1 of ${DEFAULT_TOTAL} — Validate source"><span class="update-progress-fill" data-update-progress-fill></span><span class="update-progress-shimmer" aria-hidden="true"></span></div><ol class="update-progress-stages" aria-label="Update steps">${stages}</ol><p class="update-progress-footnote"><span class="update-progress-footnote-dot" aria-hidden="true"></span>Keep this window open while the release build completes.</p></section></div>`;
+  return `<div class="update-progress-backdrop" data-update-progress-overlay role="presentation"><section class="update-progress-dialog" role="dialog" aria-modal="true" aria-busy="true" aria-labelledby="update-progress-title" aria-describedby="update-progress-message" tabindex="-1"><div class="update-progress-intro"><div class="update-progress-spinner" aria-hidden="true"><span></span></div><div class="update-progress-heading"><p class="update-progress-kicker">APPLICATION UPDATE</p><h2 id="update-progress-title">Updating Cutting Board</h2><p id="update-progress-message" role="status" aria-live="polite" aria-atomic="true">Checking the latest local commit…</p></div></div><div class="update-progress-summary"><span class="update-progress-step-label" data-update-step>Step 1 of ${DEFAULT_TOTAL}</span><span class="update-progress-elapsed"><span>Elapsed</span><time data-update-elapsed datetime="PT0S">0s</time></span></div><div class="update-progress-track" role="progressbar" aria-label="Update progress" aria-valuemin="1" aria-valuemax="${DEFAULT_TOTAL}" aria-valuenow="1" aria-valuetext="Step 1 of ${DEFAULT_TOTAL} — Validate source"><span class="update-progress-fill" data-update-progress-fill></span><span class="update-progress-shimmer" aria-hidden="true"></span></div><p class="update-progress-build-log" data-update-build-log aria-hidden="true"></p><ol class="update-progress-stages" aria-label="Update steps">${stages}</ol><p class="update-progress-footnote"><span class="update-progress-footnote-dot" aria-hidden="true"></span>Keep this window open while the release build completes.</p></section></div>`;
 }
 
 export function createUpdateProgressView(): UpdateProgressView {
@@ -144,7 +149,15 @@ export function createUpdateProgressView(): UpdateProgressView {
     const currentIndex = updateProgressStageIndex(progress.stage);
     const stage = UPDATE_PROGRESS_STAGES[currentIndex]!;
     const message = dialog.querySelector<HTMLElement>("#update-progress-message");
-    if (message) message.textContent = progress.message;
+    if (message && message.textContent !== progress.message) message.textContent = progress.message;
+    const buildLog = dialog.querySelector<HTMLElement>("[data-update-build-log]");
+    if (buildLog) {
+      if (progress.stage === "building" && progress.detail !== undefined) {
+        buildLog.textContent = progress.detail;
+      } else if (progress.stage !== "building") {
+        buildLog.textContent = "";
+      }
+    }
     const stepLabel = dialog.querySelector<HTMLElement>("[data-update-step]");
     if (stepLabel) stepLabel.textContent = `Step ${progress.step} of ${progress.total}`;
     const track = dialog.querySelector<HTMLElement>(".update-progress-track");

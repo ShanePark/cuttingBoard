@@ -51,6 +51,7 @@ test("the update progress surface is an accessible blocking dialog with all four
   assert.match(overlay, /class="update-progress-backdrop"[^>]*role="presentation"/);
   assert.match(overlay, /class="update-progress-dialog"[^>]*role="dialog"[^>]*aria-modal="true"/);
   assert.match(overlay, /id="update-progress-message" role="status" aria-live="polite"/);
+  assert.match(overlay, /data-update-build-log aria-hidden="true"/);
   assert.match(overlay, /data-update-stage="validating"/);
   assert.match(overlay, /data-update-stage="building"/);
   assert.match(overlay, /data-update-stage="preparing"/);
@@ -64,6 +65,13 @@ test("progress payloads are normalized to a safe stage, step, and message", () =
     step: 3,
     total: 4,
     message: "Staging…"
+  });
+  assert.deepEqual(normaliseUpdateProgress({ stage: "building", step: 2, total: 4, message: "Building", detail: " Compiling cutting-board " }), {
+    stage: "building",
+    step: 2,
+    total: 4,
+    message: "Building",
+    detail: "Compiling cutting-board"
   });
   assert.deepEqual(normaliseUpdateProgress({ stage: "unknown", step: 99, total: 0, message: "" }), {
     stage: "validating",
@@ -82,6 +90,10 @@ test("main subscribes to progress events and blocks input while the update surfa
   assert.match(mainSource, /if \(updateProgressView\.isActive\(\)\) \{[\s\S]*event\.preventDefault\(\);[\s\S]*event\.stopPropagation\(\);/);
   assert.match(mainSource, /showUpdateStarted: \(\) => updateProgressView\.start\(\)/);
   assert.match(mainSource, /updateProgressView\.fail\(\);[\s\S]*toast\(`Update failed:/);
+  assert.match(progressSource, /progress\.stage === "building" && progress\.detail !== undefined/);
+  assert.match(progressSource, /buildLog\.textContent = progress\.detail/);
+  assert.match(progressSource, /progress\.stage !== "building"/);
+  assert.match(progressSource, /message\.textContent !== progress\.message/);
 });
 
 test("bootstrap waits for progress listener setup without making listener errors fatal", () => {

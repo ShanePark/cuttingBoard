@@ -7,8 +7,11 @@ use std::{
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod build_output;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use tauri::Emitter;
@@ -36,7 +39,9 @@ const UPDATE_BUILD_SCRIPT: &str =
     "cd -- \"$1\" && export CARGO_TARGET_DIR=\"$2\" && exec npm run tauri build -- --no-bundle";
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-const UPDATE_RESTART_GRACE: Duration = Duration::from_millis(180);
+const UPDATE_PREPARING_MIN_DURATION: Duration = Duration::from_millis(800);
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const UPDATE_RESTARTING_MIN_DURATION: Duration = Duration::from_millis(1_000);
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const HELPER_WAIT_ATTEMPTS: usize = 120;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -57,6 +62,8 @@ pub(crate) struct UpdateProgress {
     pub step: u8,
     pub total: u8,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 impl UpdateProgress {
@@ -82,7 +89,19 @@ impl UpdateProgress {
             step,
             total: UPDATE_PROGRESS_TOTAL,
             message: message.into(),
+            detail: None,
         }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn with_detail(mut self, detail: String) -> Self {
+        self.detail = Some(detail);
+        self
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn building_with_detail(detail: String) -> Self {
+        Self::building().with_detail(detail)
     }
 }
 
@@ -231,18 +250,35 @@ pub(crate) async fn update_and_restart(app: tauri::AppHandle) -> Result<(), Stri
         .await
         .map_err(|error| format!("Update task failed: {error}"))??;
 
+    let preparing_started_at = Instant::now();
     emit_update_progress(&app, UpdateProgress::preparing());
     spawn_update_helper(&plan)?;
+    sleep_remaining(preparing_started_at, UPDATE_PREPARING_MIN_DURATION).await;
 
     // The helper waits for this process to exit before replacing the installed
-    // bundle. ExitRequested still runs through the existing shutdown path,
-    // which stops managed tasks and persists window state.
+    // bundle. ExitRequested still persists window state; managed launch tasks
+    // intentionally survive the app restart and are recovered afterward.
+    let restarting_started_at = Instant::now();
     emit_update_progress(&app, UpdateProgress::restarting());
     // Give the webview a bounded moment to paint the final stage before this
     // process exits and the detached helper takes over.
-    let _ = tauri::async_runtime::spawn_blocking(|| thread::sleep(UPDATE_RESTART_GRACE)).await;
+    sleep_remaining(restarting_started_at, UPDATE_RESTARTING_MIN_DURATION).await;
     app.exit(0);
     Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn remaining_stage_delay(elapsed: Duration, minimum: Duration) -> Duration {
+    minimum.saturating_sub(elapsed)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn sleep_remaining(started_at: Instant, minimum: Duration) {
+    let remaining = remaining_stage_delay(started_at.elapsed(), minimum);
+    if remaining.is_zero() {
+        return;
+    }
+    let _ = tauri::async_runtime::spawn_blocking(move || thread::sleep(remaining)).await;
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -273,7 +309,7 @@ fn prepare_update(app: &tauri::AppHandle) -> Result<UpdatePlan, String> {
     }
 
     emit_update_progress(app, UpdateProgress::building());
-    run_release_build(source_root)?;
+    run_release_build(app, source_root)?;
 
     // A commit or worktree edit during the build means the produced app is no
     // longer a reproducible build of the commit checked above. Leave the
@@ -300,13 +336,13 @@ fn prepare_update(app: &tauri::AppHandle) -> Result<UpdatePlan, String> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn run_release_build(source_root: &Path) -> Result<(), String> {
+fn run_release_build(app: &tauri::AppHandle, source_root: &Path) -> Result<(), String> {
     // A login shell supplies the user's Node/npm installation when the app was
     // launched from Finder, where the GUI environment usually has a minimal
     // PATH. The checkout path is passed as $1 instead of interpolated into the
     // shell script, so spaces and shell metacharacters remain harmless.
     let target_directory = release_target_directory(source_root);
-    let output = Command::new(UPDATE_SHELL)
+    let child = Command::new(UPDATE_SHELL)
         .arg("-l")
         .arg("-c")
         .arg(UPDATE_BUILD_SCRIPT)
@@ -315,25 +351,36 @@ fn run_release_build(source_root: &Path) -> Result<(), String> {
         .arg(&target_directory)
         .env("CARGO_TARGET_DIR", &target_directory)
         .current_dir(source_root)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| {
             format!("Could not start the release build ({UPDATE_BUILD_COMMAND}): {error}")
         })?;
-    if output.status.success() {
-        return Ok(());
-    }
 
-    let diagnostics = command_diagnostics(&output.stdout, &output.stderr);
-    if diagnostics.is_empty() {
-        Err(format!(
-            "Release build failed ({UPDATE_BUILD_COMMAND}, status {}).",
-            output.status
-        ))
-    } else {
-        Err(format!(
-            "Release build failed ({UPDATE_BUILD_COMMAND}): {diagnostics}"
-        ))
+    let result = build_output::collect(app, child)?;
+    if !result.status.success() {
+        let diagnostics = result.diagnostics;
+        let mut message = if diagnostics.is_empty() {
+            format!(
+                "Release build failed ({UPDATE_BUILD_COMMAND}, status {}).",
+                result.status
+            )
+        } else {
+            format!("Release build failed ({UPDATE_BUILD_COMMAND}): {diagnostics}")
+        };
+        if let Some(error) = result.reader_error {
+            message.push_str(&format!(" Output capture failed: {error}"));
+        }
+        return Err(message);
     }
+    if let Some(error) = result.reader_error {
+        return Err(format!(
+            "Release build output could not be captured: {error}"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -959,28 +1006,6 @@ fn ensure_worktree_clean(source_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn command_diagnostics(stdout: &[u8], stderr: &[u8]) -> String {
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(stdout),
-        String::from_utf8_lossy(stderr)
-    );
-    let mut lines = combined.lines().rev().take(24).collect::<Vec<_>>();
-    lines.reverse();
-    let diagnostics = lines.join(" ").trim().to_string();
-    const MAX_DIAGNOSTICS: usize = 2_000;
-    if diagnostics.len() > MAX_DIAGNOSTICS {
-        let start = diagnostics
-            .char_indices()
-            .rev()
-            .find_map(|(index, _)| (index <= diagnostics.len() - MAX_DIAGNOSTICS).then_some(index))
-            .unwrap_or(0);
-        diagnostics[start..].to_string()
-    } else {
-        diagnostics
-    }
-}
-
 pub(crate) fn worktree_status_is_clean(status: &str) -> bool {
     status.lines().all(|line| line.trim().is_empty())
 }
@@ -1268,6 +1293,24 @@ mod tests {
             .iter()
             .all(|item| item.total == UPDATE_PROGRESS_TOTAL));
         assert!(progress.iter().all(|item| !item.message.is_empty()));
+        assert!(progress.iter().all(|item| item.detail.is_none()));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn remaining_stage_delay_only_covers_unelapsed_time() {
+        assert_eq!(
+            remaining_stage_delay(Duration::from_millis(200), Duration::from_millis(800)),
+            Duration::from_millis(600)
+        );
+        assert_eq!(
+            remaining_stage_delay(Duration::from_millis(800), Duration::from_millis(800)),
+            Duration::ZERO
+        );
+        assert_eq!(
+            remaining_stage_delay(Duration::from_millis(900), Duration::from_millis(800)),
+            Duration::ZERO
+        );
     }
 
     #[cfg(target_os = "macos")]
