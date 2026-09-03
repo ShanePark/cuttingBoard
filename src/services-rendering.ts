@@ -185,11 +185,10 @@ export function renderServiceTile(service: ServiceSnapshot, ordinal: number | un
   const tileActionLabel = scope.select
     ? `${selected ? "Selected service logs for" : "View logs for"} ${service.display_name}`
     : `View ${service.display_name} details`;
-  const tileActionTitle = scope.select
-    ? selected ? "Selected service logs" : "View service logs"
-    : "View details";
+  const serviceCardTitle = serviceTitle(service) || service.display_name;
+  const overlayTitle = serviceCardTitle;
   const overlayMarkup = scope.select || !scope.info
-    ? `<button class="tile-details-button${scope.select ? " service-select-button" : ""}" type="button" data-tile-action data-action="${tileAction}" data-service-id="${h(service.id)}"${scope.select ? ` aria-pressed="${selected ? "true" : "false"}"` : ""} aria-label="${h(tileActionLabel)}" title="${h(tileActionTitle)}"></button>`
+    ? `<button class="tile-details-button${scope.select ? " service-select-button" : ""}" type="button" data-tile-action data-action="${tileAction}" data-service-id="${h(service.id)}"${scope.select ? ` aria-pressed="${selected ? "true" : "false"}"` : ""} aria-label="${h(tileActionLabel)}" title="${h(overlayTitle)}"></button>`
     : "";
   const controlsMarkup = `${scope.info ? `<button type="button" class="info-button icon-only-button service-details-button service-card-control" data-tile-action data-action="service-details" data-service-id="${h(service.id)}" aria-label="View ${h(service.display_name)} details" title="View service details">${uiIcon("info", 15)}</button>` : ""}${scope.stop && canRestartService(service) ? `<button type="button" class="restart-action icon-only-button service-card-control" data-tile-action data-action="restart-service" data-service-id="${h(service.id)}" aria-label="${restarting ? "Restarting" : "Restart"} ${h(service.display_name)}" title="${restarting ? "Restarting process" : "Restart process"}" ${busy ? "disabled" : ""}>${restartIcon(15)}</button>` : ""}${scope.stop && service.can_terminate ? `<button type="button" class="stop-button service-card-control" data-tile-action data-action="stop-service" data-service-id="${h(service.id)}" aria-label="${stopping ? "Stopping" : "Stop"} ${h(service.display_name)}" title="${stopping ? "Stopping process" : "Stop process"}" ${busy ? "disabled" : ""}>${uiIcon("stop", 15)}</button>` : ""}`;
   const metricsMarkup = `<span class="metric metric-uptime${uptime !== null && uptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(uptimeText(service, stopping, restarting))}</span></span><span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(service.process?.memory_bytes ?? null))}</span></span>`;
@@ -204,7 +203,7 @@ export function renderServiceTile(service: ServiceSnapshot, ordinal: number | un
     ordinalTotal,
     iconMarkup: techIcon(service.tech, 44),
     pipClass: pip,
-    title: serviceTitle(service),
+    title: serviceCardTitle,
     overlayMarkup,
     controlsMarkup,
     metricsMarkup,
