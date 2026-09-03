@@ -158,12 +158,16 @@ export function renderTaskEditor(task: LaunchTask, readOnly = false): string {
   const inputState = readOnly ? "readonly" : "";
   const buttonState = readOnly ? "disabled" : "";
   const container = task.container?.trim() ?? "";
+  // Keep project-aware preparation metadata out of editable fields, but carry it through an
+  // edit/save round trip so opening a Spring profile does not silently downgrade it to a raw
+  // command task.
+  const prepareAttribute = task.prepare ? ` data-task-prepare="${h(JSON.stringify(task.prepare))}"` : "";
   // A container task is answered by Docker, so it carries the container it starts instead of a
   // command. The field stays read-only: the binding comes from the Docker listing, not by hand.
   const commandField = container
     ? `<label>Container<input data-task-field="container" value="${h(container)}" readonly></label>`
     : `<label>Command<input data-task-field="command" required value="${h(task.command)}" ${inputState}></label>`;
-  return `<fieldset class="task-editor"><button class="remove-task" type="button" data-action="remove-task-row" aria-label="Remove task" title="Remove task" ${buttonState}>${uiIcon("trash", 15)}</button><label>Name<input data-task-field="name" required value="${h(task.name)}" ${inputState}></label><label>Working directory<input data-task-field="cwd" required value="${h(task.cwd)}" ${inputState}></label>${commandField}<label>Expected port (optional)<input data-task-field="expected_port" type="number" min="1" max="65535" value="${task.expected_port ?? ""}" ${inputState}></label></fieldset>`;
+  return `<fieldset class="task-editor"${prepareAttribute}><button class="remove-task" type="button" data-action="remove-task-row" aria-label="Remove task" title="Remove task" ${buttonState}>${uiIcon("trash", 15)}</button><label>Name<input data-task-field="name" required value="${h(task.name)}" ${inputState}></label><label>Working directory<input data-task-field="cwd" required value="${h(task.cwd)}" ${inputState}></label>${commandField}<label>Expected port (optional)<input data-task-field="expected_port" type="number" min="1" max="65535" value="${task.expected_port ?? ""}" ${inputState}></label></fieldset>`;
 }
 
 export function readProfileForm(id: string | null): LaunchProfile | null {
@@ -174,7 +178,15 @@ export function readProfileForm(id: string | null): LaunchProfile | null {
     const value = (name: string): string => row.querySelector<HTMLInputElement>(`[data-task-field='${name}']`)?.value.trim() ?? "";
     const portValue = value("expected_port");
     const container = value("container");
-    return { name: value("name"), cwd: value("cwd"), command: value("command"), expected_port: portValue ? Number(portValue) : null, container: container || null } satisfies LaunchTask;
+    const prepare = readTaskPrepare(row.dataset.taskPrepare);
+    return {
+      name: value("name"),
+      cwd: value("cwd"),
+      command: value("command"),
+      expected_port: portValue ? Number(portValue) : null,
+      container: container || null,
+      ...(prepare ? { prepare } : {})
+    } satisfies LaunchTask;
   });
   const profile: LaunchProfile = {
     id: id ?? crypto.randomUUID().replaceAll("-", ""),
@@ -184,6 +196,16 @@ export function readProfileForm(id: string | null): LaunchProfile | null {
   };
   if (!profile.name || !profile.project_root || !tasks.length || tasks.some((task) => !task.name || !task.cwd || (!task.command && !task.container))) throw new Error("Complete every profile and task field.");
   return profile;
+}
+
+function readTaskPrepare(value: string | undefined): LaunchTask["prepare"] {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as LaunchTask["prepare"];
+    return parsed?.kind === "spring_boot" && Array.isArray(parsed.profiles) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function themeChoice(value: ThemeMode, label: string, description: string, selectedTheme: ThemeMode = "dark"): string {

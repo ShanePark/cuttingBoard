@@ -91,6 +91,7 @@ pub fn demo_profiles() -> Vec<LaunchProfile> {
                 command: "./gradlew bootRun".into(),
                 expected_port: Some(8080),
                 container: None,
+                prepare: None,
             },
             LaunchTask {
                 name: "Frontend".into(),
@@ -98,6 +99,7 @@ pub fn demo_profiles() -> Vec<LaunchProfile> {
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
                 container: None,
+                prepare: None,
             },
         ],
     }]

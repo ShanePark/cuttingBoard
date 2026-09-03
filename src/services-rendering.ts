@@ -14,6 +14,19 @@ import {
 } from "./presentation";
 import { renderContainerTile, renderDockerConsole, type ContainerTab, type DockerConsoleRenderingContext, type DockerTileRenderingContext } from "./docker-rendering";
 import { renderGroupCount, renderOpenServiceButton, renderSharedServiceCard } from "./tile-rendering";
+import {
+  isSpringService,
+  springPrepareForService
+} from "./spring-prepare";
+import { progressStatusText, type ServiceRestartProgress } from "./restart-progress";
+export {
+  isSpringService,
+  relativeModulePath,
+  springBuildTool,
+  springMainClass,
+  springPrepareForService,
+  springProfilesForService
+} from "./spring-prepare";
 import type {
   ContainerInfo,
   LaunchProfile,
@@ -51,11 +64,13 @@ export type ServiceTileRenderingContext = {
   operations: ReadonlySet<string>;
   selectedServiceId: string | null;
   consoleTargetKind: "service" | "container" | null;
+  restartingServiceId: string | null;
 };
 
 export type ServicesConsoleRenderingContext = {
   open: boolean;
   serviceLogState: ServiceLogState;
+  restartProgress: ServiceRestartProgress | null;
   serviceLogElapsedSeconds: (state: ServiceLogState) => number;
   docker: DockerConsoleRenderingContext;
   renderConsoleResizer: () => string;
@@ -88,7 +103,8 @@ export function servicesRenderSignature(context: ServicesRenderingContext): stri
       service.process?.launch_command, service.process?.create_time,
       service.active_profiles,
       context.tile.operations.has(`stop:${service.id}`),
-      context.tile.operations.has(`restart:${service.id}`)
+      context.tile.operations.has(`restart:${service.id}`),
+      context.tile.restartingServiceId === service.id
     ]),
     groups.map((group) => [
       group.id,
@@ -152,13 +168,16 @@ export function generatedTasksForGroup(group: ServiceBoardGroup): LaunchTask[] {
     let suffix = 2;
     while (usedNames.has(name.toLowerCase())) name = `${baseName} ${suffix++}`;
     usedNames.add(name.toLowerCase());
-    return {
+    const command = service.process?.launch_command ?? service.process?.command ?? "";
+    const task: LaunchTask = {
       name,
       cwd: service.process?.working_directory ?? "",
-      command: service.process?.launch_command ?? service.process?.command ?? "",
+      command,
       expected_port: uniquePorts(service)[0] ?? null,
       container: null
     };
+    if (isSpringService(service)) task.prepare = springPrepareForService(service, group.path, command);
+    return task;
   });
   // The group's containers travel with it, so one profile starts and stops the whole group.
   return [...services, ...containerLaunchTasks(group.containers, services.map((task) => task.name))];
@@ -176,7 +195,7 @@ export function canRestartService(service: ServiceSnapshot): boolean {
 export function renderServiceTile(service: ServiceSnapshot, ordinal: number | undefined, ordinalTotal: number | undefined, actionScope: ServiceTileActionScope | undefined, context: ServiceTileRenderingContext): string {
   const scope = actionScope ?? { select: service.relevance === "dev", info: true, stop: service.can_terminate, open: Boolean(service.browser_url) };
   const stopping = context.operations.has(`stop:${service.id}`);
-  const restarting = context.operations.has(`restart:${service.id}`);
+  const restarting = context.operations.has(`restart:${service.id}`) || context.restartingServiceId === service.id;
   const busy = stopping || restarting;
   const uptime = currentUptime(service);
   const pip = busy ? "busy" : uptime === null ? "idle" : service.status === "limited" ? "limited" : "running";
@@ -221,6 +240,10 @@ export function uptimeText(service: ServiceSnapshot, stopping: boolean, restarti
 }
 
 export function serviceConsoleOutputKind(service: ServiceSnapshot | null, context: ServicesConsoleRenderingContext): string {
+  const restartProgress = context.restartProgress && (!service || context.restartProgress.serviceId === service.id)
+    ? context.restartProgress
+    : null;
+  if (restartProgress) return restartProgress.logTail.trim() ? "log" : "loading";
   if (!service) return "empty";
   const state = context.serviceLogState.serviceId === service.id ? context.serviceLogState : null;
   if (state?.loading && !state.logs.trim()) return "loading";
@@ -238,13 +261,20 @@ export function renderServiceConsole(context: ServicesRenderingContext): string 
   const service = context.selection.consoleTarget?.kind === "service"
     ? context.services.find((item) => item.id === context.selection.consoleTarget?.id) ?? null
     : null;
-  const stateClass = service ? serviceStateClass(service) : "stopped";
-  const title = service ? serviceTitle(service) || service.display_name : "Service console";
+  const restartProgress = context.console.restartProgress && (!service || context.console.restartProgress.serviceId === service.id)
+    ? context.console.restartProgress
+    : null;
+  const stateClass = service ? serviceStateClass(service) : restartProgress ? "starting" : "stopped";
+  const title = service ? serviceTitle(service) || service.display_name : restartProgress?.taskName ?? "Service console";
   const outputLabel = service ? `Logs for ${h(title)}` : "Service logs";
-  return `<section class="launch-console service-console${service ? ` state-${stateClass}` : " launch-console-empty"}" aria-labelledby="service-console-title" data-console-service-id="${h(service?.id ?? "")}">
+  const consoleState = restartProgress
+    ? `<span class="console-state state-starting" role="status"><span class="task-state-dot" aria-hidden="true"></span>Restarting</span>`
+    : "";
+  return `<section class="launch-console service-console${service || restartProgress ? ` state-${stateClass}` : " launch-console-empty"}" aria-labelledby="service-console-title" data-console-service-id="${h(service?.id ?? restartProgress?.serviceId ?? "")}">
     ${context.console.renderConsoleResizer()}
     <header class="console-header">
       <div class="console-title"><span class="console-icon state-${stateClass}" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="service-console-title">${h(title)}</h2></div></div>
+      ${consoleState ? `<div class="console-meta" aria-label="Service status">${consoleState}</div>` : ""}
     </header>
     <div class="console-output-shell"><div class="console-output" data-console-output-kind="${serviceConsoleOutputKind(service, context.console)}" tabindex="0" role="log" aria-live="polite" aria-label="${outputLabel}">${renderServiceLogOutput(service, context.console)}</div>${context.console.renderConsoleJumpButton()}</div>
   </section>`;
@@ -256,6 +286,16 @@ export function serviceStateClass(service: ServiceSnapshot): "running" | "starti
 }
 
 export function renderServiceLogOutput(service: ServiceSnapshot | null, context: ServicesConsoleRenderingContext): string {
+  const restartProgress = context.restartProgress && (!service || context.restartProgress.serviceId === service.id)
+    ? context.restartProgress
+    : null;
+  if (restartProgress) {
+    const status = progressStatusText({ message: restartProgress.message, detail: restartProgress.detail ?? undefined });
+    const statusClass = restartProgress.phase === "failed" ? " console-progress-failed" : "";
+    const statusMarkup = `<div class="console-alert console-progress${statusClass}" role="status" aria-live="polite"><span class="console-progress-icon${restartProgress.phase === "failed" ? " is-failed" : ""}" aria-hidden="true">${uiIcon(restartProgress.phase === "failed" ? "warning" : "refresh", 14, restartProgress.phase === "failed" ? "" : "service-log-spinner")}</span><span>${h(status)}</span></div>`;
+    if (restartProgress.logTail.trim()) return `${statusMarkup}<pre class="console-log">${h(restartProgress.logTail)}</pre>`;
+    return `<div class="console-message" role="status" aria-live="polite"><span class="console-message-icon">${uiIcon(restartProgress.phase === "failed" ? "warning" : "refresh", 18, restartProgress.phase === "failed" ? "" : "service-log-spinner")}</span><strong>${h(restartProgress.phase === "failed" ? "Restart preparation failed" : restartProgress.phase === "completed" ? "Restart completed" : "Restarting service")}</strong><span>${h(status)}</span></div>`;
+  }
   if (!service) {
     return `<div class="console-message"><span class="console-message-icon">${uiIcon("terminal", 18)}</span><strong>No service selected</strong><span>Select a service card to view its recent logs.</span></div>`;
   }

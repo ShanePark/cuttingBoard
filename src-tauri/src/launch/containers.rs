@@ -131,7 +131,10 @@ fn snapshot(
     container: &str,
     listing: &ContainerListing,
 ) -> ManagedTaskSnapshot {
-    let info = listing.containers.iter().find(|info| info.name == container);
+    let info = listing
+        .containers
+        .iter()
+        .find(|info| info.name == container);
     let (state, message) = match info {
         Some(info) => (state_of(info), Some(info.status.clone())),
         None => ("stopped", Some(missing_message(container, listing))),
@@ -180,6 +183,7 @@ mod tests {
             command: "npm run dev".into(),
             expected_port: None,
             container: container.map(str::to_owned),
+            prepare: None,
         }
     }
 

@@ -44,3 +44,7 @@ body.is-console-resizing .console-log { user-select: none; }
 .console-message.is-failed .console-message-icon { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
 .console-alert { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 12px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); font: 10px/1.45 -apple-system, BlinkMacSystemFont, sans-serif; }
 .console-alert .ui-icon { flex: 0 0 auto; margin-top: 1px; }
+.console-progress { border-color: color-mix(in srgb, var(--accent) 32%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
+.console-progress-failed { border-color: color-mix(in srgb, var(--danger) 32%, transparent); background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
+.console-progress-icon { display: inline-flex; flex: 0 0 auto; margin-top: 1px; }
+.console-progress-icon.is-failed { color: var(--danger); }

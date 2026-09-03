@@ -33,6 +33,8 @@ export const api = {
   saveProfile: (profile: LaunchProfile) => invoke<LaunchProfile[]>("save_profile", { profile }),
   deleteProfile: (profileId: string) => invoke<LaunchProfile[]>("delete_profile", { profileId }),
   taskSnapshots: () => invoke<ManagedTaskSnapshot[]>("task_snapshots"),
+  taskLogTail: (profileId: string, taskName: string) =>
+    invoke<string>("task_log_tail", { request: { profile_id: profileId, task_name: taskName } }),
   startTask: (profileId: string, taskName: string) =>
     invoke<ManagedTaskSnapshot>("start_task", { request: { profile_id: profileId, task_name: taskName } }),
   stopTask: (profileId: string, taskName: string) =>

@@ -231,6 +231,18 @@ async fn task_snapshots(state: State<'_, AppState>) -> Result<Vec<ManagedTaskSna
 }
 
 #[tauri::command]
+async fn task_log_tail(state: State<'_, AppState>, request: TaskRequest) -> Result<String, String> {
+    reject_demo(state.inner())?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let profiles = profiles_for_state(&state)?;
+        LaunchManager::task_log_tail(&profiles, &request, &state.0.logs_dir)
+    })
+    .await
+    .map_err(|error| format!("Task log read failed: {error}"))?
+}
+
+#[tauri::command]
 async fn start_task(
     state: State<'_, AppState>,
     request: TaskRequest,
@@ -344,12 +356,6 @@ async fn restart_service(
 fn shutdown(state: State<'_, AppState>) -> Result<(), String> {
     lock(&state.0.launch)?.stop_all();
     Ok(())
-}
-
-fn stop_managed_tasks(state: &AppState) {
-    if let Ok(mut launch) = state.0.launch.lock() {
-        launch.stop_all();
-    }
 }
 
 fn terminate_discovered_service(
@@ -522,9 +528,7 @@ pub fn run() {
                 }
                 tauri::WindowEvent::CloseRequested { .. } => {
                     window::persist_window_geometry(window, &state.0.settings_path);
-                    stop_managed_tasks(state.inner());
                 }
-                tauri::WindowEvent::Destroyed => stop_managed_tasks(state.inner()),
                 _ => {}
             }
         })
@@ -542,6 +546,7 @@ pub fn run() {
             save_profile,
             delete_profile,
             task_snapshots,
+            task_log_tail,
             start_task,
             stop_task,
             restart_task,
@@ -561,7 +566,6 @@ pub fn run() {
                     let window = window.as_ref().window();
                     window::persist_window_geometry(&window, &state.0.settings_path);
                 }
-                stop_managed_tasks(state.inner());
             }
         });
 }

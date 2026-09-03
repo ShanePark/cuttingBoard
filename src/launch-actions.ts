@@ -2,6 +2,7 @@ import { restartIcon, uiIcon } from "./icons";
 import { escapeHtml as h } from "./html";
 import { launchProfileIsActive, launchTaskCanStart, launchTaskCanStop } from "./launch-state";
 import { openModal } from "./modal";
+import { startRestartProgressPolling } from "./restart-progress";
 import type {
   LaunchProfile,
   ManagedTaskSnapshot
@@ -17,6 +18,7 @@ export type LaunchActionsApi = {
   startTask: (profileId: string, taskName: string) => Promise<ManagedTaskSnapshot>;
   stopTask: (profileId: string, taskName: string) => Promise<ManagedTaskSnapshot>;
   restartTask: (profileId: string, taskName: string) => Promise<ManagedTaskSnapshot>;
+  taskLogTail?: (profileId: string, taskName: string) => Promise<string>;
   stopProfile: (profileId: string) => Promise<ManagedTaskSnapshot[]>;
 };
 
@@ -29,6 +31,8 @@ export type LaunchActionsContext = {
   setSnapshots: (snapshots: ManagedTaskSnapshot[]) => void;
   snapshotFor: (profileId: string, taskName: string) => ManagedTaskSnapshot | undefined;
   setSelectedTask: (profileId: string, taskName: string) => void;
+  focusTaskConsole?: (profileId: string, taskName: string) => void;
+  updateTaskLogTail?: (profileId: string, taskName: string, logTail: string) => void;
   renderLaunch: (force?: boolean) => void;
   refreshLaunch: (force?: boolean) => Promise<void>;
   renderHeaderCounts: () => void;
@@ -72,6 +76,10 @@ export function createLaunchActions(context: LaunchActionsContext) {
 
   const hasTaskOperation = (profile: LaunchProfile): boolean => launchProfileHasTaskOperation(profile, context.operations);
   const blocksEditing = (profile: LaunchProfile): boolean => launchProfileBlocksEditing(profile, context.snapshotFor);
+  const focusTask = (profileId: string, taskName: string): void => {
+    if (context.focusTaskConsole) context.focusTaskConsole(profileId, taskName);
+    else context.setSelectedTask(profileId, taskName);
+  };
 
   function resetPending(): void {
     pendingLaunchAction = null;
@@ -162,7 +170,7 @@ export function createLaunchActions(context: LaunchActionsContext) {
     context.operations.add(operationKey);
     context.renderLaunch(true);
     try {
-      context.setSelectedTask(id, firstStartable.name);
+      focusTask(id, firstStartable.name);
       for (const task of profile.tasks) {
         const state = context.snapshotFor(id, task.name)?.state ?? "stopped";
         if (launchTaskCanStart(state)) await runTask(id, task.name, "start", false, false);
@@ -194,9 +202,26 @@ export function createLaunchActions(context: LaunchActionsContext) {
   async function runTask(profileId: string, taskName: string, direction: "start" | "stop" | "restart", refresh = true, select = true): Promise<void> {
     const key = `task:${profileId}:${taskName}`;
     if (context.operations.has(key)) return;
-    if (select) context.setSelectedTask(profileId, taskName);
+    if (select) focusTask(profileId, taskName);
     context.operations.add(key);
     context.renderLaunch(true);
+    const streamLogs = direction !== "stop" && context.api.taskLogTail && context.updateTaskLogTail;
+    const readLatestLog = async (): Promise<void> => {
+      if (!streamLogs) return;
+      try {
+        context.updateTaskLogTail!(profileId, taskName, await context.api.taskLogTail!(profileId, taskName));
+      } catch {
+        // The returned snapshot or normal refresh remains authoritative if the log is briefly
+        // unavailable while the task process is being created.
+      }
+    };
+    const stopLogPolling = streamLogs
+      ? startRestartProgressPolling(
+          () => context.api.taskLogTail!(profileId, taskName),
+          (logTail) => context.updateTaskLogTail!(profileId, taskName, logTail),
+          window
+        )
+      : null;
     try {
       const snapshot = direction === "start"
         ? await context.api.startTask(profileId, taskName)
@@ -205,7 +230,11 @@ export function createLaunchActions(context: LaunchActionsContext) {
           : await context.api.stopTask(profileId, taskName);
       context.setSnapshots(mergeSnapshots(context.getSnapshots(), [snapshot]));
       if (snapshot.message) context.toast(snapshot.message, snapshot.state === "failed");
+    } catch (error) {
+      await readLatestLog();
+      throw error;
     } finally {
+      stopLogPolling?.();
       context.operations.delete(key);
       if (refresh) await context.refreshLaunch(true);
     }

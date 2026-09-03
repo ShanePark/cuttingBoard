@@ -25,6 +25,16 @@ test("launch restart routes through confirmation and the atomic task API", () =>
   assert.match(api, /invoke<ManagedTaskSnapshot>\("restart_task", \{ request: \{ profile_id: profileId, task_name: taskName \} \}\)/);
 });
 
+test("launch start and restart reveal the console and stream logs before completion", () => {
+  assert.match(actions, /import \{ startRestartProgressPolling \} from "\.\/restart-progress"/);
+  assert.match(actions, /direction !== "stop" && context\.api\.taskLogTail && context\.updateTaskLogTail/);
+  assert.match(actions, /startRestartProgressPolling\(/);
+  assert.match(actions, /if \(context\.focusTaskConsole\) context\.focusTaskConsole\(profileId, taskName\)/);
+  assert.match(main, /taskLogTail: api\.taskLogTail/);
+  assert.match(main, /function focusTaskConsole\(profileId: string, taskName: string\)/);
+  assert.match(main, /function updateTaskLogTail\(profileId: string, taskName: string, logTail: string\)/);
+});
+
 test("restart icon combines refresh and play affordances", () => {
   const icons = readFileSync(new URL("../src/icons.ts", import.meta.url), "utf8");
   assert.match(icons, /export function restartIcon\(/);

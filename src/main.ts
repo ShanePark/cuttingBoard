@@ -16,9 +16,20 @@ import { createLaunchRefresh } from "./launch-refresh";
 import { createListScroll } from "./list-scroll";
 import { openModal, closeModal as closeModalView, trapModalFocus } from "./modal";
 import { createModalForms, SOURCE_URL } from "./modal-forms";
+import {
+  appendProgressLine,
+  initialRestartProgress,
+  progressFromTaskLog,
+  restartProgressBusyForService,
+  remapRestartProgress,
+  shouldClearCompletedRestartProgress,
+  type RestartProgressEvent,
+  type ServiceRestartProgress
+} from "./restart-progress";
 import { updateSettingsFromRadio } from "./settings";
 import { createUpdateController, UPDATE_CHECK_INTERVAL_MS } from "./update-controller";
 import { createUpdateProgressView, type UpdateProgressEvent } from "./update-progress";
+import { matchedServiceForTask } from "./presentation";
 import {
   launchConsoleOutputKind,
   ensureSelectedTask,
@@ -133,6 +144,7 @@ let serviceLogState: ServiceLogState = {
   message: null,
   error: null
 };
+let serviceRestartProgress: ServiceRestartProgress | null = null;
 let serviceLogRequestId = 0;
 const pendingServiceLogRequests = new Map<string, number>();
 let serviceLogElapsedTimer: number | null = null;
@@ -267,7 +279,15 @@ const { refreshLaunch, refreshSelectedLaunchLogs } = createLaunchRefresh({
 });
 
 const launchActions = createLaunchActions({
-  api,
+  api: {
+    saveProfile: api.saveProfile,
+    deleteProfile: api.deleteProfile,
+    startTask: api.startTask,
+    stopTask: api.stopTask,
+    restartTask: api.restartTask,
+    taskLogTail: api.taskLogTail,
+    stopProfile: api.stopProfile
+  },
   operations,
   getProfiles: () => profiles,
   setProfiles: (next) => { profiles = next; },
@@ -275,6 +295,8 @@ const launchActions = createLaunchActions({
   setSnapshots: (next) => { taskSnapshots = next; },
   snapshotFor,
   setSelectedTask,
+  focusTaskConsole,
+  updateTaskLogTail,
   renderLaunch,
   refreshLaunch,
   renderHeaderCounts,
@@ -286,7 +308,13 @@ const launchActions = createLaunchActions({
 });
 
 const serviceActions = createServiceActions({
-  api,
+  api: {
+    terminate: api.terminate,
+    restartService: api.restartService,
+    restartTask: api.restartTask,
+    taskLogTail: api.taskLogTail,
+    saveProfile: api.saveProfile
+  },
   operations,
   getWorkspace: () => workspace,
   getContainers: () => containerListing?.available ? containerListing.containers : [],
@@ -298,7 +326,12 @@ const serviceActions = createServiceActions({
   openUrl,
   openModal,
   closeModal,
-  toast
+  toast,
+  focusServiceConsole: (serviceId) => focusServiceConsole(serviceId),
+  beginRestartProgress: beginServiceRestartProgress,
+  updateRestartProgress: updateServiceRestartProgress,
+  finishRestartProgress: finishServiceRestartProgress,
+  isRestartingService: serviceRestartInProgress
 });
 
 const containerActions = createContainerActions({
@@ -372,17 +405,22 @@ void bootstrap();
 
 async function bootstrap(): Promise<void> {
   try {
-    const [info, loadedSettings, loadedProfiles, snapshots] = await Promise.all([
-      api.appInfo(), api.loadSettings(), api.profiles(), api.taskSnapshots()
+    const [info, loadedSettings, loadedProfiles] = await Promise.all([
+      api.appInfo(), api.loadSettings(), api.profiles()
     ]);
     appInfo = info;
     settings = loadedSettings;
     persistedSettings = { ...loadedSettings };
     profiles = loadedProfiles;
-    taskSnapshots = snapshots;
     applyTheme(settings.theme_mode);
     renderHeaderCounts();
+
+    // Scan before loading task snapshots so processes that survived an earlier
+    // Cutting Board session are matched back to their launch tasks immediately.
     await refreshWorkspace(true);
+    taskSnapshots = await api.taskSnapshots();
+    renderHeaderCounts();
+    render(true);
     consoleController.applyConsoleHeight();
     await updateProgressListenerReady;
     installTimers();
@@ -432,6 +470,7 @@ async function refreshWorkspace(force = false): Promise<void> {
   scanBusy = true;
   try {
     workspace = await api.scan();
+    remapServiceSelectionForRestart();
     syncSelectedService();
     renderHeaderCounts();
     renderFooter();
@@ -448,7 +487,35 @@ async function refreshWorkspace(force = false): Promise<void> {
 function syncSelectedService(): void {
   if (!selectedServiceId) return;
   const stillAvailable = workspace?.services.some((service) => service.relevance === "dev" && service.id === selectedServiceId);
+  if (!stillAvailable && serviceRestartProgress?.serviceId === selectedServiceId) return;
   if (!stillAvailable) clearServiceSelection();
+}
+
+function remapServiceSelectionForRestart(): void {
+  const progress = serviceRestartProgress;
+  if (!progress || !workspace) return;
+  const profile = profiles.find((item) => item.id === progress.profileId);
+  const task = profile?.tasks.find((item) => item.name === progress.taskName);
+  if (!profile || !task) return;
+  const replacement = matchedServiceForTask(profile, task, workspace.services);
+  if (!replacement || replacement.id === progress.serviceId) return;
+  const previousServiceId = progress.serviceId;
+  serviceRestartProgress = remapRestartProgress(progress, replacement.id);
+  if (selectedServiceId === previousServiceId) selectedServiceId = replacement.id;
+  if (servicesConsoleTarget?.kind === "service" && servicesConsoleTarget.id === previousServiceId) {
+    servicesConsoleTarget = { kind: "service", id: replacement.id };
+  }
+  serviceLogRequestId += 1;
+  serviceLogState = {
+    serviceId: replacement.id,
+    logs: "",
+    available: false,
+    loading: false,
+    loadingStartedAt: null,
+    message: null,
+    error: null
+  };
+  if (serviceRestartProgress.phase === "completed") serviceRestartProgress = null;
 }
 
 function stopServiceLogElapsedTimer(): void {
@@ -491,10 +558,82 @@ function resumeServiceLogElapsedTimer(): void {
   startServiceLogElapsedTimer(serviceId, serviceLogRequestId);
 }
 
+function focusServiceConsole(serviceId: string): void {
+  if (activeTab !== "services") {
+    consoleController.captureLaunchConsoleState();
+    consoleController.captureServicesConsoleState();
+    stopServiceLogElapsedTimer();
+    activeTab = "services";
+    document.querySelectorAll<HTMLElement>("[data-tab]").forEach((item) => item.classList.toggle("is-active", item.dataset.tab === "services"));
+  }
+  selectService(serviceId);
+  if (!consoleController.isPanelOpen("console")) consoleController.toggleBottomPanel("console");
+}
+
+function beginServiceRestartProgress(serviceId: string, profileId: string, taskName: string): void {
+  serviceRestartProgress = initialRestartProgress(serviceId, profileId, taskName);
+  if (activeTab === "services") renderServices(true);
+}
+
+function updateServiceRestartProgress(profileId: string, taskName: string, logTail: string): void {
+  if (!serviceRestartProgress || serviceRestartProgress.profileId !== profileId || serviceRestartProgress.taskName !== taskName) return;
+  serviceRestartProgress = progressFromTaskLog(serviceRestartProgress, logTail);
+  if (activeTab === "services" && servicesConsoleTarget?.kind === "service" && selectedServiceId === serviceRestartProgress.serviceId) {
+    consoleController.updateServiceConsoleDom();
+  }
+}
+
+function finishServiceRestartProgress(profileId: string, taskName: string, succeeded: boolean): void {
+  if (!serviceRestartProgress || serviceRestartProgress.profileId !== profileId || serviceRestartProgress.taskName !== taskName) return;
+  if (succeeded) {
+    if (serviceRestartProgress.phase !== "completed") {
+      const completion: RestartProgressEvent = {
+        profile_id: serviceRestartProgress.profileId,
+        task_name: serviceRestartProgress.taskName,
+        phase: "completed",
+        message: "Restart completed."
+      };
+      serviceRestartProgress = {
+        ...serviceRestartProgress,
+        phase: completion.phase,
+        message: completion.message,
+        detail: null,
+        logTail: appendProgressLine(serviceRestartProgress.logTail, completion)
+      };
+    }
+    if (serviceRestartProgress && shouldClearCompletedRestartProgress(serviceRestartProgress)) serviceRestartProgress = null;
+  } else if (serviceRestartProgress.phase !== "failed") {
+    const failure: RestartProgressEvent = {
+      profile_id: serviceRestartProgress.profileId,
+      task_name: serviceRestartProgress.taskName,
+      phase: "failed",
+      message: "Restart preparation failed.",
+      detail: "See the task log for the failure details."
+    };
+    serviceRestartProgress = {
+      ...serviceRestartProgress,
+      phase: failure.phase,
+      message: failure.message,
+      detail: failure.detail ?? null,
+      logTail: appendProgressLine(serviceRestartProgress.logTail, failure)
+    };
+  }
+  if (activeTab === "services") renderServices(true);
+}
+
+function serviceRestartInProgress(serviceId: string): boolean {
+  return restartProgressBusyForService(
+    serviceRestartProgress,
+    serviceId,
+    operations.has(`restart:${serviceId}`)
+  );
+}
+
 function clearServiceSelection(): void {
   stopServiceLogElapsedTimer();
   selectedServiceId = null;
   if (servicesConsoleTarget?.kind === "service") servicesConsoleTarget = null;
+  serviceRestartProgress = null;
   serviceLogRequestId += 1;
   serviceLogState = {
     serviceId: null,
@@ -512,6 +651,7 @@ async function refreshSelectedServiceLogs(): Promise<void> {
   if (servicesConsoleTarget?.kind !== "service" || !selectedServiceId) return;
   const service = workspace?.services.find((item) => item.relevance === "dev" && item.id === selectedServiceId);
   if (!service) {
+    if (serviceRestartProgress?.serviceId === selectedServiceId) return;
     clearServiceSelection();
     return;
   }
@@ -687,6 +827,7 @@ function servicesRenderingContext(): ServicesRenderingContext {
     console: {
       open: consoleController.isPanelOpen("console"),
       serviceLogState,
+      restartProgress: serviceRestartProgress,
       serviceLogElapsedSeconds,
       docker: dockerConsoleRenderingContext("services"),
       renderConsoleResizer: () => consoleController.renderConsoleResizer(),
@@ -779,7 +920,8 @@ function serviceTileRenderingContext(): ServiceTileRenderingContext {
   return {
     operations,
     selectedServiceId,
-    consoleTargetKind: servicesConsoleTarget?.kind ?? null
+    consoleTargetKind: servicesConsoleTarget?.kind ?? null,
+    restartingServiceId: serviceRestartProgress?.serviceId ?? null
   };
 }
 
@@ -952,9 +1094,26 @@ function selectTask(profileId: string, taskName: string, focus = false): void {
   if (focus) focusTaskRow(profileId, taskName);
 }
 
+function focusTaskConsole(profileId: string, taskName: string): void {
+  selectTask(profileId, taskName);
+  if (!consoleController.isPanelOpen("console")) consoleController.toggleBottomPanel("console");
+}
+
+function updateTaskLogTail(profileId: string, taskName: string, logTail: string): void {
+  const current = snapshotFor(profileId, taskName);
+  if (!current) return;
+  taskSnapshots = taskSnapshots.map((snapshot) => snapshot.profile_id === profileId && snapshot.task_name === taskName
+    ? { ...snapshot, log_tail: logTail }
+    : snapshot);
+  if (activeTab === "launch" && selectedTaskKey === launchTaskKey(profileId, taskName)) {
+    consoleController.updateLaunchConsoleDom();
+  }
+}
+
 function selectService(id: string, focus = false): void {
   const service = findService(id);
   if (service.relevance !== "dev") throw new Error("This service is not available in the Services view.");
+  if (serviceRestartProgress && serviceRestartProgress.serviceId !== id) serviceRestartProgress = null;
   consoleController.captureServicesConsoleState();
   stopServiceLogElapsedTimer();
   selectedServiceId = id;

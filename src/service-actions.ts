@@ -2,6 +2,8 @@ import { restartIcon, uiIcon } from "./icons";
 import { escapeHtml as h } from "./html";
 import { openModal } from "./modal";
 import { canRestartService, generatedTasksForGroup } from "./services-rendering";
+import { startRestartProgressPolling } from "./restart-progress";
+import { restartServiceWithPreparation, savedSpringTaskForService } from "./service-restart";
 import {
   launchTasksEquivalent,
   serviceBoardGroups,
@@ -12,6 +14,7 @@ import type {
   ContainerInfo,
   LaunchProfile,
   LaunchTask,
+  ManagedTaskSnapshot,
   ServiceSnapshot,
   WorkspaceSnapshot
 } from "./types";
@@ -19,6 +22,10 @@ import type {
 export type ServiceActionsApi = {
   terminate: (serviceId: string) => Promise<{ success: boolean; message: string }>;
   restartService: (serviceId: string) => Promise<void>;
+  /** Restart a saved task so project-aware preparation runs before replacement. */
+  restartTask?: (profileId: string, taskName: string) => Promise<ManagedTaskSnapshot>;
+  /** Read a task log without taking the launch manager lock while preparation is running. */
+  taskLogTail?: (profileId: string, taskName: string) => Promise<string>;
   saveProfile: (profile: LaunchProfile) => Promise<LaunchProfile[]>;
 };
 
@@ -36,7 +43,19 @@ export type ServiceActionsContext = {
   openModal: typeof openModal;
   closeModal: () => void;
   toast: (message: string, error?: boolean) => void;
+  /** Select the service and reveal its console before a restart starts doing work. */
+  focusServiceConsole?: (serviceId: string) => void;
+  /** Publish the target of a prepared restart so native progress can be shown in its console. */
+  beginRestartProgress?: (serviceId: string, profileId: string, taskName: string) => void;
+  /** Publish the current lock-free task log while the native restart is still pending. */
+  updateRestartProgress?: (profileId: string, taskName: string, logTail: string) => void;
+  /** Mark progress complete after the native restart returns; the UI clears it after remapping. */
+  finishRestartProgress?: (profileId: string, taskName: string, succeeded: boolean) => void;
+  /** Keep a remapped replacement service busy until its in-flight restart settles. */
+  isRestartingService?: (serviceId: string) => boolean;
 };
+
+export { savedSpringTaskForService } from "./service-restart";
 
 export function createServiceActions(context: ServiceActionsContext) {
   let pendingServiceStopId: string | null = null;
@@ -86,7 +105,7 @@ export function createServiceActions(context: ServiceActionsContext) {
   }
 
   function requestStopService(id: string): void {
-    if (pendingServiceStopId !== null || pendingServiceRestartId !== null || context.operations.has(`stop:${id}`) || context.operations.has(`restart:${id}`)) return;
+    if (pendingServiceStopId !== null || pendingServiceRestartId !== null || context.operations.has(`stop:${id}`) || context.operations.has(`restart:${id}`) || context.isRestartingService?.(id)) return;
     const service = findService(id);
     if (!service.can_terminate) throw new Error("This process cannot be stopped safely.");
     pendingServiceStopId = id;
@@ -136,13 +155,42 @@ export function createServiceActions(context: ServiceActionsContext) {
     const service = findService(id);
     if (!canRestartService(service)) throw new Error("This process does not expose enough launch information to restart safely.");
     const key = `restart:${id}`;
-    if (context.operations.has(key) || context.operations.has(`stop:${id}`)) return;
+    if (context.operations.has(key) || context.operations.has(`stop:${id}`) || context.isRestartingService?.(id)) return;
     context.operations.add(key);
+    context.focusServiceConsole?.(id);
     context.renderServices(true);
+    const preparedTask = context.api.restartTask
+      ? savedSpringTaskForService(service, context.getProfiles())
+      : null;
+    let stopProgressPolling: (() => void) | null = null;
+    if (preparedTask) context.beginRestartProgress?.(id, preparedTask.profile.id, preparedTask.task.name);
+    if (preparedTask && context.api.taskLogTail && context.updateRestartProgress) {
+      stopProgressPolling = startRestartProgressPolling(
+        () => context.api.taskLogTail!(preparedTask.profile.id, preparedTask.task.name),
+        (logTail) => context.updateRestartProgress!(preparedTask.profile.id, preparedTask.task.name, logTail),
+        window
+      );
+    }
+    const readLatestProgress = async (): Promise<void> => {
+      if (!preparedTask || !context.api.taskLogTail || !context.updateRestartProgress) return;
+      try {
+        const logTail = await context.api.taskLogTail(preparedTask.profile.id, preparedTask.task.name);
+        context.updateRestartProgress(preparedTask.profile.id, preparedTask.task.name, logTail);
+      } catch {
+        // The service refresh remains authoritative if the task log disappears during replacement.
+      }
+    };
     try {
-      await context.api.restartService(id);
+      await restartServiceWithPreparation(service, context.getProfiles(), context.api);
+      await readLatestProgress();
+      if (preparedTask) context.finishRestartProgress?.(preparedTask.profile.id, preparedTask.task.name, true);
       context.toast(`Restarted ${service.display_name}.`);
+    } catch (error) {
+      await readLatestProgress();
+      if (preparedTask) context.finishRestartProgress?.(preparedTask.profile.id, preparedTask.task.name, false);
+      throw error;
     } finally {
+      stopProgressPolling?.();
       try {
         await context.refreshWorkspace(true);
       } finally {

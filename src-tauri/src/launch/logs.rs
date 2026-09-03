@@ -460,6 +460,7 @@ mod tests {
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
                 container: None,
+                prepare: None,
             }],
         };
         let workspace = workspace_with_project(5173, &frontend);
@@ -498,6 +499,7 @@ mod tests {
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
                 container: None,
+                prepare: None,
             }],
         };
         let workspace = workspace_with_project(5173, &frontend);
@@ -537,6 +539,7 @@ mod tests {
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
                 container: None,
+                prepare: None,
             }],
         };
         let workspace = workspace_with_project(5173, &frontend);
@@ -569,6 +572,7 @@ mod tests {
                 command: "npm run dev".into(),
                 expected_port: Some(5173),
                 container: None,
+                prepare: None,
             }],
         };
         let workspace = workspace_with_project(5173, &frontend);

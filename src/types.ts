@@ -105,6 +105,16 @@ export interface UiSettings {
   window_geometry_logical: boolean;
 }
 
+export type LaunchBuildTool = "maven" | "gradle";
+
+export interface LaunchPrepareSpec {
+  kind: "spring_boot";
+  build_tool?: LaunchBuildTool | null;
+  module?: string | null;
+  profiles: string[];
+  main_class?: string | null;
+}
+
 export interface LaunchTask {
   name: string;
   cwd: string;
@@ -112,6 +122,8 @@ export interface LaunchTask {
   expected_port: number | null;
   /** Docker container this task stands for; container tasks are started and stopped through Docker. */
   container?: string | null;
+  /** Optional project-aware preparation metadata for framework-managed tasks. */
+  prepare?: LaunchPrepareSpec | null;
 }
 
 export interface LaunchProfile {

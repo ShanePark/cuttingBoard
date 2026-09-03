@@ -1,5 +1,41 @@
 use serde::{Deserialize, Serialize};
 
+/// The build tool used to prepare a framework-managed launch task.
+///
+/// The enum is intentionally small for now. Tasks without a preparation spec continue to use
+/// their saved shell command unchanged, so adding this field is backward compatible with older
+/// launch profile files.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LaunchBuildTool {
+    Maven,
+    Gradle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchPrepareKind {
+    SpringBoot,
+}
+
+/// Optional project-aware preparation metadata for a launch task.
+///
+/// `build_tool` and `module` may be omitted when Cutting Board should infer them from the
+/// project files. `profiles` and `main_class` are retained as launch metadata for the framework
+/// runner; preparation itself only needs the build tool and module.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LaunchPrepareSpec {
+    pub kind: LaunchPrepareKind,
+    #[serde(default)]
+    pub build_tool: Option<LaunchBuildTool>,
+    #[serde(default)]
+    pub module: Option<String>,
+    #[serde(default)]
+    pub profiles: Vec<String>,
+    #[serde(default)]
+    pub main_class: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LaunchTask {
     pub name: String,
@@ -11,6 +47,10 @@ pub struct LaunchTask {
     /// launch profile as the services they support.
     #[serde(default)]
     pub container: Option<String>,
+    /// Optional build-aware preparation. Missing metadata preserves the legacy shell-command
+    /// behavior, while Spring Boot tasks can use Maven/Gradle's incremental build lifecycle.
+    #[serde(default)]
+    pub prepare: Option<LaunchPrepareSpec>,
 }
 
 impl LaunchTask {

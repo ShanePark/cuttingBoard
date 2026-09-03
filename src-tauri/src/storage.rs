@@ -27,6 +27,7 @@ mod tests {
                     command: "one".into(),
                     expected_port: None,
                     container: None,
+                    prepare: None,
                 },
                 LaunchTask {
                     name: "api".into(),
@@ -34,6 +35,7 @@ mod tests {
                     command: "two".into(),
                     expected_port: None,
                     container: None,
+                    prepare: None,
                 },
             ],
         };
@@ -52,6 +54,7 @@ mod tests {
                 command: command.into(),
                 expected_port: Some(5432),
                 container: container.map(str::to_owned),
+                prepare: None,
             }],
         };
         assert!(profiles::validate_profile(&profile("", Some("app-db"))).is_ok());
@@ -98,6 +101,7 @@ mod tests {
                 command: "java -cp /cache/spring-boot.jar ••• --spring.profiles.active=dev".into(),
                 expected_port: Some(8080),
                 container: None,
+                prepare: None,
             }],
         };
         json::write_json_atomic(&profile_path, &vec![profile]).unwrap();
@@ -133,6 +137,7 @@ mod tests {
                     .into(),
                 expected_port: Some(8080),
                 container: None,
+                prepare: None,
             }],
         };
         json::write_json_atomic(&profile_path, &vec![profile]).unwrap();
