@@ -7,7 +7,7 @@ export const UPDATE_PROGRESS_STAGES = [
   {
     id: "building",
     label: "Build release",
-    detail: "Compiling a fresh macOS release app"
+    detail: "Compiling a fresh release build"
   },
   {
     id: "preparing",

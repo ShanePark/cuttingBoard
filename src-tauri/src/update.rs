@@ -10,17 +10,36 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use tauri::Emitter;
 
 const EMBEDDED_SOURCE_ROOT: &str = env!("CUTTING_BOARD_SOURCE_ROOT");
 const EMBEDDED_BUILD_COMMIT: &str = env!("CUTTING_BOARD_BUILD_COMMIT");
 const UPDATE_HELPER_ARGUMENT: &str = "--update-helper";
-const UPDATE_BUILD_COMMAND: &str = "npm run tauri build -- --bundles app";
 const UPDATE_PROGRESS_EVENT: &str = "update-progress";
 const UPDATE_PROGRESS_TOTAL: u8 = 4;
+
+#[cfg(target_os = "macos")]
+const UPDATE_BUILD_COMMAND: &str = "npm run tauri build -- --bundles app";
+#[cfg(target_os = "macos")]
+const UPDATE_SHELL: &str = "/bin/zsh";
+#[cfg(target_os = "macos")]
+const UPDATE_BUILD_SCRIPT: &str =
+    "cd -- \"$1\" && export CARGO_TARGET_DIR=\"$2\" && exec npm run tauri build -- --bundles app";
+
+#[cfg(target_os = "linux")]
+const UPDATE_BUILD_COMMAND: &str = "npm run tauri build -- --no-bundle";
+#[cfg(target_os = "linux")]
+const UPDATE_SHELL: &str = "/bin/sh";
+#[cfg(target_os = "linux")]
+const UPDATE_BUILD_SCRIPT: &str =
+    "cd -- \"$1\" && export CARGO_TARGET_DIR=\"$2\" && exec npm run tauri build -- --no-bundle";
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const UPDATE_RESTART_GRACE: Duration = Duration::from_millis(180);
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const HELPER_WAIT_ATTEMPTS: usize = 120;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const HELPER_WAIT_INTERVAL: Duration = Duration::from_millis(250);
 
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -67,7 +86,7 @@ impl UpdateProgress {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn emit_update_progress(app: &tauri::AppHandle, progress: UpdateProgress) {
     if let Err(error) = app.emit(UPDATE_PROGRESS_EVENT, progress) {
         // Progress is advisory. A webview listener can disappear while the
@@ -93,7 +112,7 @@ struct HelperArguments {
     old_pid: u32,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[derive(Debug)]
 struct InstallTransaction {
     arguments: HelperArguments,
@@ -110,7 +129,7 @@ enum RecoveryTarget {
     Backup,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[derive(Debug)]
 struct RecoveryReport {
     target: Option<RecoveryTarget>,
@@ -135,9 +154,9 @@ impl Drop for UpdateGuard {
     }
 }
 
-/// Whether this binary has the source metadata needed for the macOS updater.
+/// Whether this binary has the source metadata needed for the local updater.
 pub(crate) fn is_supported() -> bool {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         !EMBEDDED_SOURCE_ROOT.is_empty()
             && !EMBEDDED_BUILD_COMMIT.is_empty()
@@ -145,7 +164,7 @@ pub(crate) fn is_supported() -> bool {
             && Path::new(EMBEDDED_SOURCE_ROOT).join(".git").exists()
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         false
     }
@@ -156,17 +175,17 @@ pub(crate) fn is_supported() -> bool {
 pub(crate) fn current_status() -> UpdateStatus {
     let current_commit = EMBEDDED_BUILD_COMMIT.to_string();
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let latest_commit = git_head(Path::new(EMBEDDED_SOURCE_ROOT)).unwrap_or_default();
-        return UpdateStatus {
+        UpdateStatus {
             available: commits_differ(&current_commit, &latest_commit),
             current_commit,
             latest_commit,
-        };
+        }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         UpdateStatus {
             available: false,
@@ -176,7 +195,7 @@ pub(crate) fn current_status() -> UpdateStatus {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tauri::command]
 pub(crate) async fn check_for_update() -> UpdateStatus {
     // `git` can be slow on a large checkout and must not block the webview
@@ -190,19 +209,19 @@ pub(crate) async fn check_for_update() -> UpdateStatus {
         })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[tauri::command]
 pub(crate) async fn check_for_update() -> UpdateStatus {
     current_status()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[tauri::command]
 pub(crate) async fn update_and_restart() -> Result<(), String> {
-    Err("Self-updating is only available on macOS.".into())
+    Err("Self-updating is unavailable on this platform.".into())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tauri::command]
 pub(crate) async fn update_and_restart(app: tauri::AppHandle) -> Result<(), String> {
     let _guard = UpdateGuard::acquire()?;
@@ -226,7 +245,7 @@ pub(crate) async fn update_and_restart(app: tauri::AppHandle) -> Result<(), Stri
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn prepare_update(app: &tauri::AppHandle) -> Result<UpdatePlan, String> {
     if !is_supported() {
         return Err(
@@ -243,12 +262,10 @@ fn prepare_update(app: &tauri::AppHandle) -> Result<UpdatePlan, String> {
 
     let current_executable = env::current_exe()
         .map_err(|error| format!("Could not determine the running app: {error}"))?;
-    let stable_bundle = stable_app_path()?;
-    let old_bundle = bundle_path_from_executable(&current_executable).ok_or_else(|| {
-        "Self-updating is only available when running from a macOS app bundle.".to_string()
-    })?;
+    let stable_bundle = stable_install_path(&current_executable)?;
+    let old_bundle = old_install_path(&current_executable)?;
     let built_bundle = release_bundle_path(source_root);
-    if old_bundle == built_bundle {
+    if paths_refer_to_same_entry(&old_bundle, &built_bundle) {
         return Err(
             "Self-updating is unavailable while running directly from the release build output."
                 .into(),
@@ -266,7 +283,7 @@ fn prepare_update(app: &tauri::AppHandle) -> Result<UpdatePlan, String> {
     if ending_commit != starting_commit {
         return Err("The source HEAD changed while building. Retry the update.".into());
     }
-    if !built_bundle.is_dir() {
+    if !artifact_path_is_available(&built_bundle) {
         return Err(format!(
             "The release build did not produce {}.",
             built_bundle.display()
@@ -282,17 +299,17 @@ fn prepare_update(app: &tauri::AppHandle) -> Result<UpdatePlan, String> {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_release_build(source_root: &Path) -> Result<(), String> {
     // A login shell supplies the user's Node/npm installation when the app was
     // launched from Finder, where the GUI environment usually has a minimal
     // PATH. The checkout path is passed as $1 instead of interpolated into the
     // shell script, so spaces and shell metacharacters remain harmless.
     let target_directory = release_target_directory(source_root);
-    let output = Command::new("/bin/zsh")
+    let output = Command::new(UPDATE_SHELL)
         .arg("-l")
         .arg("-c")
-        .arg("cd -- \"$1\" && export CARGO_TARGET_DIR=\"$2\" && exec npm run tauri build -- --bundles app")
+        .arg(UPDATE_BUILD_SCRIPT)
         .arg("cutting-board-update")
         .arg(source_root)
         .arg(&target_directory)
@@ -319,7 +336,7 @@ fn run_release_build(source_root: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn spawn_update_helper(plan: &UpdatePlan) -> Result<(), String> {
     let executable = env::current_exe()
         .map_err(|error| format!("Could not locate the running app for restart: {error}"))?;
@@ -355,7 +372,7 @@ fn spawn_update_helper(plan: &UpdatePlan) -> Result<(), String> {
         .map_err(|error| format!("Could not start the update helper: {error}"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn run_helper_if_requested() -> bool {
     let mut arguments = env::args_os().skip(1);
     let Some(first) = arguments.next() else {
@@ -375,12 +392,12 @@ pub(crate) fn run_helper_if_requested() -> bool {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn run_helper_if_requested() -> bool {
     false
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn install_and_launch(arguments: HelperArguments) -> Result<(), String> {
     // Validate all paths before waiting for (and therefore losing) the
     // running app. The helper is detached, so accepting a forged path here
@@ -410,12 +427,15 @@ fn install_and_launch(arguments: HelperArguments) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl InstallTransaction {
     fn install(&mut self) -> Result<(), String> {
-        if !self.arguments.built_bundle.is_dir() {
+        if !artifact_path_is_available(&self.arguments.built_bundle) {
+            if fs::symlink_metadata(&self.arguments.built_bundle).is_ok() {
+                reject_symlink(&self.arguments.built_bundle)?;
+            }
             return Err(format!(
-                "The release bundle is missing: {}.",
+                "The release artifact is missing: {}.",
                 self.arguments.built_bundle.display()
             ));
         }
@@ -440,9 +460,9 @@ impl InstallTransaction {
         };
         if stable_exists {
             reject_symlink(&self.arguments.stable_bundle)?;
-            if !self.arguments.stable_bundle.is_dir() {
+            if !artifact_path_is_available(&self.arguments.stable_bundle) {
                 return Err(format!(
-                    "The installed app path is not a bundle directory: {}.",
+                    "The installed app path is not a valid release artifact: {}.",
                     self.arguments.stable_bundle.display()
                 ));
             }
@@ -452,14 +472,24 @@ impl InstallTransaction {
         // handles repositories on an external volume; the final renames are
         // then atomic regardless of the source checkout's volume.
         let staging_bundle = unique_staging_path(&self.stable_parent);
-        self.staging_bundle = Some(staging_bundle.clone());
-        copy_bundle(&self.arguments.built_bundle, &staging_bundle)?;
+        #[cfg(target_os = "macos")]
+        {
+            self.staging_bundle = Some(staging_bundle.clone());
+        }
+        copy_artifact(&self.arguments.built_bundle, &staging_bundle)?;
+        #[cfg(target_os = "linux")]
+        {
+            self.staging_bundle = Some(staging_bundle.clone());
+        }
 
         if stable_exists {
             let backup_bundle = unique_backup_path(&self.stable_parent);
+            #[cfg(target_os = "macos")]
             fs::rename(&self.arguments.stable_bundle, &backup_bundle).map_err(|error| {
                 format!("Could not stage the existing app before installing the update: {error}")
             })?;
+            #[cfg(target_os = "linux")]
+            copy_artifact(&self.arguments.stable_bundle, &backup_bundle)?;
             self.backup_bundle = Some(backup_bundle);
         }
 
@@ -468,14 +498,14 @@ impl InstallTransaction {
         self.staging_bundle = None;
         self.installed_bundle = true;
 
-        launch_bundle(&self.arguments.stable_bundle)
+        launch_artifact(&self.arguments.stable_bundle)
     }
 
     fn recover(&mut self) -> RecoveryReport {
         let mut cleanup_errors = Vec::new();
 
         if let Some(staging_bundle) = self.staging_bundle.take() {
-            if path_is_available(&staging_bundle) {
+            if artifact_path_is_available(&staging_bundle) {
                 let quarantine = unique_backup_path(&self.stable_parent);
                 if let Err(error) = fs::rename(&staging_bundle, &quarantine) {
                     cleanup_errors.push(format!(
@@ -486,7 +516,7 @@ impl InstallTransaction {
             }
         }
 
-        if self.installed_bundle && path_is_available(&self.arguments.stable_bundle) {
+        if self.installed_bundle && artifact_path_is_available(&self.arguments.stable_bundle) {
             let quarantine = unique_backup_path(&self.stable_parent);
             if let Err(error) = fs::rename(&self.arguments.stable_bundle, &quarantine) {
                 cleanup_errors.push(format!(
@@ -498,7 +528,7 @@ impl InstallTransaction {
 
         let backup_bundle = self.backup_bundle.take();
         let restored_stable = if let Some(backup_bundle) = backup_bundle {
-            if path_is_available(&self.arguments.stable_bundle) {
+            if artifact_path_is_available(&self.arguments.stable_bundle) {
                 cleanup_errors.push(format!(
                     "Could not restore the previous app because {} is still present.",
                     self.arguments.stable_bundle.display()
@@ -522,9 +552,12 @@ impl InstallTransaction {
             false
         };
 
-        let old_available = path_is_available(&self.arguments.old_bundle);
-        let backup_available = self.backup_bundle.as_deref().is_some_and(path_is_available);
-        let stable_available = path_is_available(&self.arguments.stable_bundle);
+        let old_available = artifact_path_is_available(&self.arguments.old_bundle);
+        let backup_available = self
+            .backup_bundle
+            .as_deref()
+            .is_some_and(artifact_path_is_available);
+        let stable_available = artifact_path_is_available(&self.arguments.stable_bundle);
         let target = select_recovery_target(
             restored_stable,
             old_available,
@@ -538,7 +571,7 @@ impl InstallTransaction {
                 RecoveryTarget::Old => &self.arguments.old_bundle,
                 RecoveryTarget::Backup => self.backup_bundle.as_deref()?,
             };
-            launch_bundle(path).err()
+            launch_artifact(path).err()
         });
 
         RecoveryReport {
@@ -549,7 +582,7 @@ impl InstallTransaction {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn format_transaction_failure(error: String, recovery: RecoveryReport) -> String {
     let mut message = error;
     match (recovery.target, recovery.launch_error) {
@@ -567,14 +600,13 @@ fn format_transaction_failure(error: String, recovery: RecoveryReport) -> String
     message
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn validate_helper_arguments(arguments: &HelperArguments) -> Result<(), String> {
     let expected_built_bundle = release_bundle_path(Path::new(EMBEDDED_SOURCE_ROOT));
-    let expected_stable_bundle = stable_app_path()?;
     let helper_executable = env::current_exe()
         .map_err(|error| format!("Could not determine the update helper executable: {error}"))?;
-    let expected_old_bundle = bundle_path_from_executable(&helper_executable)
-        .ok_or_else(|| "The update helper is not running from a macOS app bundle.".to_string())?;
+    let expected_stable_bundle = stable_install_path(&helper_executable)?;
+    let expected_old_bundle = old_install_path(&helper_executable)?;
     if !helper_paths_match(
         arguments,
         &expected_built_bundle,
@@ -582,6 +614,13 @@ fn validate_helper_arguments(arguments: &HelperArguments) -> Result<(), String> 
         &expected_old_bundle,
     ) {
         return Err("The update helper rejected unexpected app paths.".into());
+    }
+    for path in [
+        &arguments.built_bundle,
+        &arguments.stable_bundle,
+        &arguments.old_bundle,
+    ] {
+        reject_existing_symlink(path)?;
     }
     if arguments.old_pid == 0 {
         return Err("The update helper received an invalid previous app PID.".into());
@@ -600,8 +639,17 @@ fn helper_paths_match(
         && arguments.old_bundle == expected_old_bundle
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn reject_existing_symlink(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => reject_symlink(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Could not inspect {}: {error}", path.display())),
+    }
+}
+
 #[cfg(target_os = "macos")]
-fn copy_bundle(source: &Path, destination: &Path) -> Result<(), String> {
+fn copy_artifact(source: &Path, destination: &Path) -> Result<(), String> {
     let status = Command::new("/usr/bin/ditto")
         .arg(source)
         .arg(destination)
@@ -615,7 +663,7 @@ fn copy_bundle(source: &Path, destination: &Path) -> Result<(), String> {
             "Could not copy the release bundle with ditto (status {status})."
         ));
     }
-    if !path_is_available(destination) {
+    if !artifact_path_is_available(destination) {
         return Err(format!(
             "ditto did not produce the staging bundle {}.",
             destination.display()
@@ -624,10 +672,99 @@ fn copy_bundle(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn copy_artifact(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut source_file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(source)
+        .map_err(|error| format!("Could not open the release binary: {error}"))?;
+    let source_metadata = source_file
+        .metadata()
+        .map_err(|error| format!("Could not inspect the release binary: {error}"))?;
+    if !source_metadata.file_type().is_file() {
+        return Err(format!(
+            "The release binary is not a regular file: {}.",
+            source.display()
+        ));
+    }
+
+    let mut destination_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(source_metadata.permissions().mode())
+        .open(destination)
+        .map_err(|error| {
+            format!(
+                "Could not create the release binary staging path {}: {error}",
+                destination.display()
+            )
+        })?;
+    let copy_result: Result<(), String> = (|| {
+        std::io::copy(&mut source_file, &mut destination_file)
+            .map_err(|error| format!("Could not copy the release binary: {error}"))?;
+        destination_file
+            .set_permissions(fs::Permissions::from_mode(
+                source_metadata.permissions().mode(),
+            ))
+            .map_err(|error| format!("Could not preserve release binary permissions: {error}"))?;
+        destination_file
+            .flush()
+            .map_err(|error| format!("Could not flush the release binary copy: {error}"))?;
+        destination_file
+            .sync_all()
+            .map_err(|error| format!("Could not sync the release binary copy: {error}"))?;
+        Ok(())
+    })();
+    drop(destination_file);
+
+    if let Err(error) = copy_result {
+        let cleanup = fs::remove_file(destination).map_err(|cleanup_error| {
+            format!(
+                " Could not remove the incomplete release binary copy {}: {cleanup_error}.",
+                destination.display()
+            )
+        });
+        return match cleanup {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(format!("{error}.{cleanup_error}")),
+        };
+    }
+
+    if !artifact_path_is_available(destination) {
+        let error = format!(
+            "Copying the release binary did not produce {}.",
+            destination.display()
+        );
+        return match fs::remove_file(destination) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => {
+                Err(error)
+            }
+            Err(cleanup_error) => Err(format!(
+                "{error} Could not remove the incomplete release binary copy {}: {cleanup_error}.",
+                destination.display()
+            )),
+        };
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
-fn path_is_available(path: &Path) -> bool {
+fn artifact_path_is_available(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .map(|metadata| !metadata.file_type().is_symlink() && metadata.is_dir())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn artifact_path_is_available(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| !metadata.file_type().is_symlink() && metadata.is_file())
         .unwrap_or(false)
 }
 
@@ -653,7 +790,7 @@ fn select_recovery_target(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn wait_for_process_exit(pid: u32) -> Result<(), String> {
     if pid == 0 {
         return Err("The running app PID is invalid.".into());
@@ -664,10 +801,10 @@ fn wait_for_process_exit(pid: u32) -> Result<(), String> {
         }
         thread::sleep(HELPER_WAIT_INTERVAL);
     }
-    Err("The previous app did not exit in time; its bundle was left unchanged.".into())
+    Err("The previous app did not exit in time; its installed artifact was left unchanged.".into())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn process_is_alive(pid: u32) -> bool {
     // The helper only checks the process created by this app. Treat EPERM as
     // alive so an unexpected permission boundary never leads to replacement.
@@ -676,8 +813,8 @@ fn process_is_alive(pid: u32) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn launch_bundle(bundle: &Path) -> Result<(), String> {
-    if !bundle.is_dir() {
+fn launch_artifact(bundle: &Path) -> Result<(), String> {
+    if !artifact_path_is_available(bundle) {
         return Err(format!("App bundle does not exist: {}", bundle.display()));
     }
     let status = Command::new("/usr/bin/open")
@@ -698,7 +835,52 @@ fn launch_bundle(bundle: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "linux")]
+fn launch_artifact(binary: &Path) -> Result<(), String> {
+    if !artifact_path_is_available(binary) {
+        return Err(format!(
+            "Application binary does not exist: {}",
+            binary.display()
+        ));
+    }
+
+    // Desktop launches use this wrapper to focus an existing window. Reuse it
+    // when the stable binary follows the normal per-user installation layout;
+    // custom binary locations can still be relaunched directly.
+    let launcher = linux_launcher_path(binary);
+    Command::new(&launcher)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not launch {}: {error}", binary.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_launcher_path(binary: &Path) -> PathBuf {
+    let launcher = (binary.file_name() == Some(OsStr::new("cutting-board")))
+        .then(|| {
+            binary
+                .parent()
+                .map(|parent| parent.join("cutting-board-launch"))
+        })
+        .flatten()
+        .filter(|path| {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::symlink_metadata(path)
+                .map(|metadata| {
+                    !metadata.file_type().is_symlink()
+                        && metadata.is_file()
+                        && metadata.permissions().mode() & 0o111 != 0
+                })
+                .unwrap_or(false)
+        });
+    launcher.unwrap_or_else(|| binary.to_path_buf())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn reject_symlink(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
@@ -807,14 +989,39 @@ pub(crate) fn commits_differ(current_commit: &str, latest_commit: &str) -> bool 
     !current_commit.is_empty() && !latest_commit.is_empty() && current_commit != latest_commit
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn paths_refer_to_same_entry(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    if let (Ok(left), Ok(right)) = (fs::canonicalize(left), fs::canonicalize(right)) {
+        return left == right;
+    }
+    false
+}
+
 pub(crate) fn release_bundle_path(source_root: &Path) -> PathBuf {
-    release_target_directory(source_root).join("release/bundle/macos/Cutting Board.app")
+    #[cfg(target_os = "macos")]
+    {
+        release_target_directory(source_root).join("release/bundle/macos/Cutting Board.app")
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        release_target_directory(source_root).join("release/cutting-board")
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        release_target_directory(source_root).join("release/cutting-board")
+    }
 }
 
 pub(crate) fn release_target_directory(source_root: &Path) -> PathBuf {
     source_root.join("src-tauri/target")
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn bundle_path_from_executable(executable: &Path) -> Option<PathBuf> {
     executable.ancestors().find_map(|ancestor| {
         let name = ancestor.file_name()?.to_str()?;
@@ -823,13 +1030,34 @@ pub(crate) fn bundle_path_from_executable(executable: &Path) -> Option<PathBuf> 
 }
 
 #[cfg(target_os = "macos")]
-fn stable_app_path() -> Result<PathBuf, String> {
+fn stable_install_path(_current_executable: &Path) -> Result<PathBuf, String> {
     dirs::home_dir()
         .map(|home| home.join("Applications/Cutting Board.app"))
         .ok_or_else(|| "Could not determine the current user's home directory.".into())
 }
 
 #[cfg(target_os = "macos")]
+fn old_install_path(current_executable: &Path) -> Result<PathBuf, String> {
+    bundle_path_from_executable(current_executable)
+        .ok_or_else(|| "The updater is not running from a macOS app bundle.".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn stable_install_path(_current_executable: &Path) -> Result<PathBuf, String> {
+    // The desktop entry and launcher script use this per-user path. Keeping it
+    // fixed lets an app started from a debug or another custom location update
+    // the same installed binary and relaunch through its normal wrapper.
+    dirs::home_dir()
+        .map(|home| home.join(".local/bin/cutting-board"))
+        .ok_or_else(|| "Could not determine the current user's home directory.".into())
+}
+
+#[cfg(target_os = "linux")]
+fn old_install_path(current_executable: &Path) -> Result<PathBuf, String> {
+    Ok(current_executable.to_path_buf())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn unique_backup_path(parent: &Path) -> PathBuf {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -848,7 +1076,7 @@ fn unique_backup_path(parent: &Path) -> PathBuf {
     candidate
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn unique_staging_path(parent: &Path) -> PathBuf {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -887,6 +1115,135 @@ mod tests {
         assert!(!commits_differ("abc", ""));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_release_path_targets_the_unbundled_binary() {
+        assert_eq!(
+            release_bundle_path(Path::new("/checkout")),
+            PathBuf::from("/checkout/src-tauri/target/release/cutting-board")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_stable_path_uses_the_fixed_install_location() {
+        let executable = Path::new("/home/example/.local/bin/cutting-board");
+        assert_eq!(
+            stable_install_path(executable).unwrap(),
+            dirs::home_dir().unwrap().join(".local/bin/cutting-board")
+        );
+        assert_eq!(old_install_path(executable).unwrap(), executable);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_artifact_checks_reject_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("cutting-board");
+        let link = directory.path().join("link");
+        fs::write(&binary, b"binary").unwrap();
+        std::os::unix::fs::symlink(&binary, &link).unwrap();
+
+        assert!(artifact_path_is_available(&binary));
+        assert!(!artifact_path_is_available(&link));
+        assert!(reject_existing_symlink(&link).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_binary_copy_is_exclusive_and_preserves_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let destination = directory.path().join("destination");
+        let existing = directory.path().join("existing");
+        let existing_target = directory.path().join("existing-target");
+        let existing_link = directory.path().join("existing-link");
+        fs::write(&source, b"new").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o751)).unwrap();
+
+        copy_artifact(&source, &destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"new");
+        assert_eq!(
+            fs::metadata(&destination).unwrap().permissions().mode() & 0o7777,
+            0o751
+        );
+
+        fs::write(&existing, b"old").unwrap();
+        assert!(copy_artifact(&source, &existing).is_err());
+        assert_eq!(fs::read(&existing).unwrap(), b"old");
+
+        fs::write(&existing_target, b"old-target").unwrap();
+        std::os::unix::fs::symlink(&existing_target, &existing_link).unwrap();
+        assert!(copy_artifact(&source, &existing_link).is_err());
+        assert_eq!(fs::read(&existing_target).unwrap(), b"old-target");
+
+        let source_link = directory.path().join("source-link");
+        let link_destination = directory.path().join("link-destination");
+        std::os::unix::fs::symlink(&source, &source_link).unwrap();
+        assert!(copy_artifact(&source_link, &link_destination).is_err());
+        assert!(!link_destination.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_launcher_requires_an_executable_regular_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("cutting-board");
+        let launcher = directory.path().join("cutting-board-launch");
+        fs::write(&binary, b"binary").unwrap();
+        fs::write(&launcher, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(linux_launcher_path(&binary), binary);
+
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(linux_launcher_path(&binary), launcher);
+
+        let launcher_target = directory.path().join("launcher-target");
+        fs::write(&launcher_target, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&launcher_target, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_file(&launcher).unwrap();
+        std::os::unix::fs::symlink(&launcher_target, &launcher).unwrap();
+        assert_eq!(linux_launcher_path(&binary), binary);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_failed_launch_restores_the_previous_binary() {
+        let directory = tempfile::tempdir().unwrap();
+        let built = directory.path().join("built");
+        let stable = directory.path().join("stable");
+        fs::write(&built, b"new").unwrap();
+        fs::write(&stable, b"old").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+
+        let executable_permissions = fs::Permissions::from_mode(0o755);
+        fs::set_permissions(&built, executable_permissions.clone()).unwrap();
+        fs::set_permissions(&stable, executable_permissions).unwrap();
+
+        let mut transaction = InstallTransaction {
+            arguments: HelperArguments {
+                built_bundle: built,
+                stable_bundle: stable.clone(),
+                old_bundle: stable.clone(),
+                old_pid: 1,
+            },
+            stable_parent: directory.path().to_path_buf(),
+            staging_bundle: None,
+            backup_bundle: None,
+            installed_bundle: false,
+        };
+
+        assert!(transaction.install().is_err());
+        let recovery = transaction.recover();
+        assert_eq!(recovery.target, Some(RecoveryTarget::Stable));
+        assert!(recovery.launch_error.is_some());
+        assert_eq!(fs::read(stable).unwrap(), b"old");
+    }
+
     #[test]
     fn progress_stages_are_ordered_and_complete() {
         let progress = [
@@ -913,6 +1270,7 @@ mod tests {
         assert!(progress.iter().all(|item| !item.message.is_empty()));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn derives_bundle_path_from_macos_executable() {
         let executable =
