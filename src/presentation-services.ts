@@ -123,7 +123,7 @@ export function boardGroupCards(group: ServiceBoardGroup): number {
 
 export function relatedContainersForGroup(services: ServiceSnapshot[], containers: ContainerInfo[]): ContainerInfo[] {
   const roots = services
-    .map((service) => service.project?.root_path?.trim() || (!service.project ? service.process?.working_directory?.trim() : ""))
+    .map((service) => service.project?.root_path?.trim())
     .filter((root): root is string => Boolean(root));
   if (roots.length === 0) return [];
   return containers

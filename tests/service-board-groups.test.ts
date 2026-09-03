@@ -38,6 +38,38 @@ function container(name: string, workingDir: string | null): ContainerInfo {
   };
 }
 
+function sshService(id: string, workingDirectory: string, port: number): ServiceSnapshot {
+  return {
+    id,
+    display_name: id,
+    tech: "ssh",
+    category: "runtime",
+    relevance: "dev",
+    endpoints: [{ family: "IPv4", address: "127.0.0.1", port, scope: "local", protocol: "TCP" }],
+    process: {
+      pid: 1234,
+      parent_pid: null,
+      name: "ssh",
+      executable: "/usr/bin/ssh",
+      working_directory: workingDirectory,
+      command: "ssh host",
+      create_time: 0,
+      uptime_seconds: 60,
+      cpu_percent: null,
+      memory_bytes: null,
+      uid: 1000
+    },
+    project: null,
+    status: "healthy",
+    warnings: [],
+    origin_kind: "terminal",
+    origin_label: null,
+    can_terminate: true,
+    browser_url: null,
+    active_profiles: []
+  };
+}
+
 test("counts the container grouped with a project's services as a card of that group", () => {
   const groups = serviceBoardGroups(
     [service("backend", "/home/dev/oasis26", 48080), service("oasis26", "/home/dev/oasis26", 48983)],
@@ -57,6 +89,25 @@ test("leaves out containers that belong to another project", () => {
   );
 
   assert.equal(boardGroupCards(groups[0]!), 1);
+});
+
+test("does not associate containers with projectless SSH services by working directory", () => {
+  const groups = serviceBoardGroups(
+    [
+      sshService("ssh-same", "/home/dev/oasis26", 54320),
+      sshService("ssh-parent", "/home/dev", 54321)
+    ],
+    [
+      container("same-dir-db", "/home/dev/oasis26"),
+      container("nested-dir-db", "/home/dev/oasis26/services")
+    ]
+  );
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]!.id, "other");
+  assert.equal(groups[0]!.services.length, 2);
+  assert.equal(groups[0]!.containers.length, 0);
+  assert.equal(boardGroupCards(groups[0]!), 2);
 });
 
 test("the tab badge counts the same cards the board renders", () => {
