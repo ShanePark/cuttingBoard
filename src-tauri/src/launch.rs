@@ -17,7 +17,7 @@ use logs::{
     LogSource, LogSourceCache, LogSourceKind,
 };
 use prepare::{append_log, apply_java_home, prepare_task, PrepareCache, PrepareResult};
-use shell::shell_command;
+pub(crate) use shell::shell_command;
 
 use std::{
     collections::HashMap,

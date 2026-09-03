@@ -6,7 +6,7 @@ use std::{
 #[cfg(unix)]
 use std::{env, ffi::CStr};
 
-pub(super) fn shell_command(value: &str) -> Command {
+pub(crate) fn shell_command(value: &str) -> Command {
     #[cfg(windows)]
     {
         let mut command = Command::new("cmd");
