@@ -98,7 +98,7 @@ export class ConsoleController {
   }
 
   renderConsoleJumpButton(): string {
-    return `<button class="console-jump-bottom" type="button" data-action="jump-to-bottom" aria-label="Jump to bottom" title="Jump to bottom" hidden>${uiIcon("chevronDown", 14)}<span>Jump to bottom</span></button>`;
+    return `<button class="console-jump-bottom" type="button" data-action="jump-to-bottom" aria-label="Jump to bottom" title="Jump to bottom" hidden>${uiIcon("chevronDown", 20)}</button>`;
   }
 
   applyConsoleHeight(): void {
