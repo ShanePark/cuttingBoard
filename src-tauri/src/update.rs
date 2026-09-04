@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use crate::launch::shell_command;
 use serde::Serialize;
 use std::{
     env,
@@ -24,19 +26,9 @@ const UPDATE_PROGRESS_TOTAL: u8 = 4;
 
 #[cfg(target_os = "macos")]
 const UPDATE_BUILD_COMMAND: &str = "npm run tauri build -- --bundles app";
-#[cfg(target_os = "macos")]
-const UPDATE_SHELL: &str = "/bin/zsh";
-#[cfg(target_os = "macos")]
-const UPDATE_BUILD_SCRIPT: &str =
-    "cd -- \"$1\" && export CARGO_TARGET_DIR=\"$2\" && exec npm run tauri build -- --bundles app";
 
 #[cfg(target_os = "linux")]
 const UPDATE_BUILD_COMMAND: &str = "npm run tauri build -- --no-bundle";
-#[cfg(target_os = "linux")]
-const UPDATE_SHELL: &str = "/bin/sh";
-#[cfg(target_os = "linux")]
-const UPDATE_BUILD_SCRIPT: &str =
-    "cd -- \"$1\" && export CARGO_TARGET_DIR=\"$2\" && exec npm run tauri build -- --no-bundle";
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const UPDATE_PREPARING_MIN_DURATION: Duration = Duration::from_millis(800);
@@ -337,20 +329,10 @@ fn prepare_update(app: &tauri::AppHandle) -> Result<UpdatePlan, String> {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_release_build(app: &tauri::AppHandle, source_root: &Path) -> Result<(), String> {
-    // A login shell supplies the user's Node/npm installation when the app was
-    // launched from Finder, where the GUI environment usually has a minimal
-    // PATH. The checkout path is passed as $1 instead of interpolated into the
-    // shell script, so spaces and shell metacharacters remain harmless.
-    let target_directory = release_target_directory(source_root);
-    let child = Command::new(UPDATE_SHELL)
-        .arg("-l")
-        .arg("-c")
-        .arg(UPDATE_BUILD_SCRIPT)
-        .arg("cutting-board-update")
-        .arg(source_root)
-        .arg(&target_directory)
-        .env("CARGO_TARGET_DIR", &target_directory)
-        .current_dir(source_root)
+    // Use the same configured login-interactive shell as managed tasks so
+    // Node version managers initialized from an interactive rc file are
+    // available when the app is launched from a desktop environment.
+    let child = release_build_command(source_root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -381,6 +363,16 @@ fn run_release_build(app: &tauri::AppHandle, source_root: &Path) -> Result<(), S
         ));
     }
     Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn release_build_command(source_root: &Path) -> Command {
+    let target_directory = release_target_directory(source_root);
+    let mut command = shell_command(UPDATE_BUILD_COMMAND);
+    command
+        .env("CARGO_TARGET_DIR", &target_directory)
+        .current_dir(source_root);
+    command
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1311,6 +1303,24 @@ mod tests {
             remaining_stage_delay(Duration::from_millis(900), Duration::from_millis(800)),
             Duration::ZERO
         );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn release_build_uses_the_configured_login_interactive_shell() {
+        let source_root = Path::new("/checkout/with spaces");
+        let target_directory = release_target_directory(source_root);
+        let command = release_build_command(source_root);
+        let args = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(args, ["-l", "-i", "-c", UPDATE_BUILD_COMMAND]);
+        assert_eq!(command.get_current_dir(), Some(source_root));
+        assert!(command.get_envs().any(|(key, value)| {
+            key == OsStr::new("CARGO_TARGET_DIR") && value == Some(target_directory.as_os_str())
+        }));
     }
 
     #[cfg(target_os = "macos")]
