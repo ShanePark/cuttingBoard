@@ -154,6 +154,11 @@ export interface AppInfo {
   update_supported: boolean;
 }
 
+export interface SystemMetrics {
+  cpu_percent: number | null;
+  memory_percent: number | null;
+}
+
 export interface UpdateCheckResult {
   available: boolean;
   current_commit: string;

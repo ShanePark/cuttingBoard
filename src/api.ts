@@ -7,6 +7,7 @@ import type {
   LaunchProfile,
   ManagedTaskSnapshot,
   ServiceLogSnapshot,
+  SystemMetrics,
   TerminationResult,
   UpdateCheckResult,
   UiSettings,
@@ -15,6 +16,7 @@ import type {
 
 export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
+  systemMetrics: () => invoke<SystemMetrics>("system_metrics"),
   scan: () => invoke<WorkspaceSnapshot>("scan_workspace"),
   containers: () => invoke<ContainerListing>("list_containers"),
   containerLogs: (containerId: string) =>

@@ -11,6 +11,11 @@ export function renderAppShell(): string {
       </nav>
       <div class="toolbar-actions" aria-label="Application actions">
         <button id="update-button" class="update-button" type="button" data-action="update" aria-label="Update Cutting Board" title="Update available — build and restart" hidden>${uiIcon("refresh", 18)}</button>
+        <div id="system-metrics" class="system-metrics" role="group" aria-label="System resource usage" title="System resource usage — updates every 2 seconds">
+          <span class="system-metric" data-system-metric="cpu">CPU <span class="system-metric-value" data-system-metric-value="cpu">—</span></span>
+          <span class="system-metrics-separator" aria-hidden="true">·</span>
+          <span class="system-metric" data-system-metric="memory">MEM <span class="system-metric-value" data-system-metric-value="memory">—</span></span>
+        </div>
         <button class="gear-button" type="button" data-action="settings" aria-label="Settings" title="Settings">${uiIcon("settings", 18)}</button>
       </div>
     </header>

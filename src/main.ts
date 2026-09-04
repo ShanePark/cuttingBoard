@@ -90,12 +90,14 @@ import type {
   LaunchProfile,
   LaunchState,
   ManagedTaskSnapshot,
+  SystemMetrics,
   UiSettings,
   WorkspaceSnapshot
 } from "./types";
 
 type Tab = "services" | "docker" | "launch";
 const CONSOLE_LOG_POLL_INTERVAL = 750;
+const SYSTEM_METRICS_POLL_INTERVAL = 2000;
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing application root");
@@ -126,6 +128,8 @@ let scanTimer: number | null = null;
 let consoleLogTimer: number | null = null;
 let uptimeTimer: number | null = null;
 let updateCheckTimer: number | null = null;
+let systemMetricsTimer: number | null = null;
+let systemMetricsBusy = false;
 let settingsSaveQueue = Promise.resolve();
 let settingsSaveRequestId = 0;
 let serviceSignature = "";
@@ -193,6 +197,7 @@ const {
 } = uiSupport;
 
 const updateButton = byId("update-button") as HTMLButtonElement;
+const systemMetricsElement = byId("system-metrics");
 const updateProgressView = createUpdateProgressView();
 const updateProgressListenerReady = listen<UpdateProgressEvent>("update-progress", (event) => updateProgressView.update(event.payload)).catch(() => undefined);
 const updateController = createUpdateController(
@@ -422,6 +427,7 @@ async function bootstrap(): Promise<void> {
     renderHeaderCounts();
     render(true);
     consoleController.applyConsoleHeight();
+    await refreshSystemMetrics();
     await updateProgressListenerReady;
     installTimers();
     installBoardObserver();
@@ -444,6 +450,32 @@ function installTimers(): void {
   if (appInfo?.update_supported && !appInfo.demo) {
     updateCheckTimer = window.setInterval(() => void updateController.checkForUpdate(), UPDATE_CHECK_INTERVAL_MS);
   }
+  if (systemMetricsTimer !== null) window.clearInterval(systemMetricsTimer);
+  systemMetricsTimer = window.setInterval(() => void refreshSystemMetrics(), SYSTEM_METRICS_POLL_INTERVAL);
+}
+
+async function refreshSystemMetrics(): Promise<void> {
+  if (systemMetricsBusy) return;
+  systemMetricsBusy = true;
+  try {
+    updateSystemMetrics(await api.systemMetrics());
+  } catch {
+    updateSystemMetrics(null);
+  } finally {
+    systemMetricsBusy = false;
+  }
+}
+
+function updateSystemMetrics(metrics: SystemMetrics | null): void {
+  const valueText = (value: number | null | undefined): string =>
+    value === null || value === undefined || !Number.isFinite(value) ? "—" : `${Math.round(value)}%`;
+  const cpuText = valueText(metrics?.cpu_percent);
+  const memoryText = valueText(metrics?.memory_percent);
+  const cpuValue = systemMetricsElement.querySelector<HTMLElement>('[data-system-metric-value="cpu"]');
+  const memoryValue = systemMetricsElement.querySelector<HTMLElement>('[data-system-metric-value="memory"]');
+  if (cpuValue && cpuValue.textContent !== cpuText) cpuValue.textContent = cpuText;
+  if (memoryValue && memoryValue.textContent !== memoryText) memoryValue.textContent = memoryText;
+  systemMetricsElement.setAttribute("aria-label", `System resource usage: CPU ${cpuText}, memory ${memoryText}`);
 }
 
 async function pollActiveConsoleLogs(): Promise<void> {

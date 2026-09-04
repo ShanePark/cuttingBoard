@@ -5,6 +5,7 @@ mod models;
 mod process_control;
 mod scanner;
 mod storage;
+mod system_metrics;
 mod update;
 mod window;
 
@@ -13,14 +14,15 @@ use crate::{
     models::{
         AppInfo, ContainerActionResult, ContainerListing, ContainerLogSnapshot, ContainerRequest,
         LaunchProfile, ManagedTaskSnapshot, RestartServiceRequest, ServiceIdentity,
-        ServiceLogSnapshot, ServiceRequest, TaskRequest, TerminateRequest, TerminationResult,
-        UiSettings, WorkspaceSnapshot,
+        ServiceLogSnapshot, ServiceRequest, SystemMetrics, TaskRequest, TerminateRequest,
+        TerminationResult, UiSettings, WorkspaceSnapshot,
     },
     storage::{
         delete_profile as remove_profile, demo_profiles, load_profiles as read_profiles,
         load_settings as read_settings, save_profile as persist_profile,
         save_settings as persist_settings,
     },
+    system_metrics::SystemMetricsState,
 };
 use std::{
     collections::HashMap,
@@ -41,6 +43,7 @@ struct AppStateInner {
     logs_dir: PathBuf,
     scan: Mutex<ScanState>,
     launch: Mutex<LaunchManager>,
+    system_metrics: Mutex<SystemMetricsState>,
 }
 
 #[derive(Debug, Default)]
@@ -80,6 +83,14 @@ async fn list_containers(state: State<'_, AppState>) -> Result<ContainerListing,
     tauri::async_runtime::spawn_blocking(move || Ok(docker::list_containers(demo)))
         .await
         .map_err(|error| format!("Docker task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn system_metrics(state: State<'_, AppState>) -> Result<SystemMetrics, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(lock(&state.0.system_metrics)?.refresh()))
+        .await
+        .map_err(|error| format!("System metrics task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -510,6 +521,7 @@ pub fn run() {
                 logs_dir,
                 scan: Mutex::new(ScanState::default()),
                 launch: Mutex::new(LaunchManager::default()),
+                system_metrics: Mutex::new(SystemMetricsState::default()),
             })));
             if let Some(seconds) = auto_close_seconds {
                 let handle = app.handle().clone();
@@ -536,6 +548,7 @@ pub fn run() {
             app_info,
             scan_workspace,
             list_containers,
+            system_metrics,
             container_logs,
             service_logs,
             start_container,
@@ -610,6 +623,7 @@ mod tests {
                 service_index: HashMap::new(),
             }),
             launch: Mutex::new(LaunchManager::default()),
+            system_metrics: Mutex::new(SystemMetricsState::default()),
         }));
 
         let snapshot = read_service_logs(&state, "service").unwrap();

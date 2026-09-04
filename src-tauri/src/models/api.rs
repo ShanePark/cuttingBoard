@@ -10,6 +10,12 @@ pub struct AppInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemMetrics {
+    pub cpu_percent: Option<f32>,
+    pub memory_percent: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminationResult {
     pub success: bool,
     pub message: String,
