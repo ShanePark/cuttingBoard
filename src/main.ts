@@ -377,7 +377,7 @@ root.addEventListener("keydown", (event) => {
     event.stopPropagation();
     return;
   }
-  keyboardNavigation.handleKeyboard(event);
+  if (!consoleController.handleOutputKey(event)) keyboardNavigation.handleKeyboard(event);
 });
 root.addEventListener("pointerdown", (event) => {
   if (updateProgressView.isActive()) {
@@ -875,10 +875,14 @@ function renderServiceConsolePatch(serviceId: string | null): ConsoleOutputPatch
     : null;
   const state = service && serviceLogState.serviceId === service.id ? serviceLogState : null;
   const renderingContext = servicesRenderingContext();
+  const restartLog = renderingContext.console.restartProgress
+    && (!service || renderingContext.console.restartProgress.serviceId === service.id)
+    ? renderingContext.console.restartProgress.logTail
+    : null;
   return {
     markup: renderServiceLogOutput(service, renderingContext.console),
     kind: serviceConsoleOutputKind(service, renderingContext.console),
-    log: state?.logs ?? ""
+    log: restartLog ?? state?.logs ?? ""
   };
 }
 

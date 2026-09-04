@@ -22,6 +22,8 @@ export function patchConsoleOutput(output: HTMLElement, markup: string, kind: st
     output.innerHTML = markup;
     output.dataset.consoleOutputKind = kind;
     if (hasLog) {
+      const currentLog = output.querySelector<HTMLElement>(".console-log");
+      if (currentLog && currentLog.textContent !== log) currentLog.textContent = log;
       output.scrollTop = scrollTopForConsoleUpdate(output, previousScrollTop, follow);
     }
     return;
@@ -64,4 +66,8 @@ export function patchConsoleOutput(output: HTMLElement, markup: string, kind: st
   }
   output.innerHTML = markup;
   output.dataset.consoleOutputKind = kind;
+  if (hasLog) {
+    const currentLog = output.querySelector<HTMLElement>(".console-log");
+    if (currentLog && currentLog.textContent !== log) currentLog.textContent = log;
+  }
 }
