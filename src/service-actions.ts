@@ -38,6 +38,7 @@ export type ServiceActionsContext = {
   setProfiles: (profiles: LaunchProfile[]) => void;
   refreshWorkspace: (force?: boolean) => Promise<void>;
   renderServices: (force?: boolean) => void;
+  renderCurrentView: (force?: boolean) => void;
   renderHeaderCounts: () => void;
   openUrl: (url: string) => Promise<void>;
   openModal: typeof openModal;
@@ -125,14 +126,14 @@ export function createServiceActions(context: ServiceActionsContext) {
     const key = `stop:${id}`;
     if (context.operations.has(key) || context.operations.has(`restart:${id}`)) return;
     context.operations.add(key);
-    context.renderServices(true);
+    context.renderCurrentView(true);
     try {
       const result = await context.api.terminate(id);
       context.toast(result.message, !result.success);
       await context.refreshWorkspace(true);
     } finally {
       context.operations.delete(key);
-      context.renderServices(true);
+      context.renderCurrentView(true);
     }
   }
 

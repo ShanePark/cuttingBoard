@@ -90,7 +90,7 @@ export function createLaunchActions(context: LaunchActionsContext) {
     pendingDeleteProfileId = null;
   }
 
-  function requestLaunchAction(action: PendingLaunchAction): void {
+  async function requestLaunchAction(action: PendingLaunchAction): Promise<void> {
     if (pendingLaunchAction !== null) return;
     const profile = findProfile(action.profileId);
     if (context.operations.has(launchProfileOperationKey(profile.id))) return;
@@ -101,19 +101,19 @@ export function createLaunchActions(context: LaunchActionsContext) {
       if (context.operations.has(`task:${profile.id}:${task.name}`)) return;
       if (action.direction === "start" && !launchTaskCanStart(state)) return;
       if ((action.direction === "stop" || action.direction === "restart") && !launchTaskCanStop(state) && state !== "external") return;
+      if (action.direction === "start") {
+        await runTask(profile.id, task.name, "start");
+        return;
+      }
       pendingLaunchAction = action;
-      const title = action.direction === "start" ? "Start task?" : action.direction === "restart" ? "Restart task?" : "Stop task?";
+      const title = action.direction === "restart" ? "Restart task?" : "Stop task?";
       // A container task is handed to Docker, so its copy talks about the container.
-      const description = action.direction === "start"
-        ? `Start <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will ${task.container ? "start its Docker container" : "launch the task process"}.`
-        : action.direction === "restart"
-          ? `Restart <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will stop and start ${task.container ? "its Docker container" : "the task process"}.`
-          : `Stop <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will ${task.container ? "stop its Docker container" : "terminate the task process"}.`;
-      const button = action.direction === "start"
-        ? `<button class="primary-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("play", 13)} Start</button>`
-        : action.direction === "restart"
-          ? `<button class="primary-button icon-button-label" type="button" data-action="confirm-launch-action">${restartIcon(13)} Restart</button>`
-          : `<button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("stop", 13)} Stop</button>`;
+      const description = action.direction === "restart"
+        ? `Restart <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will stop and start ${task.container ? "its Docker container" : "the task process"}.`
+        : `Stop <strong>${h(task.name)}</strong> in <strong>${h(profile.name)}</strong>? This will ${task.container ? "stop its Docker container" : "terminate the task process"}.`;
+      const button = action.direction === "restart"
+        ? `<button class="primary-button icon-button-label" type="button" data-action="confirm-launch-action">${restartIcon(13)} Restart</button>`
+        : `<button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("stop", 13)} Stop</button>`;
       context.openModal(title, `<p class="confirm-copy">${description}</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button>${button}</div>`);
       return;
     }
@@ -126,14 +126,14 @@ export function createLaunchActions(context: LaunchActionsContext) {
     const canStop = profile.tasks.some((task) => launchTaskCanStop(context.snapshotFor(profile.id, task.name)?.state ?? "stopped"));
     if (action.direction === "start" && !canStart) return;
     if (action.direction === "stop" && !canStop) return;
+    if (action.direction === "start") {
+      await startProfile(profile.id);
+      return;
+    }
     pendingLaunchAction = action;
-    const title = action.direction === "start" ? "Run all tasks?" : "Stop all tasks?";
-    const description = action.direction === "start"
-      ? `Run all tasks in <strong>${h(profile.name)}</strong>? Stopped tasks will be started; tasks that are already running will be left unchanged.`
-      : `Stop all tasks? This will terminate all running or starting task processes in <strong>${h(profile.name)}</strong>.`;
-    const button = action.direction === "start"
-      ? `<button class="primary-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("play", 13)} Run All</button>`
-      : `<button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("stop", 13)} Stop All</button>`;
+    const title = "Stop all tasks?";
+    const description = `Stop all tasks? This will terminate all running or starting task processes in <strong>${h(profile.name)}</strong>.`;
+    const button = `<button class="primary-button danger-confirm-button icon-button-label" type="button" data-action="confirm-launch-action">${uiIcon("stop", 13)} Stop All</button>`;
     context.openModal(title, `<p class="confirm-copy">${description}</p><div class="modal-actions"><button class="secondary-button" type="button" data-action="close-modal">Cancel</button>${button}</div>`);
   }
 

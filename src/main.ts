@@ -327,6 +327,7 @@ const serviceActions = createServiceActions({
   setProfiles: (next) => { profiles = next; },
   refreshWorkspace,
   renderServices,
+  renderCurrentView: render,
   renderHeaderCounts,
   openUrl,
   openModal,
@@ -1262,12 +1263,12 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "save-profile") await launchActions.saveProfileFromModal(target.dataset.profileId ?? null);
     else if (action === "delete-profile") launchActions.requestDeleteProfile(required(target.dataset.profileId));
     else if (action === "confirm-delete-profile") await launchActions.confirmDeleteProfile(required(target.dataset.profileId));
-    else if (action === "start-profile") launchActions.requestLaunchAction({ kind: "profile", direction: "start", profileId: required(target.dataset.profileId) });
-    else if (action === "stop-profile") launchActions.requestLaunchAction({ kind: "profile", direction: "stop", profileId: required(target.dataset.profileId) });
+    else if (action === "start-profile") await launchActions.requestLaunchAction({ kind: "profile", direction: "start", profileId: required(target.dataset.profileId) });
+    else if (action === "stop-profile") await launchActions.requestLaunchAction({ kind: "profile", direction: "stop", profileId: required(target.dataset.profileId) });
     else if (action === "select-task") selectTask(required(target.dataset.profileId), required(target.dataset.taskName), true);
-    else if (action === "start-task") launchActions.requestLaunchAction({ kind: "task", direction: "start", profileId: required(target.dataset.profileId), taskName: required(target.dataset.taskName) });
-    else if (action === "restart-task") launchActions.requestLaunchAction({ kind: "task", direction: "restart", profileId: required(target.dataset.profileId), taskName: required(target.dataset.taskName) });
-    else if (action === "stop-task") launchActions.requestLaunchAction({ kind: "task", direction: "stop", profileId: required(target.dataset.profileId), taskName: required(target.dataset.taskName) });
+    else if (action === "start-task") await launchActions.requestLaunchAction({ kind: "task", direction: "start", profileId: required(target.dataset.profileId), taskName: required(target.dataset.taskName) });
+    else if (action === "restart-task") await launchActions.requestLaunchAction({ kind: "task", direction: "restart", profileId: required(target.dataset.profileId), taskName: required(target.dataset.taskName) });
+    else if (action === "stop-task") await launchActions.requestLaunchAction({ kind: "task", direction: "stop", profileId: required(target.dataset.profileId), taskName: required(target.dataset.taskName) });
     else if (action === "confirm-launch-action") await launchActions.confirmLaunchAction();
     else if (action === "jump-to-bottom") consoleController.jumpToBottom(target);
     else if (action === "toggle-bottom-panel") consoleController.toggleBottomPanel(required(target.dataset.panelId));

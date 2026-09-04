@@ -69,11 +69,9 @@ test("container tasks are started and stopped through Docker, never as a shell c
 
 test("only Docker reports the state of a container task", () => {
   const manager = readFileSync(new URL("../src-tauri/src/launch.rs", import.meta.url), "utf8");
-  const actions = readFileSync(new URL("../src/launch-actions.ts", import.meta.url), "utf8");
 
   // A stopped snapshot from the manager would win the lookup and hide the running container.
   assert.match(manager, /if task\.container_name\(\)\.is_some\(\) \{\n\s+continue;/);
-  assert.match(actions, /task\.container \? "start its Docker container" : "launch the task process"/);
 });
 
 test("a launch profile can be deleted while its tasks are running", () => {
