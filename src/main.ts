@@ -1061,10 +1061,16 @@ function updateDockerContainerStatuses(): void {
 function renderLaunch(force = false): void {
   consoleController.captureLaunchConsoleState();
   listScroll.capture();
+  // Launch card metrics point at scanned service IDs, which change when a restart creates a replacement process.
+  const launchServiceIds = workspace?.services
+    .filter((service) => service.relevance === "dev")
+    .map((service) => service.id)
+    .sort() ?? [];
   const signature = JSON.stringify([
     profiles,
     taskSnapshots.map(({ log_tail: _logTail, ...snapshot }) => snapshot),
     appInfo?.demo,
+    launchServiceIds,
     // Container task icons follow the image behind the container, so the listing is part of the view.
     containerListing?.available ? containerListing.containers.map((container) => `${container.name}=${container.image}`).sort() : [],
     [...operations],

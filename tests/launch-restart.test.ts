@@ -48,6 +48,11 @@ test("launch restart keeps matched service uptime in the restarting state", () =
   assert.match(uiSupport, /operations\.has\(`restart:\$\{service\.id\}`\) \|\| launchRestarting/);
 });
 
+test("launch cards rebuild when a workspace scan replaces a backing service", () => {
+  assert.match(main, /const launchServiceIds = workspace\?\.services\s*\.filter\(\(service\) => service\.relevance === "dev"\)\s*\.map\(\(service\) => service\.id\)\s*\.sort\(\) \?\? \[\];/);
+  assert.match(main, /appInfo\?\.demo,\s*launchServiceIds,/);
+});
+
 test("restart icon combines refresh and play affordances", () => {
   const icons = readFileSync(new URL("../src/icons.ts", import.meta.url), "utf8");
   assert.match(icons, /export function restartIcon\(/);
