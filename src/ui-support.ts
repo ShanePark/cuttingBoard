@@ -1,5 +1,6 @@
 import { uiIcon } from "./icons";
 import { escapeHtml as h } from "./html";
+import { launchTaskRestartOperationKey } from "./launch-actions";
 import {
   FRESH_UPTIME_SECONDS,
   boardGroupCards,
@@ -57,11 +58,19 @@ export function createUiSupport(context: UiSupportContext) {
     const workspace = context.getWorkspace();
     if (!workspace) return;
     const services = new Map(workspace.services.map((service) => [service.id, service]));
+    const operations = context.getOperations();
     context.elements.workspace.querySelectorAll<HTMLElement>("[data-metrics-id]").forEach((tile) => {
       const service = services.get(tile.dataset.metricsId ?? "");
       if (!service) return;
       const uptime = currentUptime(service);
-      setMetricText(tile, "uptime", uptimeText(service, context.getOperations().has(`stop:${service.id}`)));
+      const launchRestarting = tile.dataset.profileId && tile.dataset.taskName
+        ? operations.has(launchTaskRestartOperationKey(tile.dataset.profileId, tile.dataset.taskName))
+        : false;
+      setMetricText(tile, "uptime", uptimeText(
+        service,
+        operations.has(`stop:${service.id}`),
+        operations.has(`restart:${service.id}`) || launchRestarting
+      ));
       setMetricText(tile, "memory", formatBytes(service.process?.memory_bytes ?? null));
       tile.querySelector(".metric-uptime")?.classList.toggle("is-fresh", uptime !== null && uptime < FRESH_UPTIME_SECONDS);
     });

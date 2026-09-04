@@ -1,5 +1,6 @@
 import { restartIcon, techIcon, uiIcon } from "./icons";
 import { escapeHtml as h } from "./html";
+import { launchTaskRestartOperationKey } from "./launch-actions";
 import {
   FRESH_UPTIME_SECONDS,
   currentUptime,
@@ -98,6 +99,7 @@ export function renderTask(profile: LaunchProfile, task: LaunchTask, context: La
   const taskOperation = context.operations.has(`task:${profile.id}:${task.name}`);
   const serviceStopping = matchedService ? context.operations.has(`stop:${matchedService.id}`) : false;
   const serviceRestarting = matchedService ? context.operations.has(`restart:${matchedService.id}`) : false;
+  const taskRestarting = context.operations.has(launchTaskRestartOperationKey(profile.id, task.name));
   const serviceOperation = serviceStopping || serviceRestarting;
   const profileOperation = context.operations.has(context.launchProfileOperationKey(profile.id));
   const busy = taskOperation || serviceOperation || profileOperation;
@@ -115,7 +117,7 @@ export function renderTask(profile: LaunchProfile, task: LaunchTask, context: La
   const stopAction = `<button class="stop-button service-card-control task-card-action${stopUnavailable ? " is-unavailable" : ""}" type="button" data-tile-action data-action="${externalCanStop ? "stop-service" : "stop-task"}"${externalCanStop ? ` data-service-id="${h(matchedService?.id ?? "")}"` : ` data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}"`} aria-label="${externalCanStop ? "Stop externally managed service" : `Stop ${task.name}`}" title="${active ? busy ? "Stopping task" : "Stop task" : externalCanStop ? "Stop externally managed service" : external ? "Cannot stop an externally managed task" : "Task is not running"}" ${stopUnavailable || busy ? "disabled" : ""}>${uiIcon("stop", 15)}</button>`;
   const matchedUptime = matchedService ? currentUptime(matchedService) : null;
   const metricsMarkup = matchedService
-    ? `<span class="metric metric-uptime${matchedUptime !== null && matchedUptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(context.uptimeText(matchedService, serviceStopping, serviceRestarting))}</span></span><span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(matchedService.process?.memory_bytes ?? null))}</span></span>`
+    ? `<span class="metric metric-uptime${matchedUptime !== null && matchedUptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(context.uptimeText(matchedService, serviceStopping, serviceRestarting || taskRestarting))}</span></span><span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(matchedService.process?.memory_bytes ?? null))}</span></span>`
     : state === "external"
       ? `<span class="metric metric-state is-external" title="Running externally">${uiIcon("terminal", 13)}<span class="sr-only">Running externally</span></span>`
       : `<span class="metric metric-state ${busy ? "is-busy" : `state-${state}`}" title="Task state">${uiIcon(state === "running" ? "play" : "terminal", 13)}<span class="sr-only">State </span>${h(stateLabel(state))}</span>`;

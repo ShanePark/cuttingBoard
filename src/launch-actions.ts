@@ -47,6 +47,10 @@ export function launchProfileOperationKey(profileId: string): string {
   return `profile:${profileId}`;
 }
 
+export function launchTaskRestartOperationKey(profileId: string, taskName: string): string {
+  return `restart-task:${profileId}:${taskName}`;
+}
+
 export function launchProfileHasTaskOperation(profile: LaunchProfile, operations: ReadonlySet<string>): boolean {
   return profile.tasks.some((task) => operations.has(`task:${profile.id}:${task.name}`));
 }
@@ -201,9 +205,11 @@ export function createLaunchActions(context: LaunchActionsContext) {
 
   async function runTask(profileId: string, taskName: string, direction: "start" | "stop" | "restart", refresh = true, select = true): Promise<void> {
     const key = `task:${profileId}:${taskName}`;
+    const restartKey = direction === "restart" ? launchTaskRestartOperationKey(profileId, taskName) : null;
     if (context.operations.has(key)) return;
     if (select) focusTask(profileId, taskName);
     context.operations.add(key);
+    if (restartKey) context.operations.add(restartKey);
     context.renderLaunch(true);
     const streamLogs = direction !== "stop" && context.api.taskLogTail && context.updateTaskLogTail;
     const readLatestLog = async (): Promise<void> => {
@@ -236,6 +242,7 @@ export function createLaunchActions(context: LaunchActionsContext) {
     } finally {
       stopLogPolling?.();
       context.operations.delete(key);
+      if (restartKey) context.operations.delete(restartKey);
       if (refresh) await context.refreshLaunch(true);
     }
   }

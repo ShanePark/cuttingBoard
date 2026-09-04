@@ -4,6 +4,7 @@ import test from "node:test";
 
 const rendering = readFileSync(new URL("../src/launch-rendering.ts", import.meta.url), "utf8");
 const actions = readFileSync(new URL("../src/launch-actions.ts", import.meta.url), "utf8");
+const uiSupport = readFileSync(new URL("../src/ui-support.ts", import.meta.url), "utf8");
 const api = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
 const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 
@@ -33,6 +34,18 @@ test("launch start and restart reveal the console and stream logs before complet
   assert.match(main, /taskLogTail: api\.taskLogTail/);
   assert.match(main, /function focusTaskConsole\(profileId: string, taskName: string\)/);
   assert.match(main, /function updateTaskLogTail\(profileId: string, taskName: string, logTail: string\)/);
+});
+
+test("launch restart keeps matched service uptime in the restarting state", () => {
+  assert.match(actions, /export function launchTaskRestartOperationKey\(profileId: string, taskName: string\): string/);
+  assert.match(actions, /const restartKey = direction === "restart" \? launchTaskRestartOperationKey\(profileId, taskName\) : null/);
+  assert.match(actions, /context\.operations\.add\(key\);\s*if \(restartKey\) context\.operations\.add\(restartKey\)/);
+  assert.match(actions, /context\.operations\.delete\(key\);\s*if \(restartKey\) context\.operations\.delete\(restartKey\)/);
+  assert.match(rendering, /const taskRestarting = context\.operations\.has\(launchTaskRestartOperationKey\(profile\.id, task\.name\)\)/);
+  assert.match(rendering, /context\.uptimeText\(matchedService, serviceStopping, serviceRestarting \|\| taskRestarting\)/);
+  assert.match(uiSupport, /tile\.dataset\.profileId && tile\.dataset\.taskName/);
+  assert.match(uiSupport, /launchTaskRestartOperationKey\(tile\.dataset\.profileId, tile\.dataset\.taskName\)/);
+  assert.match(uiSupport, /operations\.has\(`restart:\$\{service\.id\}`\) \|\| launchRestarting/);
 });
 
 test("restart icon combines refresh and play affordances", () => {
