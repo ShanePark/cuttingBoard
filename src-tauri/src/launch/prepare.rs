@@ -48,6 +48,10 @@ pub(super) struct PreparedLaunch {
     pub(super) program: OsString,
     pub(super) args: Vec<OsString>,
     pub(super) cwd: PathBuf,
+    /// Environment assignments captured from the saved command. Project-native launches no
+    /// longer replay the shell prefix, so these must be applied explicitly to both the build
+    /// tool and the application it starts.
+    pub(super) environment: Vec<(OsString, OsString)>,
     /// A JDK explicitly present in the captured Java command, if any. Build tools inherit this
     /// environment so a project that needs (for example) JDK 8 is not silently built with the
     /// desktop's default JDK.
@@ -64,6 +68,7 @@ struct PreparePlan {
     args: Vec<OsString>,
     cwd: PathBuf,
     inputs: Vec<PathBuf>,
+    environment: Vec<(OsString, OsString)>,
     java_home: Option<PathBuf>,
 }
 
@@ -216,6 +221,9 @@ fn resolve_spec(
         if spec.build_tool.is_none() {
             spec.build_tool = detect_build_tool(profile, task);
         }
+        if spec.profiles.is_empty() {
+            spec.profiles = command_active_profiles(&task.command);
+        }
         // A project-native Maven launch needs a main class. Generated metadata normally carries
         // it, while old profiles can still be upgraded from their command or source tree. Gradle
         // BootRun resolves its own main class and does not need this field.
@@ -243,7 +251,7 @@ fn resolve_spec(
         kind: LaunchPrepareKind::SpringBoot,
         build_tool: Some(build_tool),
         module: None,
-        profiles: Vec::new(),
+        profiles: command_active_profiles(&task.command),
         main_class: infer_main_class(profile, task),
     };
     Ok(Some(spec))
@@ -377,6 +385,7 @@ fn build_plan(
             roots.build_root.display()
         ));
     }
+    let environment = command_environment(&task.command);
     let java_home = java_home_for_plan(&task.command, &roots.build_root, &tool);
     Ok(PreparePlan {
         tool,
@@ -387,6 +396,7 @@ fn build_plan(
         args,
         cwd: roots.build_root,
         inputs,
+        environment,
         java_home,
     })
 }
@@ -654,6 +664,7 @@ fn project_native_launch(
                 program,
                 args,
                 cwd: plan.module_root.clone(),
+                environment: plan.environment.clone(),
                 java_home: plan.java_home.clone(),
             })
         }
@@ -679,6 +690,7 @@ fn project_native_launch(
                 // Gradle discovers settings.gradle from the invocation directory, so a
                 // multi-module build must run from the root even when the task's cwd is a module.
                 cwd: plan.build_root.clone(),
+                environment: plan.environment.clone(),
                 java_home: plan.java_home.clone(),
             })
         }
@@ -715,12 +727,7 @@ struct JavaLaunchDetails {
 
 fn java_launch_details(command: &str) -> Option<JavaLaunchDetails> {
     let tokens = command_tokens(command);
-    let java_index = tokens.iter().position(|token| {
-        Path::new(token)
-            .file_name()
-            .and_then(OsStr::to_str)
-            .is_some_and(|name| matches!(name.to_ascii_lowercase().as_str(), "java" | "java.exe"))
-    })?;
+    let java_index = java_command_index(&tokens)?;
     let executable = OsString::from(&tokens[java_index]);
     let mut jvm_args = Vec::new();
     let mut index = java_index + 1;
@@ -772,11 +779,140 @@ fn java_launch_details(command: &str) -> Option<JavaLaunchDetails> {
 }
 
 fn command_tokens(command: &str) -> Vec<String> {
-    command
-        .split_whitespace()
-        .map(|token| token.trim_matches(['\'', '"']).to_owned())
-        .filter(|token| !token.is_empty())
-        .collect()
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escaped = false;
+    let mut started = false;
+    let mut characters = command.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            started = true;
+            continue;
+        }
+        if character == '\\' && !in_single_quote {
+            if characters
+                .peek()
+                .is_some_and(|next| next.is_whitespace() || matches!(next, '\\' | '\'' | '"'))
+            {
+                escaped = true;
+            } else {
+                // Preserve ordinary backslashes so quoted Windows paths are not corrupted when
+                // a saved command is inspected on another platform.
+                current.push(character);
+            }
+            started = true;
+            continue;
+        }
+        match character {
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                started = true;
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                started = true;
+            }
+            character if character.is_whitespace() && !in_single_quote && !in_double_quote => {
+                if started {
+                    tokens.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            character => {
+                current.push(character);
+                started = true;
+            }
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if started {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn java_command_index(tokens: &[String]) -> Option<usize> {
+    tokens.iter().position(|token| {
+        Path::new(token)
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| matches!(name.to_ascii_lowercase().as_str(), "java" | "java.exe"))
+    })
+}
+
+fn command_environment(command: &str) -> Vec<(OsString, OsString)> {
+    let tokens = command_tokens(command);
+    let Some(java_index) = java_command_index(&tokens) else {
+        return Vec::new();
+    };
+
+    let mut assignments = Vec::new();
+    let mut env_command_seen = false;
+    for token in &tokens[..java_index] {
+        if is_env_command(token) && !env_command_seen {
+            env_command_seen = true;
+            continue;
+        }
+        let Some((name, value)) = environment_assignment(token) else {
+            // Only a contiguous assignment prefix is safe to replay without a shell. An
+            // unsupported env option or wrapper command must not cause later arbitrary tokens to
+            // be reinterpreted as environment variables.
+            return Vec::new();
+        };
+        if let Some(existing) = assignments.iter_mut().find(|(key, _)| key == &name) {
+            existing.1 = value;
+        } else {
+            assignments.push((name, value));
+        }
+    }
+    assignments
+}
+
+fn environment_assignment(token: &str) -> Option<(OsString, OsString)> {
+    let (name, value) = token.split_once('=')?;
+    if !is_environment_name(name) {
+        return None;
+    }
+    Some((name.into(), value.into()))
+}
+
+fn is_environment_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+fn is_env_command(token: &str) -> bool {
+    Path::new(token)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| matches!(name.to_ascii_lowercase().as_str(), "env" | "env.exe"))
+}
+
+fn command_active_profiles(command: &str) -> Vec<String> {
+    command_environment(command)
+        .into_iter()
+        .find(|(name, _)| name == "SPRING_PROFILES_ACTIVE")
+        .map(|(_, value)| {
+            value
+                .to_string_lossy()
+                .split(',')
+                .map(str::trim)
+                .filter(|profile| !profile.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn java_option_takes_value(option: &str) -> bool {
@@ -989,6 +1125,10 @@ pub(super) fn apply_java_home(command: &mut Command, java_home: Option<&Path>) {
     command.env("PATH", path);
 }
 
+pub(super) fn apply_environment(command: &mut Command, environment: &[(OsString, OsString)]) {
+    command.envs(environment.iter().map(|(name, value)| (name, value)));
+}
+
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -1019,6 +1159,7 @@ fn run_plan(plan: &PreparePlan, log_path: &Path, task: &LaunchTask) -> Result<()
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
     apply_java_home(&mut command, plan.java_home.as_deref());
+    apply_environment(&mut command, &plan.environment);
     let status = command.status().map_err(|error| {
         format!(
             "Could not prepare {} with {}: {error}",
@@ -1260,12 +1401,111 @@ mod tests {
         }
     }
 
+    #[test]
+    fn command_environment_preserves_only_a_leading_assignment_prefix() {
+        let command = r#"env R_HOME="/opt/R with spaces" LD_LIBRARY_PATH='/opt/lib' SPRING_PROFILES_ACTIVE=dev java -cp app.jar App"#;
+        assert_eq!(
+            command_environment(command),
+            vec![
+                ("R_HOME".into(), "/opt/R with spaces".into()),
+                ("LD_LIBRARY_PATH".into(), "/opt/lib".into()),
+                ("SPRING_PROFILES_ACTIVE".into(), "dev".into()),
+            ]
+        );
+        assert_eq!(
+            command_environment("R_HOME=/opt/R SPRING_PROFILES_ACTIVE=dev java -cp app.jar App"),
+            vec![
+                ("R_HOME".into(), "/opt/R".into()),
+                ("SPRING_PROFILES_ACTIVE".into(), "dev".into()),
+            ]
+        );
+        assert!(command_environment("env -i R_HOME=/opt/R java -cp app.jar App").is_empty());
+        assert!(command_environment("wrapper --set R_HOME=/opt/R java -cp app.jar App").is_empty());
+    }
+
+    #[test]
+    fn command_tokens_preserve_windows_path_separators() {
+        assert_eq!(
+            command_tokens(r#""C:\Program Files\Java\bin\java.exe" -cp app.jar App"#)[0],
+            r#"C:\Program Files\Java\bin\java.exe"#
+        );
+    }
+
+    #[test]
+    fn command_environment_derives_spring_profiles() {
+        assert_eq!(
+            command_active_profiles("env SPRING_PROFILES_ACTIVE=dev,test java -cp app.jar App"),
+            vec!["dev", "test"]
+        );
+    }
+
     #[cfg(unix)]
     fn executable_script(path: &Path, body: &str) {
         fs::write(path, body).unwrap();
         let mut permissions = fs::metadata(path).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_prepare_and_native_launch_receive_saved_environment() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let module = root.join("adm");
+        fs::create_dir(&module).unwrap();
+        fs::write(root.join("settings.gradle"), "include ':adm'\n").unwrap();
+        fs::write(module.join("build.gradle"), "plugins {}\n").unwrap();
+        fs::create_dir_all(module.join("src/main/java")).unwrap();
+        fs::write(module.join("src/main/java/App.java"), "class App {}\n").unwrap();
+        executable_script(
+            &root.join("gradlew"),
+            "#!/bin/sh\nprintf '%s|%s|%s\n' \"$SPRING_PROFILES_ACTIVE\" \"$R_HOME\" \"$LD_LIBRARY_PATH\" >> env-log\nexit 0\n",
+        );
+
+        let r_home = root.join("r-home");
+        let library_path = root.join("r-libs");
+        let command = format!(
+            "env R_HOME={} LD_LIBRARY_PATH={} SPRING_PROFILES_ACTIVE=dev java -cp stale.jar App",
+            r_home.display(),
+            library_path.display()
+        );
+        let mut spec = spring_spec(LaunchBuildTool::Gradle);
+        spec.module = Some("adm".into());
+        let mut profile = profile(root, &command, Some(spec));
+        profile.tasks[0].cwd = "adm".into();
+        let logs = root.join("logs");
+        let log = logs.join("api.log");
+
+        let result = prepare_task(
+            &mut PrepareCache::default(),
+            &profile,
+            &profile.tasks[0],
+            &logs,
+            &log,
+        )
+        .unwrap()
+        .unwrap();
+        let native = result.launch.as_ref().expect("Gradle native launch");
+        assert_eq!(
+            native.environment,
+            vec![
+                ("R_HOME".into(), r_home.clone().into_os_string()),
+                (
+                    "LD_LIBRARY_PATH".into(),
+                    library_path.clone().into_os_string()
+                ),
+                ("SPRING_PROFILES_ACTIVE".into(), "dev".into()),
+            ]
+        );
+        assert!(native
+            .args
+            .iter()
+            .any(|argument| argument == "--args=--spring.profiles.active=dev"));
+        assert_eq!(
+            fs::read_to_string(root.join("env-log")).unwrap(),
+            format!("dev|{}|{}\n", r_home.display(), library_path.display())
+        );
     }
 
     #[cfg(unix)]

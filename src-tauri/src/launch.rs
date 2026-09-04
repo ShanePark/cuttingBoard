@@ -16,7 +16,9 @@ use logs::{
     read_log_tail, recovered_external_task_log_path, recovered_managed_log_path, safe_name,
     LogSource, LogSourceCache, LogSourceKind,
 };
-use prepare::{append_log, apply_java_home, prepare_task, PrepareCache, PrepareResult};
+use prepare::{
+    append_log, apply_environment, apply_java_home, prepare_task, PrepareCache, PrepareResult,
+};
 pub(crate) use shell::shell_command;
 
 use std::{
@@ -341,6 +343,7 @@ impl LaunchManager {
             let mut command = std::process::Command::new(&prepared.program);
             command.args(&prepared.args).current_dir(&prepared.cwd);
             apply_java_home(&mut command, prepared.java_home.as_deref());
+            apply_environment(&mut command, &prepared.environment);
             command
         } else {
             let mut command = shell_command(&task.command);
