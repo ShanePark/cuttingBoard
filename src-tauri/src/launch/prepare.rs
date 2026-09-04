@@ -849,13 +849,14 @@ fn java_command_index(tokens: &[String]) -> Option<usize> {
 
 fn command_environment(command: &str) -> Vec<(OsString, OsString)> {
     let tokens = command_tokens(command);
-    let Some(java_index) = java_command_index(&tokens) else {
+    let prefix_end = java_command_index(&tokens).unwrap_or_else(|| environment_prefix_end(&tokens));
+    if prefix_end == 0 {
         return Vec::new();
-    };
+    }
 
     let mut assignments = Vec::new();
     let mut env_command_seen = false;
-    for token in &tokens[..java_index] {
+    for token in &tokens[..prefix_end] {
         if is_env_command(token) && !env_command_seen {
             env_command_seen = true;
             continue;
@@ -873,6 +874,21 @@ fn command_environment(command: &str) -> Vec<(OsString, OsString)> {
         }
     }
     assignments
+}
+
+fn environment_prefix_end(tokens: &[String]) -> usize {
+    let mut index = if tokens.first().is_some_and(|token| is_env_command(token)) {
+        1
+    } else {
+        0
+    };
+    while tokens
+        .get(index)
+        .is_some_and(|token| environment_assignment(token).is_some())
+    {
+        index += 1;
+    }
+    index
 }
 
 fn environment_assignment(token: &str) -> Option<(OsString, OsString)> {
@@ -900,19 +916,71 @@ fn is_env_command(token: &str) -> bool {
 }
 
 fn command_active_profiles(command: &str) -> Vec<String> {
-    command_environment(command)
+    let tokens = command_tokens(command);
+    let application_profiles = application_active_profiles(&tokens);
+    let jvm_profiles = jvm_active_profiles(&tokens);
+    let environment_profiles = command_environment(command)
         .into_iter()
         .find(|(name, _)| name == "SPRING_PROFILES_ACTIVE")
-        .map(|(_, value)| {
-            value
-                .to_string_lossy()
-                .split(',')
-                .map(str::trim)
-                .filter(|profile| !profile.is_empty())
-                .map(str::to_owned)
-                .collect()
-        })
+        .and_then(|(_, value)| profile_values(&value.to_string_lossy()));
+
+    // Spring Boot gives command-line application arguments precedence over system properties,
+    // which in turn take precedence over environment variables. Preserve that order when a
+    // legacy launch command contains more than one way to select a profile.
+    application_profiles
+        .or(jvm_profiles)
+        .or(environment_profiles)
         .unwrap_or_default()
+}
+
+fn application_active_profiles(tokens: &[String]) -> Option<Vec<String>> {
+    let mut profiles = None;
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = &tokens[index];
+        if let Some(value) = token.strip_prefix("--spring.profiles.active=") {
+            profiles = profile_values(value);
+        } else if token == "--spring.profiles.active" {
+            if let Some(value) = tokens
+                .get(index + 1)
+                .filter(|value| !value.starts_with('-'))
+            {
+                profiles = profile_values(value);
+                index += 1;
+            }
+        } else if token == "--args" {
+            if let Some(value) = tokens.get(index + 1) {
+                if let Some(nested) = application_active_profiles(&command_tokens(value)) {
+                    profiles = Some(nested);
+                }
+                index += 1;
+            }
+        } else if let Some(value) = token.strip_prefix("--args=") {
+            if let Some(nested) = application_active_profiles(&command_tokens(value)) {
+                profiles = Some(nested);
+            }
+        }
+        index += 1;
+    }
+    profiles
+}
+
+fn jvm_active_profiles(tokens: &[String]) -> Option<Vec<String>> {
+    tokens
+        .iter()
+        .filter_map(|token| token.strip_prefix("-Dspring.profiles.active="))
+        .filter_map(profile_values)
+        .last()
+}
+
+fn profile_values(value: &str) -> Option<Vec<String>> {
+    let profiles = value
+        .split(',')
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    (!profiles.is_empty()).then_some(profiles)
 }
 
 fn java_option_takes_value(option: &str) -> bool {
@@ -1419,6 +1487,10 @@ mod tests {
                 ("SPRING_PROFILES_ACTIVE".into(), "dev".into()),
             ]
         );
+        assert_eq!(
+            command_environment("env SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun"),
+            vec![("SPRING_PROFILES_ACTIVE".into(), "dev".into())]
+        );
         assert!(command_environment("env -i R_HOME=/opt/R java -cp app.jar App").is_empty());
         assert!(command_environment("wrapper --set R_HOME=/opt/R java -cp app.jar App").is_empty());
     }
@@ -1437,6 +1509,67 @@ mod tests {
             command_active_profiles("env SPRING_PROFILES_ACTIVE=dev,test java -cp app.jar App"),
             vec!["dev", "test"]
         );
+    }
+
+    #[test]
+    fn command_active_profiles_derives_application_and_jvm_options() {
+        assert_eq!(
+            command_active_profiles("./gradlew bootRun --args='--spring.profiles.active=dev'"),
+            vec!["dev"]
+        );
+        assert_eq!(
+            command_active_profiles("env SPRING_PROFILES_ACTIVE=dev ./gradlew bootRun"),
+            vec!["dev"]
+        );
+        assert_eq!(
+            command_active_profiles("java -cp app.jar App --spring.profiles.active dev,test"),
+            vec!["dev", "test"]
+        );
+        assert_eq!(
+            command_active_profiles("java -Dspring.profiles.active=staging -cp app.jar App"),
+            vec!["staging"]
+        );
+    }
+
+    #[test]
+    fn command_active_profiles_prefers_application_args_over_jvm_and_environment() {
+        let command = "env SPRING_PROFILES_ACTIVE=prod java -Dspring.profiles.active=staging \
+            -cp app.jar App --spring.profiles.active=dev";
+        assert_eq!(command_active_profiles(command), vec!["dev"]);
+
+        assert_eq!(
+            command_active_profiles(
+                "env SPRING_PROFILES_ACTIVE=prod java -Dspring.profiles.active=staging \
+                    -cp app.jar App"
+            ),
+            vec!["staging"]
+        );
+    }
+
+    #[test]
+    fn legacy_gradle_boot_run_forwards_spring_profile_argument() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        fs::write(
+            root.join("build.gradle"),
+            "plugins { id 'org.springframework.boot' version '3.4.0' }\n",
+        )
+        .unwrap();
+        let profile = profile(
+            root,
+            "java -cp stale.jar com.example.Application --spring.profiles.active=dev",
+            None,
+        );
+        let task = &profile.tasks[0];
+        let spec = resolve_spec(&profile, task).unwrap().unwrap();
+        assert_eq!(spec.profiles, vec!["dev"]);
+
+        let plan = build_plan(&profile, task, &spec).unwrap();
+        let launch = project_native_launch(&plan, task, &spec).unwrap();
+        assert!(launch
+            .args
+            .iter()
+            .any(|argument| argument == "--args=--spring.profiles.active=dev"));
     }
 
     #[cfg(unix)]
