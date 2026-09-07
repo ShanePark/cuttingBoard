@@ -385,6 +385,24 @@ root.addEventListener("keydown", (event) => {
   }
   if (!consoleController.handleOutputKey(event)) keyboardNavigation.handleKeyboard(event);
 });
+root.addEventListener("beforeinput", (event) => {
+  consoleController.handleOutputMutation(event);
+});
+root.addEventListener("input", (event) => {
+  consoleController.handleOutputMutation(event);
+});
+root.addEventListener("paste", (event) => {
+  consoleController.handleOutputMutation(event);
+});
+root.addEventListener("cut", (event) => {
+  consoleController.handleOutputMutation(event);
+});
+root.addEventListener("drop", (event) => {
+  consoleController.handleOutputMutation(event);
+});
+root.addEventListener("dragover", (event) => {
+  consoleController.handleOutputMutation(event);
+});
 root.addEventListener("pointerdown", (event) => {
   if (updateProgressView.isActive()) {
     event.preventDefault();

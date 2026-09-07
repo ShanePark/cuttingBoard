@@ -26,16 +26,15 @@ body.is-console-resizing .console-log { user-select: none; }
 .console-state.state-failed { background: color-mix(in srgb, var(--danger) 17%, transparent); color: var(--danger); }
 .console-state.state-external { background: color-mix(in srgb, var(--violet) 17%, transparent); color: var(--violet); }
 .console-output-shell { position: relative; flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
-.console-output { flex: 1 1 auto; height: auto; min-height: 0; max-height: none; overflow: auto; padding: 15px 16px 18px; background: color-mix(in srgb, var(--canvas) 88%, #050608); color: var(--text-muted); scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
+.console-output { flex: 1 1 auto; height: auto; min-height: 0; max-height: none; display: flex; flex-direction: column; overflow: hidden; padding: 15px 16px 18px; background: color-mix(in srgb, var(--canvas) 88%, #050608); color: var(--text-muted); scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
 .console-output::-webkit-scrollbar { width: 9px; height: 9px; }
 .console-output::-webkit-scrollbar-track { background: transparent; }
 .console-output::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 9px; background: var(--border); background-clip: padding-box; }
-.console-output:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.console-output:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
 /* Ligature shaping (JetBrains Mono and similar) roughly doubles the layout time of a 64 KB log tail, and a log should show its characters literally anyway. */
-.console-log { min-height: 0; margin: 0; color: var(--text-muted); font: 11px/1.58 "SF Mono", Menlo, "JetBrains Mono", "Ubuntu Mono", monospace; font-variant-ligatures: none; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; tab-size: 2; }
-.console-output:focus .console-log::after { content: ""; display: inline-block; width: .58em; height: 1.05em; margin-left: 1px; vertical-align: -.16em; background: color-mix(in srgb, var(--accent) 82%, white); animation: console-caret-blink 1s steps(1, end) infinite; }
-@keyframes console-caret-blink { 50% { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .console-output:focus .console-log::after { animation: none; } }
+.console-log { flex: 1 1 auto; width: 100%; min-height: 0; margin: 0; padding: 0; border: 0; outline: 0; resize: none; color: var(--text-muted); background: transparent; font: 11px/1.58 "SF Mono", Menlo, "JetBrains Mono", "Ubuntu Mono", monospace; font-variant-ligatures: none; white-space: pre; overflow: auto; overflow-wrap: normal; user-select: text; cursor: text; caret-color: var(--accent); tab-size: 2; }
+.console-log:focus-visible { outline: 0; }
+.console-output > .console-alert { flex: 0 0 auto; }
 .console-jump-bottom { position: absolute; right: 14px; bottom: 13px; width: 40px; height: 40px; min-width: 40px; min-height: 40px; display: inline-grid; place-items: center; padding: 0; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border)); border-radius: 50%; background: color-mix(in srgb, var(--surface) 92%, var(--accent)); box-shadow: 0 5px 16px color-mix(in srgb, var(--shadow) 70%, transparent); color: var(--text); cursor: pointer; }
 .console-jump-bottom[hidden] { display: none; }
 .console-jump-bottom:hover, .console-jump-bottom:focus-visible { border-color: var(--accent); background: var(--surface-hover); color: var(--accent); }

@@ -24,6 +24,10 @@ function presentation(source: string, lineBreakOffsets: readonly number[]): Cons
   };
 }
 
+function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n?/g, "\n");
+}
+
 function suffixPrefixOverlap(previous: string, next: string): number {
   if (!previous || !next) return 0;
   const prefixLengths = new Array<number>(next.length).fill(0);
@@ -46,20 +50,21 @@ export function reconcileConsoleLog(
   presentation: ConsoleLogPresentation | undefined,
   source: string
 ): ConsoleLogPresentation {
-  if (!presentation) return presentationForSource(source);
-  if (source === presentation.source) return presentation;
-  if (source.startsWith(presentation.source)) {
-    return presentationForSource(source, presentation.lineBreakOffsets);
+  const normalizedSource = normalizeLineEndings(source);
+  if (!presentation) return presentationForSource(normalizedSource);
+  if (normalizedSource === presentation.source) return presentation;
+  if (normalizedSource.startsWith(presentation.source)) {
+    return presentationForSource(normalizedSource, presentation.lineBreakOffsets);
   }
-  const overlap = suffixPrefixOverlap(presentation.source, source);
+  const overlap = suffixPrefixOverlap(presentation.source, normalizedSource);
   if (overlap >= MINIMUM_ROLLING_TAIL_OVERLAP) {
     const droppedLength = presentation.source.length - overlap;
     const remainingLineBreaks = presentation.lineBreakOffsets
       .filter((offset) => offset >= droppedLength)
       .map((offset) => offset - droppedLength);
-    return presentationForSource(source, remainingLineBreaks);
+    return presentationForSource(normalizedSource, remainingLineBreaks);
   }
-  return presentationForSource(source);
+  return presentationForSource(normalizedSource);
 }
 
 export function appendConsoleLineBreak(

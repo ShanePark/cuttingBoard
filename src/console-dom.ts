@@ -1,4 +1,11 @@
 import { scrollTopForConsoleUpdate } from "./console-scroll";
+import {
+  captureConsoleLogSelection,
+  consoleLogValue,
+  consoleScrollElement,
+  restoreConsoleLogSelection,
+  setConsoleLogValue
+} from "./console-log-view";
 
 function patchConsoleMessage(current: HTMLElement, next: HTMLElement): void {
   const currentStrong = current.querySelector<HTMLElement>(":scope > strong");
@@ -18,22 +25,29 @@ export function patchConsoleOutput(output: HTMLElement, markup: string, kind: st
   const sameKind = output.dataset.consoleOutputKind === kind;
   const hasLog = kind === "log" || kind === "log-alert";
   if (!sameKind) {
-    const previousScrollTop = output.scrollTop;
+    const previousScrollElement = consoleScrollElement(output);
+    const previousScrollTop = previousScrollElement.scrollTop;
+    const previousSelection = captureConsoleLogSelection(output);
     output.innerHTML = markup;
     output.dataset.consoleOutputKind = kind;
     if (hasLog) {
       const currentLog = output.querySelector<HTMLElement>(".console-log");
-      if (currentLog && currentLog.textContent !== log) currentLog.textContent = log;
-      output.scrollTop = scrollTopForConsoleUpdate(output, previousScrollTop, follow);
+      if (currentLog) setConsoleLogValue(currentLog, log);
+      restoreConsoleLogSelection(output, previousSelection);
+      const scroll = consoleScrollElement(output);
+      scroll.scrollTop = scrollTopForConsoleUpdate(scroll, previousScrollTop, follow);
     }
     return;
   }
 
   const currentLog = output.querySelector<HTMLElement>(".console-log");
   if (hasLog && currentLog) {
-    const previousScrollTop = output.scrollTop;
-    const logChanged = currentLog.textContent !== log;
-    if (logChanged) currentLog.textContent = log;
+    const previousScrollElement = consoleScrollElement(output);
+    const previousScrollTop = previousScrollElement.scrollTop;
+    const previousSelection = captureConsoleLogSelection(output);
+    const logChanged = consoleLogValue(currentLog) !== log;
+    if (logChanged) setConsoleLogValue(currentLog, log);
+    if (logChanged) restoreConsoleLogSelection(output, previousSelection);
     const template = document.createElement("template");
     template.innerHTML = markup;
     const nextAlert = template.content.querySelector<HTMLElement>(".console-alert");
@@ -42,7 +56,8 @@ export function patchConsoleOutput(output: HTMLElement, markup: string, kind: st
     const nextAlertText = nextAlert?.querySelector<HTMLElement>("span");
     if (currentAlertText && nextAlertText && currentAlertText.textContent !== nextAlertText.textContent) currentAlertText.textContent = nextAlertText.textContent;
     if (logChanged) {
-      output.scrollTop = scrollTopForConsoleUpdate(output, previousScrollTop, follow);
+      const scroll = consoleScrollElement(output);
+      scroll.scrollTop = scrollTopForConsoleUpdate(scroll, previousScrollTop, follow);
     }
     return;
   }
@@ -68,6 +83,6 @@ export function patchConsoleOutput(output: HTMLElement, markup: string, kind: st
   output.dataset.consoleOutputKind = kind;
   if (hasLog) {
     const currentLog = output.querySelector<HTMLElement>(".console-log");
-    if (currentLog && currentLog.textContent !== log) currentLog.textContent = log;
+    if (currentLog) setConsoleLogValue(currentLog, log);
   }
 }

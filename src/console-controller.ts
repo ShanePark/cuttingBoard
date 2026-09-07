@@ -2,6 +2,20 @@ import { uiIcon, type UiIconName } from "./icons";
 import { escapeHtml as h } from "./html";
 import { patchConsoleOutput } from "./console-dom";
 import {
+  captureConsoleLogSelection,
+  consoleLogValue,
+  consoleScrollElement,
+  hasConsoleLogSelection,
+  isConsoleLogElement,
+  isConsoleLogMutationKey,
+  moveConsoleCaret,
+  consolePageBoundary,
+  revealConsoleCaret,
+  restoreConsoleLogSelection,
+  setConsoleLogValue,
+  type ConsoleLogSelection
+} from "./console-log-view";
+import {
   appendConsoleLineBreak,
   reconcileConsoleLog,
   type ConsoleLogPresentation
@@ -46,8 +60,8 @@ export type ConsoleControllerContext = {
 };
 
 type BottomPanelId = "console";
-type ScrollState = { key: string | null; top: number; restoring: boolean };
-type ContainerScrollState = { containerId: string | null; top: number; restoring: boolean };
+type ScrollState = { key: string | null; top: number; restoring: boolean; selection: ConsoleLogSelection | null };
+type ContainerScrollState = { containerId: string | null; top: number; restoring: boolean; selection: ConsoleLogSelection | null };
 
 const MIN_CONSOLE_HEIGHT = 220;
 const DEFAULT_CONSOLE_HEIGHT = 336;
@@ -64,11 +78,12 @@ export class ConsoleController {
   private consoleFollow = true;
   private readonly logPresentations = new Map<string, ConsoleLogPresentation>();
   private readonly pendingOutputScrolls = new WeakSet<HTMLElement>();
-  private readonly taskScroll: ScrollState = { key: null, top: 0, restoring: false };
-  private readonly serviceScroll: ScrollState = { key: null, top: 0, restoring: false };
+  private readonly pendingConsoleInput = new WeakMap<HTMLTextAreaElement, ConsoleLogSelection>();
+  private readonly taskScroll: ScrollState = { key: null, top: 0, restoring: false, selection: null };
+  private readonly serviceScroll: ScrollState = { key: null, top: 0, restoring: false, selection: null };
   private readonly containerScroll: Record<ContainerTab, ContainerScrollState> = {
-    services: { containerId: null, top: 0, restoring: false },
-    docker: { containerId: null, top: 0, restoring: false }
+    services: { containerId: null, top: 0, restoring: false, selection: null },
+    docker: { containerId: null, top: 0, restoring: false, selection: null }
   };
 
   constructor(context: ConsoleControllerContext) {
@@ -118,7 +133,8 @@ export class ConsoleController {
     }
     const output = this.context.elements.workspace.querySelector<HTMLElement>(".console-output");
     if (!output) return;
-    if (this.consoleFollow) output.scrollTop = output.scrollHeight;
+    const scroll = consoleScrollElement(output);
+    if (this.consoleFollow) scroll.scrollTop = scroll.scrollHeight;
     this.updateConsoleScrollAffordance(output);
   }
 
@@ -160,24 +176,91 @@ export class ConsoleController {
   }
 
   handleOutputKey(event: KeyboardEvent): boolean {
-    if (event.key !== "Enter" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.isComposing) return false;
     const output = event.target instanceof Element ? event.target.closest<HTMLElement>(".console-output") : null;
     const log = output?.querySelector<HTMLElement>(".console-log");
     const key = output ? this.consoleOutputKey(output) : null;
     if (!output || !log || !key || !["log", "log-alert"].includes(output.dataset.consoleOutputKind ?? "")) return false;
 
+    if (log instanceof HTMLTextAreaElement && !event.altKey && !event.isComposing && (event.ctrlKey || event.metaKey)) {
+      if (event.key === "PageUp" || event.key === "PageDown") {
+        event.preventDefault();
+        const direction = event.key === "PageUp" ? "top" : "bottom";
+        const offset = consolePageBoundary(log, direction);
+        moveConsoleCaret(log, offset, event.shiftKey);
+        revealConsoleCaret(log, offset, direction);
+        return true;
+      }
+    }
+
+    if (event.key === "Enter" && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      const saved = this.logPresentations.get(key);
+      const visible = consoleLogValue(log);
+      const current = saved && visible === saved.output
+        ? saved
+        : reconcileConsoleLog(saved, visible);
+      const next = appendConsoleLineBreak(current, current.source);
+      this.logPresentations.set(key, next);
+      setConsoleLogValue(log, next.output);
+      if (log instanceof HTMLTextAreaElement) log.setSelectionRange(next.output.length, next.output.length, "none");
+      this.consoleFollow = true;
+      this.scheduleOutputScroll(output);
+      return true;
+    }
+
+    if (log instanceof HTMLTextAreaElement && isConsoleLogMutationKey(event)) {
+      event.preventDefault();
+      return true;
+    }
+
+    return false;
+  }
+
+  /** Keep the log editable to the browser so it can expose a real caret, while
+   * rejecting every value mutation. Native navigation and copying still work. */
+  handleOutputMutation(event: Event): boolean {
+    if (!isConsoleLogElement(event.target)) return false;
+    const log = event.target;
+    const output = log.closest<HTMLElement>(".console-output");
+    if (!output) return false;
+
+    if (event.type === "input") {
+      this.restoreConsoleInput(log, output);
+      return true;
+    }
+
+    this.pendingConsoleInput.set(log, {
+      value: log.value,
+      start: log.selectionStart,
+      end: log.selectionEnd,
+      direction: log.selectionDirection,
+      focused: true,
+      scrollTop: log.scrollTop,
+      scrollLeft: log.scrollLeft
+    });
     event.preventDefault();
-    const saved = this.logPresentations.get(key);
-    const visible = log.textContent ?? "";
-    const current = saved && visible === saved.output
-      ? saved
-      : reconcileConsoleLog(saved, visible);
-    const next = appendConsoleLineBreak(current, current.source);
-    this.logPresentations.set(key, next);
-    log.append("\n");
-    this.consoleFollow = true;
-    this.scheduleOutputScroll(output);
     return true;
+  }
+
+  private restoreConsoleInput(log: HTMLTextAreaElement, output: HTMLElement): void {
+    const previous = this.pendingConsoleInput.get(log);
+    this.pendingConsoleInput.delete(log);
+    const key = this.consoleOutputKey(output);
+    const presentation = key ? this.logPresentations.get(key) : undefined;
+    const expected = presentation?.output;
+    if (expected === undefined || log.value === expected) return;
+
+    const state = previous?.value === expected ? previous : {
+      value: log.value,
+      start: log.selectionStart,
+      end: log.selectionEnd,
+      direction: log.selectionDirection,
+      focused: true,
+      scrollTop: log.scrollTop,
+      scrollLeft: log.scrollLeft
+    };
+    setConsoleLogValue(log, expected);
+    restoreConsoleLogSelection(output, { ...state, value: state.value });
   }
 
   captureServicesConsoleState(): void {
@@ -196,19 +279,26 @@ export class ConsoleController {
     const taskKey = output.closest<HTMLElement>(".launch-console")?.dataset.consoleTaskKey ?? null;
     if (taskKey !== this.context.state.selectedTaskDomKey()) return;
     this.taskScroll.key = this.context.state.selectedTaskKey();
-    this.taskScroll.top = output.scrollTop;
+    const scroll = consoleScrollElement(output);
+    this.taskScroll.top = scroll.scrollTop;
+    this.taskScroll.selection = captureConsoleLogSelection(output);
   }
 
   restoreLaunchConsoleScroll(): void {
     const output = this.context.elements.workspace.querySelector<HTMLElement>(".launch-console:not(.docker-console):not(.docker-service-console) .console-output");
     if (!output) return;
     this.restorePresentedLog(output);
+    restoreConsoleLogSelection(output, this.taskScroll.selection);
     this.taskScroll.restoring = true;
     const selectedTaskKey = this.context.state.selectedTaskKey();
     const savedScrollTop = this.taskScroll.key === selectedTaskKey ? this.taskScroll.top : 0;
-    output.scrollTop = scrollTopForConsoleUpdate(output, savedScrollTop, this.consoleFollow);
+    const scroll = consoleScrollElement(output);
+    const follow = this.consoleFollow && !hasConsoleLogSelection(output);
+    if (!follow) this.consoleFollow = false;
+    scroll.scrollTop = scrollTopForConsoleUpdate(scroll, savedScrollTop, follow);
     this.taskScroll.key = selectedTaskKey;
-    this.taskScroll.top = output.scrollTop;
+    this.taskScroll.top = scroll.scrollTop;
+    this.taskScroll.selection = captureConsoleLogSelection(output);
     this.updateConsoleScrollAffordance(output);
     window.setTimeout(() => { this.taskScroll.restoring = false; }, 0);
   }
@@ -223,7 +313,9 @@ export class ConsoleController {
     if (containerId !== state.selectedContainerId) return;
     const scroll = this.containerScroll[tab];
     scroll.containerId = state.selectedContainerId;
-    scroll.top = output.scrollTop;
+    const scrollElement = consoleScrollElement(output);
+    scroll.top = scrollElement.scrollTop;
+    scroll.selection = captureConsoleLogSelection(output);
   }
 
   restoreDockerConsoleState(): void {
@@ -233,17 +325,20 @@ export class ConsoleController {
   resetTaskSelection(key: string | null): void {
     this.taskScroll.key = key;
     this.taskScroll.top = 0;
+    this.taskScroll.selection = null;
   }
 
   resetServiceSelection(key: string | null): void {
     this.serviceScroll.key = key;
     this.serviceScroll.top = 0;
+    this.serviceScroll.selection = null;
   }
 
   resetContainerSelection(tab: ContainerTab, containerId: string | null): void {
     const scroll = this.containerScroll[tab];
     scroll.containerId = containerId;
     scroll.top = 0;
+    scroll.selection = null;
   }
 
   updateServiceConsoleDom(): void {
@@ -291,11 +386,13 @@ export class ConsoleController {
     const output = button.closest<HTMLElement>(".console-output-shell")?.querySelector<HTMLElement>(".console-output");
     if (!output) return;
     this.consoleFollow = true;
-    output.scrollTop = output.scrollHeight;
+    const scrollElement = consoleScrollElement(output);
+    scrollElement.scrollTop = scrollElement.scrollHeight;
     const serviceConsole = output.closest<HTMLElement>(".service-console:not(.docker-service-console)");
     if (serviceConsole) {
       this.serviceScroll.key = this.context.state.selectedServiceId();
-      this.serviceScroll.top = output.scrollTop;
+      this.serviceScroll.top = scrollElement.scrollTop;
+      this.serviceScroll.selection = captureConsoleLogSelection(output);
     } else {
       const dockerConsole = output.closest<HTMLElement>(".docker-console, .docker-service-console");
       if (dockerConsole) {
@@ -303,10 +400,12 @@ export class ConsoleController {
         const state = this.context.state.container(tab);
         const scroll = this.containerScroll[tab];
         scroll.containerId = state.selectedContainerId;
-        scroll.top = output.scrollTop;
+        scroll.top = scrollElement.scrollTop;
+        scroll.selection = captureConsoleLogSelection(output);
       } else {
         this.taskScroll.key = this.context.state.selectedTaskKey();
-        this.taskScroll.top = output.scrollTop;
+        this.taskScroll.top = scrollElement.scrollTop;
+        this.taskScroll.selection = captureConsoleLogSelection(output);
       }
     }
     this.updateConsoleScrollAffordance(output);
@@ -320,9 +419,11 @@ export class ConsoleController {
       const serviceId = serviceConsole.dataset.consoleServiceId || null;
       const servicesConsoleTarget = this.context.state.servicesConsoleTarget();
       if (servicesConsoleTarget?.kind !== "service" || serviceId !== this.context.state.selectedServiceId()) return;
+      const scrollElement = consoleScrollElement(target);
       this.serviceScroll.key = this.context.state.selectedServiceId();
-      this.serviceScroll.top = target.scrollTop;
-      if (!this.serviceScroll.restoring) this.consoleFollow = isConsoleAtBottom(target, CONSOLE_BOTTOM_EPSILON);
+      this.serviceScroll.top = scrollElement.scrollTop;
+      this.serviceScroll.selection = captureConsoleLogSelection(target);
+      if (!this.serviceScroll.restoring) this.consoleFollow = isConsoleAtBottom(scrollElement, CONSOLE_BOTTOM_EPSILON);
       this.updateConsoleScrollAffordance(target);
       return;
     }
@@ -335,17 +436,21 @@ export class ConsoleController {
       if (dockerConsole.classList.contains("docker-service-console") && servicesConsoleTarget?.kind !== "container") return;
       if (containerId !== state.selectedContainerId) return;
       const scroll = this.containerScroll[tab];
+      const scrollElement = consoleScrollElement(target);
       scroll.containerId = state.selectedContainerId;
-      scroll.top = target.scrollTop;
-      if (!scroll.restoring) this.consoleFollow = isConsoleAtBottom(target, CONSOLE_BOTTOM_EPSILON);
+      scroll.top = scrollElement.scrollTop;
+      scroll.selection = captureConsoleLogSelection(target);
+      if (!scroll.restoring) this.consoleFollow = isConsoleAtBottom(scrollElement, CONSOLE_BOTTOM_EPSILON);
       this.updateConsoleScrollAffordance(target);
       return;
     }
     const taskKey = target.closest<HTMLElement>(".launch-console")?.dataset.consoleTaskKey ?? null;
     if (taskKey !== this.context.state.selectedTaskDomKey()) return;
+    const scrollElement = consoleScrollElement(target);
     this.taskScroll.key = this.context.state.selectedTaskKey();
-    this.taskScroll.top = target.scrollTop;
-    if (!this.taskScroll.restoring) this.consoleFollow = isConsoleAtBottom(target, CONSOLE_BOTTOM_EPSILON);
+    this.taskScroll.top = scrollElement.scrollTop;
+    this.taskScroll.selection = captureConsoleLogSelection(target);
+    if (!this.taskScroll.restoring) this.consoleFollow = isConsoleAtBottom(scrollElement, CONSOLE_BOTTOM_EPSILON);
     this.updateConsoleScrollAffordance(target);
   }
 
@@ -355,20 +460,27 @@ export class ConsoleController {
     const serviceId = output.closest<HTMLElement>(".service-console:not(.docker-service-console)")?.dataset.consoleServiceId || null;
     const target = this.context.state.servicesConsoleTarget();
     if (target?.kind !== "service" || serviceId !== this.context.state.selectedServiceId()) return;
+    const scroll = consoleScrollElement(output);
     this.serviceScroll.key = this.context.state.selectedServiceId();
-    this.serviceScroll.top = output.scrollTop;
+    this.serviceScroll.top = scroll.scrollTop;
+    this.serviceScroll.selection = captureConsoleLogSelection(output);
   }
 
   private restoreServiceConsoleScroll(): void {
     const output = this.context.elements.workspace.querySelector<HTMLElement>(".service-console:not(.docker-service-console) .console-output");
     if (!output) return;
     this.restorePresentedLog(output);
+    restoreConsoleLogSelection(output, this.serviceScroll.selection);
     this.serviceScroll.restoring = true;
     const selectedServiceId = this.context.state.selectedServiceId();
     const savedScrollTop = this.serviceScroll.key === selectedServiceId ? this.serviceScroll.top : 0;
-    output.scrollTop = scrollTopForConsoleUpdate(output, savedScrollTop, this.consoleFollow);
+    const scroll = consoleScrollElement(output);
+    const follow = this.consoleFollow && !hasConsoleLogSelection(output);
+    if (!follow) this.consoleFollow = false;
+    scroll.scrollTop = scrollTopForConsoleUpdate(scroll, savedScrollTop, follow);
     this.serviceScroll.key = selectedServiceId;
-    this.serviceScroll.top = output.scrollTop;
+    this.serviceScroll.top = scroll.scrollTop;
+    this.serviceScroll.selection = captureConsoleLogSelection(output);
     this.updateConsoleScrollAffordance(output);
     window.setTimeout(() => { this.serviceScroll.restoring = false; }, 0);
   }
@@ -381,11 +493,16 @@ export class ConsoleController {
     const tab: ContainerTab = consoleElement?.classList.contains("docker-service-console") ? "services" : "docker";
     const state = this.context.state.container(tab);
     const scroll = this.containerScroll[tab];
+    restoreConsoleLogSelection(output, scroll.selection);
     scroll.restoring = true;
     const savedScrollTop = scroll.containerId === state.selectedContainerId ? scroll.top : 0;
-    output.scrollTop = scrollTopForConsoleUpdate(output, savedScrollTop, this.consoleFollow);
+    const scrollElement = consoleScrollElement(output);
+    const follow = this.consoleFollow && !hasConsoleLogSelection(output);
+    if (!follow) this.consoleFollow = false;
+    scrollElement.scrollTop = scrollTopForConsoleUpdate(scrollElement, savedScrollTop, follow);
     scroll.containerId = state.selectedContainerId;
-    scroll.top = output.scrollTop;
+    scroll.top = scrollElement.scrollTop;
+    scroll.selection = captureConsoleLogSelection(output);
     this.updateConsoleScrollAffordance(output);
     window.setTimeout(() => { scroll.restoring = false; }, 0);
   }
@@ -402,6 +519,7 @@ export class ConsoleController {
   private patchOutput(output: HTMLElement, patch: ConsoleOutputPatch): void {
     const hasLog = patch.kind === "log" || patch.kind === "log-alert";
     const key = this.consoleOutputKey(output);
+    if (hasLog && hasConsoleLogSelection(output)) this.consoleFollow = false;
     let visibleLog = patch.log;
     if (hasLog && key) {
       const presentation = reconcileConsoleLog(this.logPresentations.get(key), patch.log);
@@ -418,9 +536,9 @@ export class ConsoleController {
     const log = output.querySelector<HTMLElement>(".console-log");
     const key = this.consoleOutputKey(output);
     if (!log || !key) return;
-    const presentation = reconcileConsoleLog(this.logPresentations.get(key), log.textContent ?? "");
+    const presentation = reconcileConsoleLog(this.logPresentations.get(key), consoleLogValue(log));
     this.logPresentations.set(key, presentation);
-    if (log.textContent !== presentation.output) log.textContent = presentation.output;
+    if (consoleLogValue(log) !== presentation.output) setConsoleLogValue(log, presentation.output);
   }
 
   private consoleOutputKey(output: HTMLElement): string | null {
@@ -446,7 +564,8 @@ export class ConsoleController {
     window.requestAnimationFrame(() => {
       this.pendingOutputScrolls.delete(output);
       if (!output.isConnected) return;
-      output.scrollTop = output.scrollHeight;
+      const scroll = consoleScrollElement(output);
+      scroll.scrollTop = scroll.scrollHeight;
       this.updateConsoleScrollAffordance(output);
     });
   }
@@ -454,7 +573,7 @@ export class ConsoleController {
   private updateConsoleScrollAffordance(output: HTMLElement): void {
     const button = output.closest<HTMLElement>(".console-output-shell")?.querySelector<HTMLButtonElement>("[data-action='jump-to-bottom']");
     if (!button) return;
-    button.hidden = isConsoleAtBottom(output);
+    button.hidden = isConsoleAtBottom(consoleScrollElement(output));
   }
 }
 

@@ -276,7 +276,7 @@ export function renderServiceConsole(context: ServicesRenderingContext): string 
       <div class="console-title"><span class="console-icon state-${stateClass}" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="service-console-title">${h(title)}</h2></div></div>
       ${consoleState ? `<div class="console-meta" aria-label="Service status">${consoleState}</div>` : ""}
     </header>
-    <div class="console-output-shell"><div class="console-output" data-console-output-kind="${serviceConsoleOutputKind(service, context.console)}" tabindex="0" role="log" aria-live="polite" aria-label="${outputLabel}">${renderServiceLogOutput(service, context.console)}</div>${context.console.renderConsoleJumpButton()}</div>
+    <div class="console-output-shell"><div class="console-output" data-console-output-kind="${serviceConsoleOutputKind(service, context.console)}" role="log" aria-live="polite" aria-label="${outputLabel}">${renderServiceLogOutput(service, context.console)}</div>${context.console.renderConsoleJumpButton()}</div>
   </section>`;
 }
 
@@ -293,7 +293,7 @@ export function renderServiceLogOutput(service: ServiceSnapshot | null, context:
     const status = progressStatusText({ message: restartProgress.message, detail: restartProgress.detail ?? undefined });
     const statusClass = restartProgress.phase === "failed" ? " console-progress-failed" : "";
     const statusMarkup = `<div class="console-alert console-progress${statusClass}" role="status" aria-live="polite"><span class="console-progress-icon${restartProgress.phase === "failed" ? " is-failed" : ""}" aria-hidden="true">${uiIcon(restartProgress.phase === "failed" ? "warning" : "refresh", 14, restartProgress.phase === "failed" ? "" : "service-log-spinner")}</span><span>${h(status)}</span></div>`;
-    if (restartProgress.logTail.trim()) return `${statusMarkup}<pre class="console-log">${h(restartProgress.logTail)}</pre>`;
+    if (restartProgress.logTail.trim()) return `${statusMarkup}<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="off" aria-label="Log output">${h(restartProgress.logTail)}</textarea>`;
     return `<div class="console-message" role="status" aria-live="polite"><span class="console-message-icon">${uiIcon(restartProgress.phase === "failed" ? "warning" : "refresh", 18, restartProgress.phase === "failed" ? "" : "service-log-spinner")}</span><strong>${h(restartProgress.phase === "failed" ? "Restart preparation failed" : restartProgress.phase === "completed" ? "Restart completed" : "Restarting service")}</strong><span>${h(status)}</span></div>`;
   }
   if (!service) {
@@ -310,7 +310,7 @@ export function renderServiceLogOutput(service: ServiceSnapshot | null, context:
   const notice = unavailable && message.trim()
     ? `<div class="console-alert">${uiIcon("warning", 14)}<span>${h(message)}</span></div>`
     : "";
-  if (log.trim()) return `${notice}<pre class="console-log">${h(log)}</pre>`;
+  if (log.trim()) return `${notice}<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="off" aria-label="Log output">${h(log)}</textarea>`;
   if (unavailable) {
     return `${notice}<div class="console-message is-external"><span class="console-message-icon">${uiIcon("warning", 18)}</span><strong>Service output is unavailable</strong><span>${h(message || "The service does not expose a readable stdout or stderr log source.")}</span></div>`;
   }

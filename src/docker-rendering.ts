@@ -169,7 +169,7 @@ export function renderDockerConsole(context: DockerConsoleRenderingContext, cons
       <div class="console-title"><span class="console-icon state-${stateClass}" aria-hidden="true">${uiIcon("docker", 16)}</span><div><h2 id="docker-console-title">${h(title)}</h2></div></div>
       <div class="console-meta" aria-label="Container status"><span class="console-state state-${stateClass}"><span class="task-state-dot" aria-hidden="true"></span><span data-console-status-text>${h(statusText)}</span></span></div>
     </header>
-    <div class="console-output-shell"><div class="console-output docker-console-output" data-console-output-kind="${dockerConsoleOutputKind(container, context.logState)}" tabindex="0" role="log" aria-live="polite" aria-label="${outputLabel}">${renderDockerLogOutput(container, context.logState)}</div>${context.renderConsoleJumpButton()}</div>
+    <div class="console-output-shell"><div class="console-output docker-console-output" data-console-output-kind="${dockerConsoleOutputKind(container, context.logState)}" role="log" aria-live="polite" aria-label="${outputLabel}">${renderDockerLogOutput(container, context.logState)}</div>${context.renderConsoleJumpButton()}</div>
   </section>`;
 }
 
@@ -183,10 +183,10 @@ export function renderDockerLogOutput(container: ContainerInfo | null, logState:
   }
   if (logState.error) {
     const alert = `<div class="console-alert">${uiIcon("warning", 14)}<span>${h(logState.error)}</span></div>`;
-    if (log.trim()) return `${alert}<pre class="console-log">${h(log)}</pre>`;
+    if (log.trim()) return `${alert}<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="off" aria-label="Log output">${h(log)}</textarea>`;
     return `${alert}<div class="console-message is-failed"><span class="console-message-icon">${uiIcon("warning", 18)}</span><strong>Container logs are unavailable</strong><span>Docker could not return output for this container.</span></div>`;
   }
-  if (log.trim()) return `<pre class="console-log">${h(log)}</pre>`;
+  if (log.trim()) return `<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="off" aria-label="Log output">${h(log)}</textarea>`;
   return `<div class="console-message"><span class="console-message-icon">${uiIcon("log", 18)}</span><strong>No logs available</strong><span>This container has not produced any output yet.</span></div>`;
 }
 

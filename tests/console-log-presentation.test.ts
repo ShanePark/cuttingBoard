@@ -28,6 +28,25 @@ test("keeps visual line breaks ahead of newly appended log output", () => {
   });
 });
 
+test("keeps visual line breaks when textarea-normalized output meets CRLF polling", () => {
+  const initial = reconcileConsoleLog(undefined, "first line\r\n");
+  const textareaValue = initial.output.replace(/\r\n?/g, "\n");
+  const current = reconcileConsoleLog(initial, textareaValue);
+  const separated = appendConsoleLineBreak(
+    appendConsoleLineBreak(current, current.source),
+    current.source
+  );
+
+  assert.deepEqual(
+    reconcileConsoleLog(separated, "first line\r\nnext line\r\n"),
+    {
+      source: "first line\nnext line\n",
+      output: "first line\n\n\nnext line\n",
+      lineBreakOffsets: [11, 11]
+    }
+  );
+});
+
 test("drops visual line breaks when the source log is replaced", () => {
   const separated = appendConsoleLineBreak(undefined, "old output\n");
 
