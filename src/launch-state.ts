@@ -21,6 +21,16 @@ export function launchProfileIsIdle(states: readonly LaunchState[]): boolean {
   return states.length > 0 && states.every(launchTaskCanStart);
 }
 
+/** A profile is fully stopped only when every task reports the stopped state. */
+export function launchProfileIsFullyStopped(states: readonly LaunchState[]): boolean {
+  return states.length > 0 && states.every((state) => state === "stopped");
+}
+
+/** Active and failed profiles stay expanded; fully stopped profiles expand only after the user chooses them. */
+export function launchProfileIsExpanded(states: readonly LaunchState[], userExpanded: boolean): boolean {
+  return !launchProfileIsFullyStopped(states) || userExpanded;
+}
+
 export function orderLaunchProfiles(
   profiles: readonly LaunchProfile[],
   snapshotFor: (profileId: string, taskName: string) => ManagedTaskSnapshot | undefined

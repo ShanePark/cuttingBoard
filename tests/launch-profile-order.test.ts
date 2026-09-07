@@ -60,7 +60,9 @@ test("launch profiles render active groups first without changing either partiti
   assert.notStrictEqual(ordered, profiles);
 });
 
-test("the Launch view keeps the Add profile card after the ordered groups", () => {
+test("the Launch view renders saved groups without an Add profile card", () => {
   assert.match(main, /const orderedProfiles = orderLaunchProfiles\(profiles, snapshotFor\)/);
-  assert.match(main, /\$\{orderedProfiles\.map\(\(profile\) => renderProfile\(profile, selectedRenderingContext\)\)\.join\(""\)\}\$\{renderLaunchAddCard/);
+  assert.match(main, /\$\{orderedProfiles\.map\(\(profile\) => renderProfile\(profile, selectedRenderingContext\)\)\.join\(""\)\}<\/div>/);
+  assert.doesNotMatch(main, /renderLaunchAddCard|data-action="add-profile"/);
+  assert.match(main, /Go to Services and save a service group to register a launch profile/);
 });

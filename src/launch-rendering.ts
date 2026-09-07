@@ -9,6 +9,8 @@ import {
   matchedServiceForTask
 } from "./presentation";
 import {
+  launchProfileIsExpanded,
+  launchProfileIsFullyStopped,
   launchProfileIsIdle,
   launchTaskCanStart,
   launchTaskCanStop,
@@ -37,8 +39,14 @@ export type LaunchRenderingContext = {
   snapshotFor: (profileId: string, taskName: string) => ManagedTaskSnapshot | undefined;
   launchProfileOperationKey: (profileId: string) => string;
   launchProfileHasTaskOperation: (profile: LaunchProfile) => boolean;
+  expandedProfiles: ReadonlySet<string>;
   renderGroupTitle: (title: string, itemCount: number, action: string, attributes: string, displayTitle?: string, actionTitle?: string) => string;
   uptimeText: (service: ServiceSnapshot, stopping: boolean, restarting?: boolean) => string;
+};
+
+type TaskCardRenderOptions = {
+  interactive?: boolean;
+  stackIndex?: number;
 };
 
 export type LaunchConsoleRenderingContext = {
@@ -48,26 +56,20 @@ export type LaunchConsoleRenderingContext = {
   renderConsoleJumpButton: () => string;
 };
 
-export function renderLaunchAddCard(appIsDemo: boolean): string {
-  return `<article class="launch-add-card" aria-labelledby="launch-add-title">
-    <button class="launch-add-action" type="button" data-action="add-profile" aria-label="Add launch profile" title="Add launch profile" ${appIsDemo ? "disabled" : ""}>
-      <span class="launch-add-icon" aria-hidden="true">${uiIcon("plus", 24)}</span>
-      <strong id="launch-add-title">Add profile</strong>
-    </button>
-    <button class="info-button icon-only-button launch-add-info" type="button" data-action="show-info" data-info-kind="launch" aria-label="About launch profiles" title="About launch profiles">${uiIcon("info", 15)}</button>
-  </article>`;
-}
-
 export function bulkActionIcon(name: "play" | "stop"): string {
   return `<span class="bulk-action-icon bulk-action-${name}" aria-hidden="true">${uiIcon(name, 15, "bulk-action-icon-back")}${uiIcon(name, 15, "bulk-action-icon-front")}</span>`;
 }
 
 export function renderProfile(profile: LaunchProfile, context: LaunchRenderingContext): string {
   const snapshots = profile.tasks.map((task) => context.snapshotFor(profile.id, task.name));
+  const states = snapshots.map((snapshot) => snapshot?.state ?? "stopped");
   const canStop = snapshots.some((snapshot) => snapshot && launchTaskCanStop(snapshot.state));
   const canStart = profile.tasks.some((task) => launchTaskCanStart(context.snapshotFor(profile.id, task.name)?.state ?? "stopped"));
   // Nothing in the profile is running, so the whole group recedes and says so in its header.
-  const idle = launchProfileIsIdle(snapshots.map((snapshot) => snapshot?.state ?? "stopped"));
+  const idle = launchProfileIsIdle(states);
+  const fullyStopped = launchProfileIsFullyStopped(states);
+  const expanded = launchProfileIsExpanded(states, context.expandedProfiles.has(profile.id));
+  const taskListId = `launch-tasks-${encodeURIComponent(profile.id)}`;
   const profileBusy = context.operations.has(context.launchProfileOperationKey(profile.id)) || context.launchProfileHasTaskOperation(profile);
   const runAll = profile.tasks.length > 1 && canStart
     ? `<button class="primary-button icon-only-button bulk-action-button" type="button" data-action="start-profile" data-profile-id="${h(profile.id)}" aria-label="${canStop ? "Start remaining tasks" : "Run all tasks"}" title="${profileBusy ? "Starting tasks" : canStop ? "Start remaining tasks" : "Run all tasks"}" ${profileBusy ? "disabled" : ""}>${bulkActionIcon("play")}</button>`
@@ -75,20 +77,38 @@ export function renderProfile(profile: LaunchProfile, context: LaunchRenderingCo
   const stopAll = profile.tasks.length > 1 && canStop
     ? `<button class="secondary-button danger-button icon-only-button bulk-action-button" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}" aria-label="Stop all tasks" title="${profileBusy ? "Stopping tasks" : "Stop all tasks"}" ${profileBusy ? "disabled" : ""}>${bulkActionIcon("stop")}</button>`
     : "";
-  return `<section class="launch-profile service-section${idle ? " is-idle" : ""}" data-tiles="${profile.tasks.length}" aria-labelledby="launch-profile-${h(profile.id)}">
+  const toggleAttributes = `type="button" data-action="toggle-profile" data-profile-id="${h(profile.id)}" aria-controls="${h(taskListId)}" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? "Collapse" : "Expand"} tasks in ${h(profile.name)}" title="${expanded ? "Collapse tasks" : "Expand tasks"}"`;
+  const headerToggle = fullyStopped && expanded
+    ? `<button class="launch-profile-toggle launch-profile-header-toggle icon-only-button" ${toggleAttributes}>${uiIcon("chevronDown", 14)}</button>`
+    : "";
+  const stackToggle = fullyStopped && !expanded
+    ? `<button class="launch-profile-stack-toggle launch-profile-toggle" ${toggleAttributes}><span class="launch-profile-stack-hint" aria-hidden="true">${uiIcon("chevronDown", 14)}</span></button>`
+    : "";
+  const headerSummary = expanded
+    ? `${renderGroupCount(profile.tasks.length)}${idle ? `<span class="section-state">Stopped</span>` : ""}`
+    : "";
+  const collapsedStack = !expanded
+    ? `<div class="launch-profile-stack" style="--stack-depth:${Math.min(Math.max(profile.tasks.length - 1, 0), 4)}" aria-label="${h(profile.tasks.length === 1 ? `Stopped task in ${profile.name}` : `${profile.tasks.length} stopped tasks in ${profile.name}`)}">
+        <div class="launch-profile-stack-cards" aria-hidden="true">${profile.tasks.map((task, index) => renderTask(profile, task, context, { interactive: false, stackIndex: Math.min(index, 4) })).join("")}</div>
+        ${stackToggle}
+      </div>`
+    : "";
+  return `<section class="launch-profile service-section${idle ? " is-idle" : ""}${expanded ? "" : " is-collapsed"}" data-tiles="${expanded ? profile.tasks.length : 1}" aria-labelledby="launch-profile-${h(profile.id)}">
     <header class="section-header launch-profile-header">
       <span class="section-accent accent-runtime" aria-hidden="true"></span>
-      <div class="launch-profile-heading"><h2 id="launch-profile-${h(profile.id)}">${context.renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name.toUpperCase(), "View profile details")}${renderGroupCount(profile.tasks.length)}${idle ? `<span class="section-state">Stopped</span>` : ""}</h2></div>
+      <div class="launch-profile-heading">${headerToggle}<h2 id="launch-profile-${h(profile.id)}">${context.renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name.toUpperCase(), `View ${profile.name} details`)}${headerSummary}</h2></div>
       <div class="section-actions launch-profile-actions">
         ${runAll}${stopAll}
         <button class="section-action icon-only-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" aria-label="Edit ${h(profile.name)}" title="Edit profile" ${context.appIsDemo ? "disabled" : ""}>${uiIcon("settings", 15)}</button>
       </div>
     </header>
-    <div class="task-list" role="list" aria-label="Tasks in ${h(profile.name)}">${profile.tasks.map((task) => renderTask(profile, task, context)).join("")}</div>
+    ${collapsedStack}
+    <div id="${h(taskListId)}" class="task-list" role="list" aria-label="Tasks in ${h(profile.name)}"${expanded ? "" : " hidden"}>${profile.tasks.map((task) => renderTask(profile, task, context)).join("")}</div>
   </section>`;
 }
 
-export function renderTask(profile: LaunchProfile, task: LaunchTask, context: LaunchRenderingContext): string {
+export function renderTask(profile: LaunchProfile, task: LaunchTask, context: LaunchRenderingContext, options: TaskCardRenderOptions = {}): string {
+  const interactive = options.interactive !== false;
   const snapshot = context.snapshotFor(profile.id, task.name);
   const state: LaunchState = snapshot?.state ?? "stopped";
   const external = state === "external";
@@ -107,26 +127,35 @@ export function renderTask(profile: LaunchProfile, task: LaunchTask, context: La
   const externalCanStop = external && Boolean(matchedService?.can_terminate);
   const canStop = external ? externalCanStop : launchTaskCanStop(state);
   const stopUnavailable = !canStop;
-  const detailsAction = `<button type="button" class="info-button icon-only-button service-card-control task-card-action" data-tile-action data-action="task-details" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="View ${h(task.name)} details" title="View task details">${uiIcon("info", 15)}</button>`;
+  const detailsAction = interactive
+    ? `<button type="button" class="info-button icon-only-button service-card-control task-card-action" data-tile-action data-action="task-details" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="View ${h(task.name)} details" title="View task details">${uiIcon("info", 15)}</button>`
+    : "";
   const startAction = !active && !external
+    && interactive
     ? `<button class="quiet-button start-action icon-only-button service-card-control task-card-action" type="button" data-tile-action data-action="start-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="Start ${h(task.name)}" title="Start task" ${busy ? "disabled" : ""}>${uiIcon(busy ? "refresh" : "play", 15)}</button>`
     : "";
   const restartAction = canStop
-    ? `<button class="restart-action icon-only-button service-card-control task-card-action" type="button" data-tile-action data-action="restart-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="${busy ? "Restarting" : "Restart"} ${h(task.name)}" title="${busy ? "Restarting task" : "Restart task"}" ${busy ? "disabled" : ""}>${restartIcon(15)}</button>`
+    ? interactive
+      ? `<button class="restart-action icon-only-button service-card-control task-card-action" type="button" data-tile-action data-action="restart-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" aria-label="${busy ? "Restarting" : "Restart"} ${h(task.name)}" title="${busy ? "Restarting task" : "Restart task"}" ${busy ? "disabled" : ""}>${restartIcon(15)}</button>`
+      : ""
     : "";
-  const stopAction = `<button class="stop-button service-card-control task-card-action${stopUnavailable ? " is-unavailable" : ""}" type="button" data-tile-action data-action="${externalCanStop ? "stop-service" : "stop-task"}"${externalCanStop ? ` data-service-id="${h(matchedService?.id ?? "")}"` : ` data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}"`} aria-label="${externalCanStop ? "Stop externally managed service" : `Stop ${task.name}`}" title="${active ? busy ? "Stopping task" : "Stop task" : externalCanStop ? "Stop externally managed service" : external ? "Cannot stop an externally managed task" : "Task is not running"}" ${stopUnavailable || busy ? "disabled" : ""}>${uiIcon("stop", 15)}</button>`;
+  const stopAction = interactive
+    ? `<button class="stop-button service-card-control task-card-action${stopUnavailable ? " is-unavailable" : ""}" type="button" data-tile-action data-action="${externalCanStop ? "stop-service" : "stop-task"}"${externalCanStop ? ` data-service-id="${h(matchedService?.id ?? "")}"` : ` data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}"`} aria-label="${externalCanStop ? "Stop externally managed service" : `Stop ${task.name}`}" title="${active ? busy ? "Stopping task" : "Stop task" : externalCanStop ? "Stop externally managed service" : external ? "Cannot stop an externally managed task" : "Task is not running"}" ${stopUnavailable || busy ? "disabled" : ""}>${uiIcon("stop", 15)}</button>`
+    : "";
   const matchedUptime = matchedService ? currentUptime(matchedService) : null;
   const metricsMarkup = matchedService
     ? `<span class="metric metric-uptime${matchedUptime !== null && matchedUptime < FRESH_UPTIME_SECONDS ? " is-fresh" : ""}" data-metric="uptime" title="Uptime">${uiIcon("clock", 13)}<span class="sr-only">Uptime </span><span data-metric-text>${h(context.uptimeText(matchedService, serviceStopping, serviceRestarting || taskRestarting))}</span></span><span class="metric metric-memory" data-metric="memory" title="Memory used">${uiIcon("memory", 13)}<span class="sr-only">Memory </span><span data-metric-text>${h(formatBytes(matchedService.process?.memory_bytes ?? null))}</span></span>`
     : state === "external"
       ? `<span class="metric metric-state is-external" title="Running externally">${uiIcon("terminal", 13)}<span class="sr-only">Running externally</span></span>`
       : `<span class="metric metric-state ${busy ? "is-busy" : `state-${state}`}" title="Task state">${uiIcon(state === "running" ? "play" : "terminal", 13)}<span class="sr-only">State </span>${h(stateLabel(state))}</span>`;
-  const cardAttributes = ` data-action="select-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" tabindex="0" role="listitem" aria-current="${selected ? "true" : "false"}"`;
+  const cardAttributes = interactive
+    ? ` data-action="select-task" data-profile-id="${h(profile.id)}" data-task-name="${h(task.name)}" tabindex="0" role="listitem" aria-current="${selected ? "true" : "false"}"`
+    : ` style="--stack-index:${options.stackIndex ?? 0}"`;
   // A stopped task has no port bound yet, so the shortcut only appears once a service backs it.
-  const trailingMarkup = matchedService ? renderOpenServiceButton(matchedService, task.name) : "";
+  const trailingMarkup = interactive && matchedService ? renderOpenServiceButton(matchedService, task.name) : "";
   return renderSharedServiceCard({
     category: matchedService?.category ?? "runtime",
-    cardClass: `task-card state-${state}`,
+    cardClass: `task-card state-${state}${interactive ? "" : " launch-profile-stack-card"}`,
     metricsId: matchedService?.id,
     cardAttributes,
     ariaLabel: `${profile.name} · ${task.name}, ${stateLabel(state)}${task.expected_port ? `, port ${task.expected_port}` : ""}`,

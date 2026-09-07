@@ -9,7 +9,7 @@ import { createConsoleController, type ConsoleOutputPatch } from "./console-cont
 import { createContainerActions } from "./container-actions";
 import { createLaunchActions, launchProfileBlocksEditing, launchProfileOperationKey } from "./launch-actions";
 import { patchLaunchSelection } from "./launch-dom";
-import { orderLaunchProfiles } from "./launch-state";
+import { launchProfileIsFullyStopped, orderLaunchProfiles } from "./launch-state";
 import { createServiceActions } from "./service-actions";
 import { createKeyboardNavigation, focusContainerCard, focusServiceCard, focusTaskRow } from "./keyboard-navigation";
 import { createLaunchRefresh } from "./launch-refresh";
@@ -38,7 +38,6 @@ import {
   launchTaskKey,
   selectedTaskDomKey as selectedTaskDomKeyForProfiles,
   renderConsoleOutput,
-  renderLaunchAddCard,
   renderLaunchConsole,
   renderProfile,
   type LaunchConsoleRenderingContext,
@@ -136,6 +135,7 @@ let serviceSignature = "";
 let dockerSignature = "";
 let launchSignature = "";
 const operations = new Set<string>();
+const expandedLaunchProfiles = new Set<string>();
 let selectedTaskKey: string | null = null;
 let selectedServiceId: string | null = null;
 let servicesConsoleTarget: ServicesConsoleTarget | null = null;
@@ -1086,7 +1086,7 @@ function renderLaunch(force = false): void {
   const consoleRenderingContext = launchConsoleRenderingContext();
   if (profiles.length === 0) {
     selectedTaskKey = null;
-    workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list"><div class="launch-list board">${renderLaunchAddCard(Boolean(appInfo?.demo))}</div></div>${renderLaunchConsole(null, consoleRenderingContext)}</div>`;
+    workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list">${emptyState("No launch profiles saved", "Go to Services and save a service group to register a launch profile.")}</div>${renderLaunchConsole(null, consoleRenderingContext)}</div>`;
     applyBoardLayout();
     return;
   }
@@ -1094,7 +1094,7 @@ function renderLaunch(force = false): void {
   selectedTaskKey = selected ? launchTaskKey(selected.profile.id, selected.task.name) : null;
   const selectedRenderingContext = launchRenderingContext();
   const orderedProfiles = orderLaunchProfiles(profiles, snapshotFor);
-  workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list"><div class="launch-list board">${orderedProfiles.map((profile) => renderProfile(profile, selectedRenderingContext)).join("")}${renderLaunchAddCard(Boolean(appInfo?.demo))}</div></div>${renderLaunchConsole(selected, consoleRenderingContext)}</div>`;
+  workspaceElement.innerHTML = `<div class="launch-view split-view"><div class="split-view-list"><div class="launch-list board">${orderedProfiles.map((profile) => renderProfile(profile, selectedRenderingContext)).join("")}</div></div>${renderLaunchConsole(selected, consoleRenderingContext)}</div>`;
   applyBoardLayout();
   listScroll.restore("launch");
   consoleController.restoreLaunchConsoleScroll();
@@ -1110,6 +1110,7 @@ function launchRenderingContext(): LaunchRenderingContext {
     snapshotFor,
     launchProfileOperationKey,
     launchProfileHasTaskOperation: launchActions.hasTaskOperation,
+    expandedProfiles: expandedLaunchProfiles,
     renderGroupTitle,
     uptimeText
   };
@@ -1258,7 +1259,18 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "task-details") modalForms.showTaskDetails(findProfile(required(target.dataset.profileId)), required(target.dataset.taskName));
     else if (action === "close-modal") closeModal();
     else if (action === "open-source") await openUrl(SOURCE_URL);
-    else if (action === "add-profile") modalForms.showProfileEditor(null);
+    else if (action === "toggle-profile") {
+      const profileId = required(target.dataset.profileId);
+      const profile = findProfile(profileId);
+      const states = profile.tasks.map((task) => snapshotFor(profile.id, task.name)?.state ?? "stopped");
+      if (!launchProfileIsFullyStopped(states)) return;
+      if (expandedLaunchProfiles.has(profileId)) expandedLaunchProfiles.delete(profileId);
+      else expandedLaunchProfiles.add(profileId);
+      renderLaunch(true);
+      [...workspaceElement.querySelectorAll<HTMLButtonElement>('[data-action="toggle-profile"]')]
+        .find((button) => button.dataset.profileId === profileId)
+        ?.focus();
+    }
     else if (action === "edit-profile") modalForms.showProfileEditor(findProfile(required(target.dataset.profileId)));
     else if (action === "save-profile") await launchActions.saveProfileFromModal(target.dataset.profileId ?? null);
     else if (action === "delete-profile") launchActions.requestDeleteProfile(required(target.dataset.profileId));

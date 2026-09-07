@@ -8,7 +8,7 @@ export type KeyboardNavigationContext = {
 
 export function focusTaskRow(profileId: string, taskName: string): void {
   const row = [...document.querySelectorAll<HTMLElement>(".task-card")]
-    .find((item) => item.dataset.profileId === profileId && item.dataset.taskName === taskName);
+    .find((item) => !item.closest("[hidden]") && !item.classList.contains("launch-profile-stack-card") && item.dataset.profileId === profileId && item.dataset.taskName === taskName);
   row?.focus();
 }
 
@@ -35,7 +35,7 @@ export function createKeyboardNavigation(context: KeyboardNavigationContext) {
         return;
       }
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        const rows = [...document.querySelectorAll<HTMLElement>(".task-card")];
+        const rows = [...document.querySelectorAll<HTMLElement>(".task-card")].filter((row) => !row.closest("[hidden]") && !row.classList.contains("launch-profile-stack-card"));
         const index = rows.indexOf(taskRow);
         const step = event.key === "ArrowDown" ? 1 : -1;
         rows[(index + step + rows.length) % rows.length]?.focus();

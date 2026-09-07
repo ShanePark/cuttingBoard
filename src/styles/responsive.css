@@ -25,9 +25,6 @@
   .task-editor label:nth-of-type(3) { grid-column: auto; }
   .detail-grid { grid-template-columns: 110px minmax(0, 1fr); }
   .launch-list { padding-bottom: 12px; }
-  .launch-add-card:only-child { min-height: 190px; }
-  .launch-add-action { padding: 28px 18px; }
-  .launch-add-info { top: 10px; right: 10px; }
   .bottom-tabs { gap: 2px; padding: 0 10px; }
   .bottom-tab { min-width: 0; padding: 0 11px; }
   .bottom-tab.is-active::after { right: 10px; left: 10px; }

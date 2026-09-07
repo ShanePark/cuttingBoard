@@ -92,16 +92,18 @@ export function createBoardLayout(context: BoardLayoutContext) {
   const applyBoardLayout = (): void => {
     const board = context.workspace.querySelector<HTMLElement>(".board");
     if (!board) return;
+    const groups = [...board.querySelectorAll<HTMLElement>(".service-section")];
     // The board is measured at the density the card count alone asks for. Planning a denser
     // layout only shrinks the padding and the gap further, so the room measured here is never
     // more than the room the chosen layout gets.
-    const baseDensity = boardDensity(board.querySelectorAll(".service-tile").length);
+    // Launch stacks keep both their preview cards and hidden task cards in the DOM; section metadata
+    // is the single source of truth for how many tiles the board is actually laying out.
+    const renderedTileCount = groups.reduce((total, group) => total + (Number(group.dataset.tiles) || 1), 0);
+    const baseDensity = boardDensity(renderedTileCount);
     board.style.setProperty("--tile-density", String(baseDensity));
     const styles = window.getComputedStyle(board);
     const gap = Number.parseFloat(styles.columnGap) || 0;
     const width = board.clientWidth - Number.parseFloat(styles.paddingLeft) - Number.parseFloat(styles.paddingRight);
-    // The add-a-profile card of the launch view takes part in the packing as a group of one.
-    const groups = [...board.querySelectorAll<HTMLElement>(".service-section, .launch-add-card")];
     const plan = boardPlan(groups.map((group) => Number(group.dataset.tiles) || 1), { width, gap, baseDensity });
     board.style.setProperty("--tile-density", String(plan.density));
     board.style.setProperty("--board-columns", String(plan.columns));
