@@ -148,25 +148,33 @@ fn validate_external_process_identity(
     if uid.is_some() && current_uid.is_some() && uid != current_uid {
         return Err("Cutting Board only stops processes owned by the current user.".into());
     }
-    let system = System::new_all();
-    let process = system
-        .process(Pid::from_u32(pid))
+    let actual_start_time = current_process_start_time(pid)
         .ok_or_else(|| "The process already exited. Refresh and try again.".to_string())?;
-    if process.start_time() != started_at {
+    if actual_start_time != started_at {
         return Err("The PID was reused by another process. Refresh before stopping it.".into());
     }
     Ok(())
 }
 
 fn external_process_is_current(pid: u32, started_at: u64) -> Result<bool, String> {
-    let system = System::new_all();
-    let Some(process) = system.process(Pid::from_u32(pid)) else {
+    let Some(actual_start_time) = current_process_start_time(pid) else {
         return Ok(false);
     };
-    if process.start_time() != started_at {
+    if actual_start_time != started_at {
         return Err("The PID was reused by another process. Refresh before stopping it.".into());
     }
     Ok(true)
+}
+
+fn current_process_start_time(pid: u32) -> Option<u64> {
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
+    system.process(pid).map(|process| process.start_time())
 }
 
 #[cfg(unix)]

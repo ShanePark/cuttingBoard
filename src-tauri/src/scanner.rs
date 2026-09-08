@@ -4,7 +4,7 @@ use std::{
     path::Path,
     time::Instant,
 };
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 
 mod classification;
 mod demo;
@@ -84,7 +84,9 @@ pub fn scan_workspace(
         grouped.entry(record.pid).or_default().push(record);
     }
 
-    let system = System::new_all();
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_processes(ProcessRefreshKind::everything().without_tasks()),
+    );
     let own_pid = std::process::id();
     let mut services = Vec::new();
     let mut index = HashMap::new();
