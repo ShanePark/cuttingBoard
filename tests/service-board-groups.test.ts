@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { boardGroupCards, serviceBoardGroups } from "../src/presentation-services.ts";
+import { boardGroupCards, createServiceBoardGroupsSelector, serviceBoardGroups } from "../src/presentation-services.ts";
 import type { ContainerInfo, ServiceSnapshot } from "../src/types.ts";
 
 function service(id: string, root: string, port: number): ServiceSnapshot {
@@ -110,13 +110,35 @@ test("does not associate containers with projectless SSH services by working dir
   assert.equal(boardGroupCards(groups[0]!), 2);
 });
 
+test("the board-group selector filters non-development services and invalidates on snapshot replacement", () => {
+  const selectGroups = createServiceBoardGroupsSelector();
+  const dev = service("backend", "/home/dev/oasis26", 48080);
+  const noise = { ...service("noise", "/home/dev/oasis26", 48081), relevance: "noise" as const };
+  const containers = [container("oasis-dev-postgres", "/home/dev/oasis26")];
+  const services = [dev, noise];
+
+  const first = selectGroups(services, containers);
+  assert.equal(first.length, 1);
+  assert.deepEqual(first[0]!.services.map((item) => item.id), ["backend"]);
+  assert.strictEqual(selectGroups(services, containers), first);
+
+  const replacedServices = selectGroups([...services], containers);
+  assert.notStrictEqual(replacedServices, first);
+  assert.deepEqual(replacedServices, first);
+
+  const replacedContainers = selectGroups(services, [...containers]);
+  assert.notStrictEqual(replacedContainers, replacedServices);
+  assert.deepEqual(replacedContainers, first);
+});
+
 test("the tab badge counts the same cards the board renders", () => {
   const uiSupport = readFileSync(new URL("../src/ui-support.ts", import.meta.url), "utf8");
   const servicesRendering = readFileSync(new URL("../src/services-rendering.ts", import.meta.url), "utf8");
 
-  assert.match(uiSupport, /serviceBoardGroups\(services, listing\?\.available \? listing\.containers : \[\]\)/);
+  assert.match(uiSupport, /getServiceBoardGroups/);
   assert.match(uiSupport, /boardGroupCards\(group\)/);
-  assert.match(servicesRendering, /serviceBoardGroups\(context\.services, context\.containers\)/);
+  assert.match(servicesRendering, /boardGroups: readonly ServiceBoardGroup\[\]/);
+  assert.match(servicesRendering, /const groups = context\.boardGroups/);
 });
 
 test("every grouped view shows how many cards its header stands for", () => {

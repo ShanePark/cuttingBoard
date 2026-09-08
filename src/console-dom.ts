@@ -42,10 +42,11 @@ export function patchConsoleOutput(output: HTMLElement, markup: string, kind: st
 
   const currentLog = output.querySelector<HTMLElement>(".console-log");
   if (hasLog && currentLog) {
+    const logChanged = consoleLogValue(currentLog) !== log;
+    if (!logChanged && kind === "log") return;
     const previousScrollElement = consoleScrollElement(output);
     const previousScrollTop = previousScrollElement.scrollTop;
     const previousSelection = captureConsoleLogSelection(output);
-    const logChanged = consoleLogValue(currentLog) !== log;
     if (logChanged) setConsoleLogValue(currentLog, log);
     if (logChanged) restoreConsoleLogSelection(output, previousSelection);
     const template = document.createElement("template");

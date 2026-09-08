@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
 import { renderAppShell } from "./app-shell";
 import { createBoardLayout } from "./board-layout";
+import { createContainerConsoleData } from "./container-console-data";
 import { createConsoleController, type ConsoleOutputPatch } from "./console-controller";
 import { createContainerActions } from "./container-actions";
 import { createLaunchActions, launchProfileBlocksEditing, launchProfileOperationKey } from "./launch-actions";
@@ -16,20 +17,11 @@ import { createLaunchRefresh } from "./launch-refresh";
 import { createListScroll } from "./list-scroll";
 import { openModal, closeModal as closeModalView, trapModalFocus } from "./modal";
 import { createModalForms, SOURCE_URL } from "./modal-forms";
-import {
-  appendProgressLine,
-  initialRestartProgress,
-  progressFromTaskLog,
-  restartProgressBusyForService,
-  remapRestartProgress,
-  shouldClearCompletedRestartProgress,
-  type RestartProgressEvent,
-  type ServiceRestartProgress
-} from "./restart-progress";
+import { createServiceConsoleData } from "./service-console-data";
 import { updateSettingsFromRadio } from "./settings";
 import { createUpdateController, UPDATE_CHECK_INTERVAL_MS } from "./update-controller";
 import { createUpdateProgressView, type UpdateProgressEvent } from "./update-progress";
-import { matchedServiceForTask } from "./presentation";
+import { createServiceBoardGroupsSelector } from "./presentation";
 import {
   launchConsoleOutputKind,
   ensureSelectedTask,
@@ -52,11 +44,9 @@ import {
 } from "./docker-rendering";
 import type {
   ContainerTab,
-  ContainerViewState,
   DockerConsoleRenderingContext,
   DockerRenderingContext,
   DockerTileRenderingContext,
-  DockerLogState
 } from "./docker-rendering";
 import {
   renderGroupTitle,
@@ -69,7 +59,6 @@ import {
   type ServiceTileRenderingContext
 } from "./services-rendering";
 import type {
-  ServiceLogState,
   ServicesConsoleTarget,
   ServicesRenderingContext
 } from "./services-rendering";
@@ -139,41 +128,12 @@ const expandedLaunchProfiles = new Set<string>();
 let selectedTaskKey: string | null = null;
 let selectedServiceId: string | null = null;
 let servicesConsoleTarget: ServicesConsoleTarget | null = null;
-let serviceLogState: ServiceLogState = {
-  serviceId: null,
-  logs: "",
-  available: false,
-  loading: false,
-  loadingStartedAt: null,
-  message: null,
-  error: null
-};
-let serviceRestartProgress: ServiceRestartProgress | null = null;
-let serviceLogRequestId = 0;
-const pendingServiceLogRequests = new Map<string, number>();
-let serviceLogElapsedTimer: number | null = null;
 let consolePollBusy = false;
-function emptyDockerLogState(): DockerLogState {
-  return { containerId: null, logs: "", loading: false, error: null };
-}
-const containerViewStates: Record<ContainerTab, ContainerViewState> = {
-  services: {
-    selectedContainerId: null,
-    logState: emptyDockerLogState(),
-    logRequestId: 0
-  },
-  docker: {
-    selectedContainerId: null,
-    logState: emptyDockerLogState(),
-    logRequestId: 0
-  }
-};
-function containerViewState(tab: ContainerTab): ContainerViewState {
-  return containerViewStates[tab];
-}
-function activeContainerTab(): ContainerTab {
-  return activeTab === "services" ? "services" : "docker";
-}
+const selectServiceBoardGroups = createServiceBoardGroupsSelector();
+const getServiceBoardGroups = () => selectServiceBoardGroups(
+  workspace?.services,
+  containerListing?.available ? containerListing.containers : undefined
+);
 
 const uiSupport = createUiSupport({
   elements: { workspace: workspaceElement },
@@ -182,7 +142,8 @@ const uiSupport = createUiSupport({
   getProfiles: () => profiles,
   getSnapshots: () => taskSnapshots,
   getAppInfo: () => appInfo,
-  getOperations: () => operations
+  getOperations: () => operations,
+  getServiceBoardGroups
 });
 const {
   snapshotFor,
@@ -230,6 +191,7 @@ const updateController = createUpdateController(
   }
 );
 
+let containerConsoleData!: ReturnType<typeof createContainerConsoleData>;
 const consoleController = createConsoleController({
   elements: {
     workspace: workspaceElement,
@@ -240,7 +202,7 @@ const consoleController = createConsoleController({
     selectedTaskDomKey: () => selectedTaskDomKeyForProfiles(profiles, selectedTaskKey),
     selectedServiceId: () => selectedServiceId,
     servicesConsoleTarget: () => servicesConsoleTarget,
-    container: (tab) => containerViewState(tab)
+    container: (tab) => containerConsoleData.state(tab)
   },
   render: {
     rerender: (force) => render(force),
@@ -250,6 +212,41 @@ const consoleController = createConsoleController({
   }
 });
 byId("bottom-tabs").innerHTML = consoleController.renderBottomPanelTabs();
+
+const serviceConsoleData = createServiceConsoleData({
+  api: { serviceLogs: api.serviceLogs },
+  getActiveTab: () => activeTab,
+  getWorkspace: () => workspace,
+  getProfiles: () => profiles,
+  getSelection: () => ({ serviceId: selectedServiceId, consoleTarget: servicesConsoleTarget }),
+  setSelection: (selection) => {
+    selectedServiceId = selection.serviceId;
+    servicesConsoleTarget = selection.consoleTarget;
+  },
+  resetServiceSelection: (serviceId) => consoleController.resetServiceSelection(serviceId),
+  renderServices,
+  updateServiceConsoleDom: () => consoleController.updateServiceConsoleDom(),
+  messageOf,
+  operations,
+  workspaceElement,
+  scheduler: window
+});
+
+containerConsoleData = createContainerConsoleData({
+  api: { containerLogs: api.containerLogs },
+  getActiveTab: () => activeTab,
+  getContainerListing: () => containerListing,
+  getServicesConsoleTarget: () => servicesConsoleTarget,
+  setServicesConsoleTarget: (target) => { servicesConsoleTarget = target; },
+  captureServicesConsoleState: () => consoleController.captureServicesConsoleState(),
+  resetContainerSelection: (tab, containerId) => consoleController.resetContainerSelection(tab, containerId),
+  invalidateServiceSelection: serviceConsoleData.invalidateForContainerSelection,
+  updateDockerConsoleDom: () => consoleController.updateDockerConsoleDom(),
+  updateServiceConsoleDom: () => consoleController.updateServiceConsoleDom(),
+  renderDocker,
+  renderServices,
+  messageOf
+});
 
 const { applyBoardLayout, installBoardObserver } = createBoardLayout({
   workspace: workspaceElement,
@@ -536,84 +533,18 @@ async function refreshWorkspace(force = false): Promise<void> {
 }
 
 function syncSelectedService(): void {
-  if (!selectedServiceId) return;
-  const stillAvailable = workspace?.services.some((service) => service.relevance === "dev" && service.id === selectedServiceId);
-  if (!stillAvailable && serviceRestartProgress?.serviceId === selectedServiceId) return;
-  if (!stillAvailable) clearServiceSelection();
+  serviceConsoleData.syncSelectedService();
 }
 
 function remapServiceSelectionForRestart(): void {
-  const progress = serviceRestartProgress;
-  if (!progress || !workspace) return;
-  const profile = profiles.find((item) => item.id === progress.profileId);
-  const task = profile?.tasks.find((item) => item.name === progress.taskName);
-  if (!profile || !task) return;
-  const replacement = matchedServiceForTask(profile, task, workspace.services);
-  if (!replacement || replacement.id === progress.serviceId) return;
-  const previousServiceId = progress.serviceId;
-  serviceRestartProgress = remapRestartProgress(progress, replacement.id);
-  if (selectedServiceId === previousServiceId) selectedServiceId = replacement.id;
-  if (servicesConsoleTarget?.kind === "service" && servicesConsoleTarget.id === previousServiceId) {
-    servicesConsoleTarget = { kind: "service", id: replacement.id };
-  }
-  serviceLogRequestId += 1;
-  serviceLogState = {
-    serviceId: replacement.id,
-    logs: "",
-    available: false,
-    loading: false,
-    loadingStartedAt: null,
-    message: null,
-    error: null
-  };
-  if (serviceRestartProgress.phase === "completed") serviceRestartProgress = null;
-}
-
-function stopServiceLogElapsedTimer(): void {
-  if (serviceLogElapsedTimer === null) return;
-  window.clearInterval(serviceLogElapsedTimer);
-  serviceLogElapsedTimer = null;
-}
-
-function serviceLogElapsedSeconds(state: ServiceLogState): number {
-  if (state.loadingStartedAt === null) return 0;
-  return Math.max(0, Math.floor((Date.now() - state.loadingStartedAt) / 1000));
-}
-
-function updateServiceLogElapsedDom(): void {
-  const serviceId = selectedServiceId;
-  if (activeTab !== "services" || servicesConsoleTarget?.kind !== "service" || !serviceId || !serviceLogState.loading || serviceLogState.serviceId !== serviceId) return;
-  const consoleElement = [...workspaceElement.querySelectorAll<HTMLElement>(".service-console:not(.docker-service-console)")]
-    .find((element) => element.dataset.consoleServiceId === serviceId);
-  if (!consoleElement) return;
-  const elapsed = `${serviceLogElapsedSeconds(serviceLogState)}s`;
-  consoleElement.querySelectorAll<HTMLElement>("[data-service-log-elapsed]").forEach((element) => {
-    if (element.textContent !== elapsed) element.textContent = elapsed;
-  });
-}
-
-function startServiceLogElapsedTimer(serviceId: string, requestId: number): void {
-  stopServiceLogElapsedTimer();
-  serviceLogElapsedTimer = window.setInterval(() => {
-    if (requestId !== serviceLogRequestId || servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId || serviceLogState.serviceId !== serviceId || !serviceLogState.loading || pendingServiceLogRequests.get(serviceId) !== requestId) {
-      stopServiceLogElapsedTimer();
-      return;
-    }
-    if (activeTab === "services") updateServiceLogElapsedDom();
-  }, 1000);
-}
-
-function resumeServiceLogElapsedTimer(): void {
-  const serviceId = selectedServiceId;
-  if (activeTab !== "services" || servicesConsoleTarget?.kind !== "service" || !serviceId || !serviceLogState.loading || pendingServiceLogRequests.get(serviceId) !== serviceLogRequestId) return;
-  startServiceLogElapsedTimer(serviceId, serviceLogRequestId);
+  serviceConsoleData.remapServiceSelectionForRestart();
 }
 
 function focusServiceConsole(serviceId: string): void {
   if (activeTab !== "services") {
     consoleController.captureLaunchConsoleState();
     consoleController.captureServicesConsoleState();
-    stopServiceLogElapsedTimer();
+    serviceConsoleData.stopServiceLogElapsedTimer();
     activeTab = "services";
     document.querySelectorAll<HTMLElement>("[data-tab]").forEach((item) => item.classList.toggle("is-active", item.dataset.tab === "services"));
   }
@@ -622,149 +553,36 @@ function focusServiceConsole(serviceId: string): void {
 }
 
 function beginServiceRestartProgress(serviceId: string, profileId: string, taskName: string): void {
-  serviceRestartProgress = initialRestartProgress(serviceId, profileId, taskName);
-  if (activeTab === "services") renderServices(true);
+  serviceConsoleData.beginServiceRestartProgress(serviceId, profileId, taskName);
 }
 
 function updateServiceRestartProgress(profileId: string, taskName: string, logTail: string): void {
-  if (!serviceRestartProgress || serviceRestartProgress.profileId !== profileId || serviceRestartProgress.taskName !== taskName) return;
-  serviceRestartProgress = progressFromTaskLog(serviceRestartProgress, logTail);
-  if (activeTab === "services" && servicesConsoleTarget?.kind === "service" && selectedServiceId === serviceRestartProgress.serviceId) {
-    consoleController.updateServiceConsoleDom();
-  }
+  serviceConsoleData.updateServiceRestartProgress(profileId, taskName, logTail);
 }
 
 function finishServiceRestartProgress(profileId: string, taskName: string, succeeded: boolean): void {
-  if (!serviceRestartProgress || serviceRestartProgress.profileId !== profileId || serviceRestartProgress.taskName !== taskName) return;
-  if (succeeded) {
-    if (serviceRestartProgress.phase !== "completed") {
-      const completion: RestartProgressEvent = {
-        profile_id: serviceRestartProgress.profileId,
-        task_name: serviceRestartProgress.taskName,
-        phase: "completed",
-        message: "Restart completed."
-      };
-      serviceRestartProgress = {
-        ...serviceRestartProgress,
-        phase: completion.phase,
-        message: completion.message,
-        detail: null,
-        logTail: appendProgressLine(serviceRestartProgress.logTail, completion)
-      };
-    }
-    if (serviceRestartProgress && shouldClearCompletedRestartProgress(serviceRestartProgress)) serviceRestartProgress = null;
-  } else if (serviceRestartProgress.phase !== "failed") {
-    const failure: RestartProgressEvent = {
-      profile_id: serviceRestartProgress.profileId,
-      task_name: serviceRestartProgress.taskName,
-      phase: "failed",
-      message: "Restart preparation failed.",
-      detail: "See the task log for the failure details."
-    };
-    serviceRestartProgress = {
-      ...serviceRestartProgress,
-      phase: failure.phase,
-      message: failure.message,
-      detail: failure.detail ?? null,
-      logTail: appendProgressLine(serviceRestartProgress.logTail, failure)
-    };
-  }
-  if (activeTab === "services") renderServices(true);
+  serviceConsoleData.finishServiceRestartProgress(profileId, taskName, succeeded);
 }
 
 function serviceRestartInProgress(serviceId: string): boolean {
-  return restartProgressBusyForService(
-    serviceRestartProgress,
-    serviceId,
-    operations.has(`restart:${serviceId}`)
-  );
+  return serviceConsoleData.serviceRestartInProgress(serviceId);
 }
 
 function clearServiceSelection(): void {
-  stopServiceLogElapsedTimer();
-  selectedServiceId = null;
-  if (servicesConsoleTarget?.kind === "service") servicesConsoleTarget = null;
-  serviceRestartProgress = null;
-  serviceLogRequestId += 1;
-  serviceLogState = {
-    serviceId: null,
-    logs: "",
-    available: false,
-    loading: false,
-    loadingStartedAt: null,
-    message: null,
-    error: null
-  };
-  consoleController.resetServiceSelection(null);
+  serviceConsoleData.clearServiceSelection();
 }
 
 async function refreshSelectedServiceLogs(): Promise<void> {
-  if (servicesConsoleTarget?.kind !== "service" || !selectedServiceId) return;
-  const service = workspace?.services.find((item) => item.relevance === "dev" && item.id === selectedServiceId);
+  const selectedServiceId = serviceConsoleData.selectedServiceId();
+  const service = serviceConsoleData.currentService();
+  const serviceRestartProgress = serviceConsoleData.restartProgress();
+  if (serviceConsoleData.selectedConsoleTarget()?.kind !== "service" || !selectedServiceId) return;
   if (!service) {
     if (serviceRestartProgress?.serviceId === selectedServiceId) return;
     clearServiceSelection();
     return;
   }
-  if (serviceLogState.serviceId === selectedServiceId && serviceLogState.loading) return;
-  await loadServiceLogs(selectedServiceId);
-}
-
-async function loadServiceLogs(serviceId: string, showLoading = false): Promise<void> {
-  if (servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId) return;
-  if (!showLoading && serviceLogState.serviceId === serviceId && serviceLogState.loading) return;
-  if (!showLoading && pendingServiceLogRequests.has(serviceId)) return;
-  const requestId = ++serviceLogRequestId;
-  if (showLoading) {
-    serviceLogState = {
-      serviceId,
-      logs: "",
-      available: false,
-      loading: true,
-      loadingStartedAt: Date.now(),
-      message: null,
-      error: null
-    };
-    if (activeTab === "services" && servicesConsoleTarget?.kind === "service") consoleController.updateServiceConsoleDom();
-  } else {
-    serviceLogState = {
-      ...serviceLogState,
-      serviceId,
-      loading: true,
-      loadingStartedAt: Date.now(),
-      error: null
-    };
-  }
-  pendingServiceLogRequests.set(serviceId, requestId);
-  startServiceLogElapsedTimer(serviceId, requestId);
-  try {
-    const result = await api.serviceLogs(serviceId);
-    if (requestId !== serviceLogRequestId || servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId) return;
-    stopServiceLogElapsedTimer();
-    serviceLogState = {
-      serviceId,
-      logs: result.logs ?? "",
-      available: result.available ?? Boolean(result.source_path || result.logs),
-      loading: false,
-      loadingStartedAt: null,
-      message: result.message ?? null,
-      error: null
-    };
-    if (activeTab === "services" && servicesConsoleTarget?.kind === "service") consoleController.updateServiceConsoleDom();
-  } catch (error) {
-    if (requestId !== serviceLogRequestId || servicesConsoleTarget?.kind !== "service" || selectedServiceId !== serviceId) return;
-    stopServiceLogElapsedTimer();
-    serviceLogState = {
-      ...serviceLogState,
-      serviceId,
-      loading: false,
-      loadingStartedAt: null,
-      error: messageOf(error)
-    };
-    if (activeTab === "services" && servicesConsoleTarget?.kind === "service") consoleController.updateServiceConsoleDom();
-  } finally {
-    if (pendingServiceLogRequests.get(serviceId) === requestId) pendingServiceLogRequests.delete(serviceId);
-  }
+  await serviceConsoleData.refreshSelectedServiceLogs();
 }
 
 async function refreshContainers(force = false): Promise<void> {
@@ -787,69 +605,15 @@ async function refreshContainers(force = false): Promise<void> {
 }
 
 function syncSelectedContainer(): void {
-  if (!containerListing?.available) {
-    clearDockerSelection();
-    return;
-  }
-  for (const tab of ["services", "docker"] as const) {
-    const selectedId = containerViewState(tab).selectedContainerId;
-    if (selectedId && !containerListing.containers.some((container) => container.id === selectedId)) clearContainerSelection(tab);
-  }
-  if (servicesConsoleTarget?.kind === "container" && containerViewState("services").selectedContainerId !== servicesConsoleTarget.id) {
-    servicesConsoleTarget = null;
-  }
-}
-
-function clearContainerSelection(tab: ContainerTab): void {
-  const state = containerViewState(tab);
-  const clearedId = state.selectedContainerId;
-  state.selectedContainerId = null;
-  state.logRequestId += 1;
-  state.logState = emptyDockerLogState();
-  consoleController.resetContainerSelection(tab, null);
-  if (tab === "services" && servicesConsoleTarget?.kind === "container" && servicesConsoleTarget.id === clearedId) servicesConsoleTarget = null;
+  containerConsoleData.syncSelectedContainer();
 }
 
 function clearDockerSelection(): void {
-  clearContainerSelection("services");
-  clearContainerSelection("docker");
+  containerConsoleData.clearDockerSelection();
 }
 
 async function refreshSelectedContainerLogs(): Promise<void> {
-  const tab = activeContainerTab();
-  const state = containerViewState(tab);
-  if (tab === "services" && servicesConsoleTarget?.kind !== "container") return;
-  if (!state.selectedContainerId || !containerListing?.available) return;
-  if (state.logState.containerId === state.selectedContainerId && state.logState.loading) return;
-  await loadContainerLogs(state.selectedContainerId, false, tab);
-}
-
-function updateContainerConsoleDom(tab: ContainerTab): void {
-  if (tab === "docker" && activeTab === "docker") consoleController.updateDockerConsoleDom();
-  else if (tab === "services" && activeTab === "services" && servicesConsoleTarget?.kind === "container") consoleController.updateServiceConsoleDom();
-}
-
-async function loadContainerLogs(containerId: string, showLoading = false, tab = activeContainerTab()): Promise<void> {
-  const state = containerViewState(tab);
-  if (state.selectedContainerId !== containerId) return;
-  if (!showLoading && state.logState.containerId === containerId && state.logState.loading) return;
-  const requestId = ++state.logRequestId;
-  if (showLoading) {
-    state.logState = { containerId, logs: "", loading: true, error: null };
-    updateContainerConsoleDom(tab);
-  } else {
-    state.logState = { ...state.logState, containerId, loading: true, error: null };
-  }
-  try {
-    const result = await api.containerLogs(containerId);
-    if (requestId !== state.logRequestId || state.selectedContainerId !== containerId) return;
-    state.logState = { containerId, logs: result.logs ?? "", loading: false, error: null };
-    updateContainerConsoleDom(tab);
-  } catch (error) {
-    if (requestId !== state.logRequestId || state.selectedContainerId !== containerId) return;
-    state.logState = { ...state.logState, containerId, loading: false, error: messageOf(error) };
-    updateContainerConsoleDom(tab);
-  }
+  await containerConsoleData.refreshSelectedContainerLogs();
 }
 
 function render(force = false): void {
@@ -859,17 +623,18 @@ function render(force = false): void {
 }
 
 function servicesRenderingContext(): ServicesRenderingContext {
-  const containerTab = activeContainerTab();
+  const containerTab = containerConsoleData.activeContainerTab();
   return {
     workspace,
     services: workspace?.services.filter((service) => service.relevance === "dev") ?? [],
     containers: containerListing?.available ? containerListing.containers : [],
+    boardGroups: getServiceBoardGroups(),
     selection: {
       selectedServiceId,
-      selectedContainerId: containerViewState("services").selectedContainerId,
+      selectedContainerId: containerConsoleData.state("services").selectedContainerId,
       container: {
         tab: containerTab,
-        selectedId: containerViewState(containerTab).selectedContainerId
+        selectedId: containerConsoleData.state(containerTab).selectedContainerId
       },
       consoleTarget: servicesConsoleTarget,
       activeBottomPanel: consoleController.activePanel()
@@ -877,9 +642,9 @@ function servicesRenderingContext(): ServicesRenderingContext {
     tile: serviceTileRenderingContext(),
     console: {
       open: consoleController.isPanelOpen("console"),
-      serviceLogState,
-      restartProgress: serviceRestartProgress,
-      serviceLogElapsedSeconds,
+      serviceLogState: serviceConsoleData.logState(),
+      restartProgress: serviceConsoleData.restartProgress(),
+      serviceLogElapsedSeconds: serviceConsoleData.serviceLogElapsedSeconds,
       docker: dockerConsoleRenderingContext("services"),
       renderConsoleResizer: () => consoleController.renderConsoleResizer(),
       renderConsoleJumpButton: () => consoleController.renderConsoleJumpButton()
@@ -924,6 +689,7 @@ function renderServiceConsolePatch(serviceId: string | null): ConsoleOutputPatch
   const service = serviceId
     ? workspace?.services.find((item) => item.relevance === "dev" && item.id === serviceId) ?? null
     : null;
+  const serviceLogState = serviceConsoleData.logState();
   const state = service && serviceLogState.serviceId === service.id ? serviceLogState : null;
   const renderingContext = servicesRenderingContext();
   const restartLog = renderingContext.console.restartProgress
@@ -938,7 +704,7 @@ function renderServiceConsolePatch(serviceId: string | null): ConsoleOutputPatch
 }
 
 function renderDockerConsolePatch(tab: ContainerTab, containerId: string | null): ConsoleOutputPatch {
-  const state = containerViewState(tab);
+  const state = containerConsoleData.state(tab);
   const container = containerId
     ? containerListing?.containers.find((item) => item.id === containerId) ?? null
     : null;
@@ -965,7 +731,7 @@ function dockerTileRenderingContext(tab: ContainerTab): DockerTileRenderingConte
   return {
     activeTab: tab,
     activeBottomPanel: consoleController.activePanel(),
-    selectedContainerId: containerViewState(tab).selectedContainerId,
+    selectedContainerId: containerConsoleData.state(tab).selectedContainerId,
     servicesConsoleTargetKind: servicesConsoleTarget?.kind ?? null,
     containerOperationBusy
   };
@@ -976,12 +742,12 @@ function serviceTileRenderingContext(): ServiceTileRenderingContext {
     operations,
     selectedServiceId,
     consoleTargetKind: servicesConsoleTarget?.kind ?? null,
-    restartingServiceId: serviceRestartProgress?.serviceId ?? null
+    restartingServiceId: serviceConsoleData.restartProgress()?.serviceId ?? null
   };
 }
 
 function dockerConsoleRenderingContext(tab: ContainerTab): DockerConsoleRenderingContext {
-  const viewState = containerViewState(tab);
+  const viewState = containerConsoleData.state(tab);
   const container = viewState.selectedContainerId
     ? containerListing?.containers.find((item) => item.id === viewState.selectedContainerId) ?? null
     : null;
@@ -1175,24 +941,8 @@ function updateTaskLogTail(profileId: string, taskName: string, logTail: string)
 function selectService(id: string, focus = false): void {
   const service = findService(id);
   if (service.relevance !== "dev") throw new Error("This service is not available in the Services view.");
-  if (serviceRestartProgress && serviceRestartProgress.serviceId !== id) serviceRestartProgress = null;
   consoleController.captureServicesConsoleState();
-  stopServiceLogElapsedTimer();
-  selectedServiceId = id;
-  servicesConsoleTarget = { kind: "service", id };
-  consoleController.resetServiceSelection(id);
-  serviceLogRequestId += 1;
-  serviceLogState = {
-    serviceId: id,
-    logs: "",
-    available: false,
-    loading: true,
-    loadingStartedAt: Date.now(),
-    message: null,
-    error: null
-  };
-  renderServices(true);
-  void loadServiceLogs(id, true);
+  serviceConsoleData.selectService(id);
   if (focus) focusServiceCard(id);
 }
 
@@ -1204,21 +954,7 @@ function setSelectedTask(profileId: string, taskName: string): void {
 }
 
 function selectContainer(id: string, focus = false): void {
-  findContainer(id);
-  const tab = activeContainerTab();
-  if (activeTab === "services") consoleController.captureServicesConsoleState();
-  const state = containerViewState(tab);
-  state.selectedContainerId = id;
-  if (tab === "services") {
-    servicesConsoleTarget = { kind: "container", id };
-    stopServiceLogElapsedTimer();
-    serviceLogRequestId += 1;
-  }
-  consoleController.resetContainerSelection(tab, id);
-  state.logState = { containerId: id, logs: "", loading: true, error: null };
-  if (activeTab === "services") renderServices(true);
-  else renderDocker(true);
-  void loadContainerLogs(id, true, tab);
+  containerConsoleData.selectContainer(id);
   if (focus) focusContainerCard(id);
 }
 
@@ -1236,12 +972,12 @@ async function handleClick(event: Event): Promise<void> {
     if (tab !== activeTab) {
       consoleController.captureLaunchConsoleState();
       consoleController.captureServicesConsoleState();
-      if (activeTab === "services") stopServiceLogElapsedTimer();
+      if (activeTab === "services") serviceConsoleData.stopServiceLogElapsedTimer();
     }
     activeTab = tab;
     document.querySelectorAll<HTMLElement>("[data-tab]").forEach((item) => item.classList.toggle("is-active", item.dataset.tab === tab));
     render(true);
-    if (tab === "services") resumeServiceLogElapsedTimer();
+    if (tab === "services") serviceConsoleData.resumeServiceLogElapsedTimer();
     if (tab === "services" && servicesConsoleTarget?.kind === "service") void refreshSelectedServiceLogs();
     if (tab === "services" || tab === "docker") await refreshContainers(true);
     if (tab === "launch") await refreshLaunch(true);

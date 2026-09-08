@@ -6,7 +6,7 @@ import {
   boardGroupCards,
   currentUptime,
   formatBytes,
-  serviceBoardGroups
+  type ServiceBoardGroup
 } from "./presentation";
 import { uptimeText } from "./services-rendering";
 import type {
@@ -30,6 +30,7 @@ export type UiSupportContext = {
   getSnapshots: () => readonly ManagedTaskSnapshot[];
   getAppInfo: () => AppInfo | null;
   getOperations: () => ReadonlySet<string>;
+  getServiceBoardGroups: () => readonly ServiceBoardGroup[];
 };
 
 export function createUiSupport(context: UiSupportContext) {
@@ -79,11 +80,10 @@ export function createUiSupport(context: UiSupportContext) {
   const renderHeaderCounts = (): void => {
     const workspace = context.getWorkspace();
     const listing = context.getContainerListing();
-    const services = workspace?.services.filter((service) => service.relevance === "dev") ?? [];
     const fallbackContainers = workspace?.services.filter((service) => service.relevance === "container").length ?? 0;
     // The badge counts the cards the Services view puts on screen, which includes the containers
     // that are grouped with a project's own services.
-    const boardCards = serviceBoardGroups(services, listing?.available ? listing.containers : [])
+    const boardCards = context.getServiceBoardGroups()
       .reduce((total, group) => total + boardGroupCards(group), 0);
     byId("services-count").textContent = String(boardCards);
     byId("docker-count").textContent = String(listing?.available ? listing.containers.length : fallbackContainers);

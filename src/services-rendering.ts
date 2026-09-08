@@ -7,7 +7,6 @@ import {
   boardGroupCards,
   containerLaunchTasks,
   formatUptimeCompact,
-  serviceBoardGroups,
   serviceTitle,
   uniquePorts,
   type ServiceBoardGroup
@@ -81,6 +80,7 @@ export type ServicesRenderingContext = {
   workspace: WorkspaceSnapshot | null;
   services: readonly ServiceSnapshot[];
   containers: readonly ContainerInfo[];
+  boardGroups: readonly ServiceBoardGroup[];
   selection: ServicesSelectionContext;
   tile: ServiceTileRenderingContext;
   console: ServicesConsoleRenderingContext;
@@ -91,7 +91,7 @@ export type ServicesRenderingContext = {
 };
 
 export function servicesRenderSignature(context: ServicesRenderingContext): string {
-  const groups = serviceGroups(context);
+  const groups = context.boardGroups;
   return JSON.stringify([
     context.services.map((service) => [
       service.id, service.display_name, service.tech, uniquePorts(service), service.category, service.status,
@@ -128,7 +128,7 @@ export function renderServicesView(context: ServicesRenderingContext): string {
   if (context.services.length === 0) {
     return `<div class="services-view split-view"><div class="split-view-list">${context.emptyState("No development services are running", "Start a local server from a terminal, agent, or IDE.")}</div>${renderServiceConsole(context)}</div>`;
   }
-  const groups = serviceGroups(context);
+  const groups = context.boardGroups;
   return `<div class="services-view split-view"><div class="split-view-list"><div class="board">${groups.map((group) => `
     <section class="service-section" data-tiles="${group.services.length + group.containers.length}" aria-labelledby="group-${h(encodeURIComponent(group.id))}">
       <header class="section-header">
@@ -318,10 +318,6 @@ export function renderServiceLogOutput(service: ServiceSnapshot | null, context:
 }
 
 type ServiceTileActionScope = { select?: boolean; info?: boolean; stop?: boolean; open?: boolean };
-
-function serviceGroups(context: ServicesRenderingContext): ServiceBoardGroup[] {
-  return serviceBoardGroups(context.services, context.containers);
-}
 
 function renderServiceGroupTiles(group: ServiceBoardGroup, context: ServicesRenderingContext): string {
   const total = group.services.length + group.containers.length;

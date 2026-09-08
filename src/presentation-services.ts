@@ -10,6 +10,11 @@ export type ServiceGroup = {
 
 export type ServiceBoardGroup = ServiceGroup & { containers: ContainerInfo[] };
 
+export type ServiceBoardGroupsSelector = (
+  services: readonly ServiceSnapshot[] | null | undefined,
+  containers: readonly ContainerInfo[] | null | undefined
+) => readonly ServiceBoardGroup[];
+
 export function uniquePorts(service: ServiceSnapshot): number[] {
   return [...new Set(service.endpoints.map((endpoint) => endpoint.port))].sort((a, b) => a - b);
 }
@@ -57,7 +62,7 @@ export function pathIsEqualOrNested(path: string, root: string): boolean {
   const candidate = normalisePath(path);
   const parent = normalisePath(root);
   if (!candidate || !parent) return false;
-  return parent === "/" ? candidate.startsWith("/") : candidate === parent || candidate.startsWith(`${parent}/`);
+  return normalisedPathIsEqualOrNested(candidate, parent);
 }
 
 /** Whether two paths name the same directory or one lies inside the other. */
@@ -112,8 +117,9 @@ function isAbsolutePath(path: string): boolean {
  * set, so the badge cannot drift from the cards on screen.
  */
 export function serviceBoardGroups(services: readonly ServiceSnapshot[], containers: readonly ContainerInfo[]): ServiceBoardGroup[] {
+  const runningContainers = normaliseRunningContainers(containers);
   return groupServices([...services])
-    .map((group) => ({ ...group, containers: relatedContainersForGroup(group.services, [...containers]) }))
+    .map((group) => ({ ...group, containers: relatedContainersForNormalisedGroup(group.services, runningContainers) }))
     .sort((left, right) => boardGroupCards(right) - boardGroupCards(left) || left.name.localeCompare(right.name));
 }
 
@@ -122,18 +128,68 @@ export function boardGroupCards(group: ServiceBoardGroup): number {
 }
 
 export function relatedContainersForGroup(services: ServiceSnapshot[], containers: ContainerInfo[]): ContainerInfo[] {
+  return relatedContainersForNormalisedGroup(services, normaliseRunningContainers(containers));
+}
+
+type NormalisedRunningContainer = {
+  container: ContainerInfo;
+  workingDirectory: string;
+};
+
+function normaliseRunningContainers(containers: readonly ContainerInfo[]): NormalisedRunningContainer[] {
+  return containers.flatMap((container) => {
+    if (container.state.trim().toLowerCase() !== "running") return [];
+    const workingDirectory = container.compose_working_dir?.trim();
+    return workingDirectory
+      ? [{ container, workingDirectory: normalisePath(workingDirectory) }]
+      : [];
+  });
+}
+
+function relatedContainersForNormalisedGroup(
+  services: readonly ServiceSnapshot[],
+  containers: readonly NormalisedRunningContainer[]
+): ContainerInfo[] {
   const roots = services
     .map((service) => service.project?.root_path?.trim())
-    .filter((root): root is string => Boolean(root));
+    .filter((root): root is string => Boolean(root))
+    .map(normalisePath);
   if (roots.length === 0) return [];
   return containers
-    .filter((container) => container.state.trim().toLowerCase() === "running")
-    .filter((container) => {
-      const workingDir = container.compose_working_dir?.trim();
-      return Boolean(workingDir && roots.some((root) => pathIsEqualOrNested(workingDir, root)));
-    })
+    .filter(({ workingDirectory }) => roots.some((root) => normalisedPathIsEqualOrNested(workingDirectory, root)))
+    .map(({ container }) => container)
     .sort((left, right) => left.name.localeCompare(right.name));
 }
+
+function normalisedPathIsEqualOrNested(path: string, root: string): boolean {
+  return root === "/" ? path.startsWith("/") : path === root || path.startsWith(`${root}/`);
+}
+
+/**
+ * Reuses the board groups while the scanner and container listing retain their snapshot arrays.
+ * Both arrays are replaced by the API on refresh, and the UI never mutates them in place.
+ */
+export function createServiceBoardGroupsSelector(): ServiceBoardGroupsSelector {
+  let cachedServices: readonly ServiceSnapshot[] | null = null;
+  let cachedContainers: readonly ContainerInfo[] | null = null;
+  let cachedGroups: readonly ServiceBoardGroup[] = [];
+
+  return (services, containers) => {
+    const nextServices = services ?? EMPTY_SERVICES;
+    const nextContainers = containers ?? EMPTY_CONTAINERS;
+    if (nextServices === cachedServices && nextContainers === cachedContainers) return cachedGroups;
+    cachedServices = nextServices;
+    cachedContainers = nextContainers;
+    cachedGroups = serviceBoardGroups(
+      nextServices.filter((service) => service.relevance === "dev"),
+      nextContainers
+    );
+    return cachedGroups;
+  };
+}
+
+const EMPTY_SERVICES: readonly ServiceSnapshot[] = [];
+const EMPTY_CONTAINERS: readonly ContainerInfo[] = [];
 
 const IMAGE_TECH_TESTS: ReadonlyArray<readonly [string, string]> = [
   ["postgres", "postgresql"], ["mysql", "mysql"], ["mariadb", "mariadb"], ["redis", "redis"],
