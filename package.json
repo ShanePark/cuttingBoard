@@ -15,7 +15,7 @@
     "icons": "npm run icons:runtime && npm run icons:app",
     "icons:runtime": "node scripts/build-icons.mjs",
     "icons:app": "tauri icon assets/app-icon-source.png --output src-tauri/icons",
-    "tauri": "tauri"
+    "tauri": "node scripts/tauri-cli.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

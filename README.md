@@ -73,6 +73,8 @@ npm run tauri dev
 
 The Vite development server uses `http://localhost:1420` when running the frontend directly. `npm run tauri dev` starts the native desktop app and rebuilds generated runtime icons as needed.
 
+On macOS, `npm run tauri build` selects one installed Developer ID or Apple Development signing identity for the app bundle. This keeps macOS privacy permissions attached across self-updates. If more than one matching identity is installed, set `APPLE_SIGNING_IDENTITY` to the exact identity name before building.
+
 ## Demonstration mode
 
 Use deterministic sample services, containers, and a launch profile without changing real processes:
