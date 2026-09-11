@@ -386,7 +386,7 @@ root.addEventListener("beforeinput", (event) => {
   consoleController.handleOutputMutation(event);
 });
 root.addEventListener("input", (event) => {
-  consoleController.handleOutputMutation(event);
+  if (!consoleController.handleSearchInput(event)) consoleController.handleOutputMutation(event);
 });
 root.addEventListener("paste", (event) => {
   consoleController.handleOutputMutation(event);
@@ -1037,6 +1037,7 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "stop-task") await launchActions.requestLaunchAction({ kind: "task", direction: "stop", profileId: required(target.dataset.profileId), taskName: required(target.dataset.taskName) });
     else if (action === "confirm-launch-action") await launchActions.confirmLaunchAction();
     else if (action === "jump-to-bottom") consoleController.jumpToBottom(target);
+    else if (action === "console-search-next" || action === "console-search-previous" || action === "close-console-search") consoleController.handleSearchAction(action, target);
     else if (action === "toggle-bottom-panel") consoleController.toggleBottomPanel(required(target.dataset.panelId));
     else if (action === "choose-root") await chooseProfileRoot();
     else if (action === "add-task-row") modalForms.addTaskRow();

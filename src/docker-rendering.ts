@@ -183,10 +183,10 @@ export function renderDockerLogOutput(container: ContainerInfo | null, logState:
   }
   if (logState.error) {
     const alert = `<div class="console-alert">${uiIcon("warning", 14)}<span>${h(logState.error)}</span></div>`;
-    if (log.trim()) return `${alert}<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="off" aria-label="Log output">${h(log)}</textarea>`;
+    if (log.trim()) return `${alert}<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="soft" aria-label="Log output">${h(log)}</textarea>`;
     return `${alert}<div class="console-message is-failed"><span class="console-message-icon">${uiIcon("warning", 18)}</span><strong>Container logs are unavailable</strong><span>Docker could not return output for this container.</span></div>`;
   }
-  if (log.trim()) return `<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="off" aria-label="Log output">${h(log)}</textarea>`;
+  if (log.trim()) return `<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="soft" aria-label="Log output">${h(log)}</textarea>`;
   return `<div class="console-message"><span class="console-message-icon">${uiIcon("log", 18)}</span><strong>No logs available</strong><span>This container has not produced any output yet.</span></div>`;
 }
 

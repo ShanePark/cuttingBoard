@@ -240,7 +240,7 @@ export function launchConsoleOutputKind(snapshot: ManagedTaskSnapshot | undefine
 export function renderConsoleOutput(snapshot: ManagedTaskSnapshot | undefined, state: LaunchState): string {
   const log = snapshot?.log_tail ?? "";
   if (state === "external") {
-    if (log.length > 0) return `<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="off" aria-label="Log output">${h(log)}</textarea>`;
+    if (log.length > 0) return `<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="soft" aria-label="Log output">${h(log)}</textarea>`;
     const message = snapshot?.external_log_path
       ? "No output is available from the configured external log source yet."
       : "This process was started outside Cutting Board, so its output goes to whatever started it, such as an IDE or a terminal. Output appears here once the process writes to a log file (for a Spring Boot app, set logging.file.name) or when the task is started from this profile.";
@@ -250,7 +250,7 @@ export function renderConsoleOutput(snapshot: ManagedTaskSnapshot | undefined, s
   const notice = state === "failed"
     ? `<div class="console-alert">${uiIcon("warning", 14)}<span>${h(message || "The task exited before completing successfully.")}</span></div>`
     : "";
-  if (log.length > 0) return `${notice}<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="off" aria-label="Log output">${h(log)}</textarea>`;
+  if (log.length > 0) return `${notice}<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="soft" aria-label="Log output">${h(log)}</textarea>`;
   if (state === "failed") {
     return `<div class="console-message is-failed"><span class="console-message-icon">${uiIcon("warning", 18)}</span><strong>Task failed before producing output</strong><span>${h(message || "The task exited before completing successfully.")}</span></div>`;
   }
