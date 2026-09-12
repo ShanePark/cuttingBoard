@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System, UpdateKind};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System, UpdateKind};
 
 use super::external::{path_matches_task, task_matches_service};
 
@@ -342,7 +342,8 @@ fn process_command_provenance(service: &ServiceSnapshot) -> Vec<String> {
     let refresh_kind = ProcessRefreshKind::nothing()
         .without_tasks()
         .with_cmd(UpdateKind::OnlyIfNotSet);
-    let system = System::new_with_specifics(RefreshKind::nothing().with_processes(refresh_kind));
+    // Log recovery only needs command lines along this process's ancestor chain.
+    let mut system = System::new_with_specifics(RefreshKind::nothing());
     let mut pid = Some(Pid::from_u32(process.pid));
     let mut visited = Vec::new();
     let mut commands = Vec::new();
@@ -351,6 +352,11 @@ fn process_command_provenance(service: &ServiceSnapshot) -> Vec<String> {
             break;
         }
         visited.push(current_pid);
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[current_pid]),
+            true,
+            refresh_kind,
+        );
         let Some((command, parent)) = system.process(current_pid).map(|current| {
             let command = current
                 .cmd()
@@ -644,5 +650,166 @@ mod tests {
         cache.age_probe(7, 100, LOG_SOURCE_RETRY_AFTER);
         assert_eq!(resolve(&mut cache, 7, 100), None);
         assert_eq!(probes.get(), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn benchmark_process_command_provenance_single_process() {
+        fn full_process_command_provenance(service: &ServiceSnapshot) -> Vec<String> {
+            let Some(process) = service.process.as_ref() else {
+                return Vec::new();
+            };
+            let refresh_kind = ProcessRefreshKind::nothing()
+                .without_tasks()
+                .with_cmd(UpdateKind::OnlyIfNotSet);
+            let system =
+                System::new_with_specifics(RefreshKind::nothing().with_processes(refresh_kind));
+            let mut pid = Some(Pid::from_u32(process.pid));
+            let mut visited = Vec::new();
+            let mut commands = Vec::new();
+            while let Some(current_pid) = pid {
+                if visited.contains(&current_pid) {
+                    break;
+                }
+                visited.push(current_pid);
+                let Some((command, parent)) = system.process(current_pid).map(|current| {
+                    let command = current
+                        .cmd()
+                        .iter()
+                        .map(|part| part.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    (command, current.parent())
+                }) else {
+                    break;
+                };
+                if !command.is_empty() {
+                    commands.push(command);
+                }
+                pid = parent;
+            }
+            commands
+        }
+
+        let service = process_service(std::process::id());
+        let mut baseline = Vec::with_capacity(101);
+        let mut targeted = Vec::with_capacity(101);
+        for iteration in 0..101 {
+            if iteration % 2 == 0 {
+                let started_at = Instant::now();
+                let expected = full_process_command_provenance(&service);
+                baseline.push(started_at.elapsed());
+
+                let started_at = Instant::now();
+                let actual = process_command_provenance(&service);
+                targeted.push(started_at.elapsed());
+                assert_eq!(actual, expected);
+            } else {
+                let started_at = Instant::now();
+                let expected = process_command_provenance(&service);
+                targeted.push(started_at.elapsed());
+
+                let started_at = Instant::now();
+                let actual = full_process_command_provenance(&service);
+                baseline.push(started_at.elapsed());
+                assert_eq!(actual, expected);
+            }
+        }
+        baseline.sort();
+        targeted.sort();
+        eprintln!(
+            "process_command_provenance benchmark n=101: full median={:?}, p95={:?}; targeted median={:?}, p95={:?}",
+            baseline[50],
+            baseline[95],
+            targeted[50],
+            targeted[95]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_command_provenance_keeps_child_command_and_ancestors() {
+        use std::{
+            io::Read,
+            process::{Command, Stdio},
+        };
+
+        let mut child = Command::new("sh")
+            .args(["-c", "printf ready; sleep 5"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = [0; 5];
+        child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut ready)
+            .unwrap();
+        assert_eq!(&ready, b"ready");
+
+        let commands = process_command_provenance(&process_service(child.id()));
+        let current_process_commands =
+            process_command_provenance(&process_service(std::process::id()));
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(commands.iter().any(|command| command.contains("sleep 5")));
+        assert!(current_process_commands
+            .first()
+            .is_some_and(|parent_command| commands
+                .iter()
+                .skip(1)
+                .any(|command| command == parent_command)));
+    }
+
+    #[test]
+    fn process_command_provenance_returns_no_commands_without_process() {
+        let mut workspace = workspace_with_project(5173, Path::new("/tmp/frontend"));
+        let service = workspace.services.pop().unwrap();
+
+        assert!(process_command_provenance(&service).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_command_provenance_returns_no_commands_for_missing_process() {
+        assert!(process_command_provenance(&process_service(u32::MAX)).is_empty());
+    }
+
+    fn process_service(pid: u32) -> ServiceSnapshot {
+        use crate::models::ProcessInfo;
+
+        ServiceSnapshot {
+            id: "benchmark".into(),
+            display_name: "benchmark".into(),
+            tech: "unknown".into(),
+            category: "runtime".into(),
+            relevance: "dev".into(),
+            endpoints: Vec::new(),
+            process: Some(ProcessInfo {
+                pid,
+                parent_pid: None,
+                name: "benchmark".into(),
+                executable: None,
+                working_directory: None,
+                command: String::new(),
+                launch_command: None,
+                create_time: 0,
+                uptime_seconds: 0,
+                cpu_percent: None,
+                memory_bytes: None,
+                uid: None,
+            }),
+            project: None,
+            status: "healthy".into(),
+            warnings: Vec::new(),
+            origin_kind: "unknown".into(),
+            origin_label: None,
+            can_terminate: false,
+            browser_url: None,
+            active_profiles: Vec::new(),
+        }
     }
 }
