@@ -7,6 +7,13 @@
 - Follow existing conventions and preserve unrelated behavior and work.
 - Write clear code. Comment only non-obvious rationale, invariants, or constraints.
 
+## Rust build artifacts
+
+- The default Rust `dev` profile keeps line tables for the application while omitting debug information from dependencies; use the opt-in `debugging` profile when full debug information is required.
+- For disposable agent-only `cargo check` and `cargo test` runs, set `CARGO_TARGET_DIR` to a task-specific temporary directory and set `CARGO_INCREMENTAL=0`. Remove that temporary directory after verification.
+- Keep the persistent `src-tauri/target` directory for the required macOS and Linux rebuild/install/restart workflows below, because their documented executable and bundle paths depend on it.
+- Do not run `cargo clean` after every command. Clean the persistent target only when its accumulated artifacts are intentionally being reclaimed.
+
 ## Language
 
 - Documentation is written in English. This covers Markdown files, docstrings, code comments, and commit messages.
