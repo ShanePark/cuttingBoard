@@ -1,10 +1,10 @@
 use crate::models::{now_epoch, ProcessInfo, ServiceIdentity, ServiceSnapshot, WorkspaceSnapshot};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     time::Instant,
 };
-use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 mod classification;
 mod demo;
@@ -84,9 +84,13 @@ pub fn scan_workspace(
         grouped.entry(record.pid).or_default().push(record);
     }
 
-    let system = System::new_with_specifics(
-        RefreshKind::nothing().with_processes(ProcessRefreshKind::everything().without_tasks()),
-    );
+    let process_pids = grouped
+        .keys()
+        .copied()
+        .map(Pid::from_u32)
+        .collect::<Vec<_>>();
+    let mut system = System::new();
+    refresh_processes_for_scan(&mut system, process_pids);
     let own_pid = std::process::id();
     let mut services = Vec::new();
     let mut index = HashMap::new();
@@ -276,5 +280,82 @@ pub fn scan_workspace(
     ))
 }
 
+fn refresh_processes_for_scan(system: &mut System, process_pids: Vec<Pid>) {
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&process_pids),
+        true,
+        ProcessRefreshKind::everything().without_tasks(),
+    );
+    refresh_process_ancestors(system, process_pids);
+}
+
+/// Keep the process metadata needed for origin attribution without refreshing every process on
+/// the machine. Listener processes receive the full fields used by scanning; their ancestors only
+/// need names, commands, and parent IDs for the bounded walk in `origin_for`.
+fn refresh_process_ancestors(system: &mut System, mut frontier: Vec<Pid>) {
+    let mut seen = frontier.iter().copied().collect::<HashSet<_>>();
+    let refresh_kind = ProcessRefreshKind::nothing()
+        .without_tasks()
+        .with_cmd(UpdateKind::Always);
+    for _ in 0..10 {
+        let parents = frontier
+            .iter()
+            .filter_map(|pid| system.process(*pid).and_then(|process| process.parent()))
+            .filter(|pid| seen.insert(*pid))
+            .collect::<Vec<_>>();
+        if parents.is_empty() {
+            break;
+        }
+        system.refresh_processes_specifics(ProcessesToUpdate::Some(&parents), true, refresh_kind);
+        frontier = parents;
+    }
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod process_refresh_tests {
+    use super::*;
+    use sysinfo::RefreshKind;
+
+    #[test]
+    fn empty_listener_set_does_not_refresh_all_processes() {
+        let mut system = System::new();
+
+        refresh_processes_for_scan(&mut system, Vec::new());
+
+        assert!(system.processes().is_empty());
+    }
+
+    #[test]
+    fn missing_listener_pid_does_not_refresh_all_processes() {
+        let mut system = System::new();
+
+        refresh_processes_for_scan(&mut system, vec![Pid::from_u32(u32::MAX)]);
+
+        assert!(system.processes().is_empty());
+    }
+
+    #[test]
+    fn selective_refresh_preserves_process_and_origin_ancestry() {
+        let pid = Pid::from_u32(std::process::id());
+        let full_kind = ProcessRefreshKind::everything().without_tasks();
+        let full = System::new_with_specifics(RefreshKind::nothing().with_processes(full_kind));
+        let expected = full.process(pid).expect("test process should be visible");
+
+        let mut selective = System::new();
+        refresh_processes_for_scan(&mut selective, vec![pid]);
+        let actual = selective
+            .process(pid)
+            .expect("test process should be selectively visible");
+
+        assert_eq!(expected.name(), actual.name());
+        assert_eq!(expected.cmd(), actual.cmd());
+        assert_eq!(expected.parent(), actual.parent());
+        assert_eq!(
+            origin_for(Some(expected), &full),
+            origin_for(Some(actual), &selective)
+        );
+    }
+}
