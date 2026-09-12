@@ -30,7 +30,7 @@ function normalizeLineEndings(value: string): string {
 
 function suffixPrefixOverlap(previous: string, next: string): number {
   if (!previous || !next) return 0;
-  const prefixLengths = new Array<number>(next.length).fill(0);
+  const prefixLengths = new Uint32Array(next.length);
   for (let index = 1, matched = 0; index < next.length; index += 1) {
     while (matched > 0 && next[index] !== next[matched]) matched = prefixLengths[matched - 1] ?? 0;
     if (next[index] === next[matched]) matched += 1;

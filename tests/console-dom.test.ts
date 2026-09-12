@@ -186,6 +186,27 @@ test("preserves changed log selection and scroll while updating its value", () =
   });
 });
 
+test("preserves a backward selection and scroll when a log tail rolls forward", () => {
+  withFakeDom((document) => {
+    const previous = "discarded\nstable line\n";
+    const next = "stable line\nafter line\n";
+    const { output, log } = outputWithLog("log", previous);
+    log.selectionStart = 4;
+    log.selectionEnd = previous.length;
+    log.selectionDirection = "backward";
+    log.scrollTop = 9;
+    document.activeElement = log;
+
+    patchConsoleOutput(output as HTMLElement, `<textarea class="console-log">${next}</textarea>`, "log", next, false);
+
+    assert.equal(log.selectionStart, 0);
+    assert.equal(log.selectionEnd, "stable line\n".length);
+    assert.equal(log.selectionDirection, "backward");
+    assert.equal(log.scrollTop, 9);
+    assert.equal(document.activeElement, log);
+  });
+});
+
 test("keeps alert patching for changed log-alert output", () => {
   withFakeDom((document) => {
     const { output, log } = outputWithLog("log-alert", "old log", "old alert");

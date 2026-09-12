@@ -7,7 +7,8 @@ import {
   consoleSelectionForMove,
   findConsoleLogMatches,
   isConsoleLogMutationKey,
-  mapConsoleOffset
+  mapConsoleOffset,
+  mapConsoleOffsetPair
 } from "../src/console-log-view.ts";
 
 test("all log renderers expose a caret-enabled read-only text area", () => {
@@ -63,6 +64,16 @@ test("maps selection offsets into a rolling log tail", () => {
   assert.equal(mapConsoleOffset(4, previous, next), 0);
   assert.equal(mapConsoleOffset(previous.length - "stable line\n".length, previous, next), 0);
   assert.equal(mapConsoleOffset(previous.length, previous, next), "stable line\n".length);
+});
+
+test("maps both selection endpoints through a rolling log tail", () => {
+  const previous = "discarded\nstable line\n";
+  const next = "stable line\nafter line\n";
+
+  assert.deepEqual(mapConsoleOffsetPair(4, previous.length, previous, next), {
+    start: 0,
+    end: "stable line\n".length
+  });
 });
 
 test("moves Ctrl+Page navigation to the visible page while retaining the caret column", () => {

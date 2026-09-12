@@ -12,6 +12,7 @@
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "bench:console-log-view": "node --expose-gc --experimental-strip-types scripts/bench-console-log-view.mjs",
     "icons": "npm run icons:runtime && npm run icons:app",
     "icons:runtime": "node scripts/build-icons.mjs",
     "icons:app": "tauri icon assets/app-icon-source.png --output src-tauri/icons",

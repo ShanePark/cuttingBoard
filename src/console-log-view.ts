@@ -99,7 +99,7 @@ function commonPrefixLength(previous: string, next: string): number {
 
 function suffixPrefixOverlap(previous: string, next: string): number {
   if (!previous || !next) return 0;
-  const prefixLengths = new Array<number>(next.length).fill(0);
+  const prefixLengths = new Uint32Array(next.length);
   for (let index = 1, matched = 0; index < next.length; index += 1) {
     while (matched > 0 && next[index] !== next[matched]) matched = prefixLengths[matched - 1] ?? 0;
     if (next[index] === next[matched]) matched += 1;
@@ -116,19 +116,37 @@ function suffixPrefixOverlap(previous: string, next: string): number {
 }
 
 /** Map a caret offset through an append, replacement, or rolling log tail. */
-export function mapConsoleOffset(offset: number, previous: string, next: string): number {
-  const safeOffset = Math.min(Math.max(offset, 0), previous.length);
-  if (previous === next || next.startsWith(previous)) return Math.min(safeOffset, next.length);
+export function mapConsoleOffsetPair(
+  start: number,
+  end: number,
+  previous: string,
+  next: string
+): { start: number; end: number } {
+  const safeStart = Math.min(Math.max(start, 0), previous.length);
+  const safeEnd = Math.min(Math.max(end, 0), previous.length);
+  if (previous === next || next.startsWith(previous)) {
+    return {
+      start: Math.min(safeStart, next.length),
+      end: Math.min(safeEnd, next.length)
+    };
+  }
 
   const prefix = commonPrefixLength(previous, next);
   const overlap = suffixPrefixOverlap(previous, next);
   const dropped = previous.length - overlap;
-  if (overlap > 0) {
-    if (safeOffset < dropped) return Math.min(safeOffset, prefix);
-    return Math.min(next.length, Math.max(0, safeOffset - dropped));
-  }
-  if (safeOffset <= prefix) return safeOffset;
-  return Math.min(safeOffset, next.length);
+  const map = (safeOffset: number): number => {
+    if (overlap > 0) {
+      if (safeOffset < dropped) return Math.min(safeOffset, prefix);
+      return Math.min(next.length, Math.max(0, safeOffset - dropped));
+    }
+    if (safeOffset <= prefix) return safeOffset;
+    return Math.min(safeOffset, next.length);
+  };
+  return { start: map(safeStart), end: map(safeEnd) };
+}
+
+export function mapConsoleOffset(offset: number, previous: string, next: string): number {
+  return mapConsoleOffsetPair(offset, offset, previous, next).start;
 }
 
 export function restoreConsoleLogSelection(output: HTMLElement, state: ConsoleLogSelection | null): void {
@@ -136,8 +154,9 @@ export function restoreConsoleLogSelection(output: HTMLElement, state: ConsoleLo
   const log = output.querySelector<HTMLElement>(".console-log");
   if (!isTextArea(log)) return;
 
-  const start = mapConsoleOffset(state.start, state.value, log.value);
-  const end = mapConsoleOffset(state.end, state.value, log.value);
+  const mapped = mapConsoleOffsetPair(state.start, state.end, state.value, log.value);
+  const start = mapped.start;
+  const end = mapped.end;
   const direction = start <= end ? state.direction : state.direction === "forward" ? "backward" : "forward";
   if (state.focused) log.focus({ preventScroll: true });
   log.setSelectionRange(Math.min(start, end), Math.max(start, end), direction);
