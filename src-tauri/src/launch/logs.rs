@@ -139,54 +139,76 @@ pub(super) fn recovered_managed_log_path(
     service: &ServiceSnapshot,
     process_start: u64,
 ) -> Option<PathBuf> {
-    let mut matches = Vec::new();
-    let process_commands = process_command_provenance(service);
+    let mut candidates = Vec::new();
     for profile in profiles {
         for task in &profile.tasks {
-            if !task_matches_service(profile, task, service) {
+            if task_matches_service(profile, task, service) {
+                candidates.push((
+                    profile,
+                    task,
+                    format!("{}-{}.log", safe_name(&profile.id), safe_name(&task.name)),
+                    format!("-{}.log", safe_name(&task.name)),
+                ));
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let mut matches = Vec::new();
+    let process_commands = process_command_provenance(service);
+    let Ok(entries) = fs::read_dir(logs_dir) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if !candidates.iter().any(|(_, _, expected_name, suffix)| {
+            file_name == expected_name.as_str() || file_name.ends_with(suffix)
+        }) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(markers) = read_log_start_markers(&path) else {
+            continue;
+        };
+        for (profile, task, expected_name, suffix) in &candidates {
+            let expected_path = file_name == expected_name.as_str();
+            if !expected_path && !file_name.ends_with(suffix) {
                 continue;
             }
-            let expected_name = format!("{}-{}.log", safe_name(&profile.id), safe_name(&task.name));
-            let suffix = format!("-{}.log", safe_name(&task.name));
-            let Ok(entries) = fs::read_dir(logs_dir) else {
+            let Some((rank, distance)) = markers
+                .iter()
+                .filter_map(|marker| {
+                    log_marker_match_score(
+                        marker,
+                        profile,
+                        task,
+                        service,
+                        &process_commands,
+                        process_start,
+                        expected_path,
+                    )
+                })
+                .min()
+            else {
                 continue;
             };
-            for entry in entries.flatten() {
-                let file_type = match entry.file_type() {
-                    Ok(file_type) => file_type,
-                    Err(_) => continue,
-                };
-                if !file_type.is_file() {
-                    continue;
-                }
-                let file_name = entry.file_name();
-                let file_name = file_name.to_string_lossy();
-                if file_name != expected_name && !file_name.ends_with(&suffix) {
-                    continue;
-                }
-                let path = entry.path();
-                let Ok(markers) = read_log_start_markers(&path) else {
-                    continue;
-                };
-                let Some((rank, distance)) = markers
-                    .iter()
-                    .filter_map(|marker| {
-                        log_marker_match_score(
-                            marker,
-                            profile,
-                            task,
-                            service,
-                            &process_commands,
-                            process_start,
-                            file_name == expected_name,
-                        )
-                    })
-                    .min()
-                else {
-                    continue;
-                };
-                matches.push((rank, distance, path, profile.id.clone(), task.name.clone()));
-            }
+            matches.push((
+                rank,
+                distance,
+                path.clone(),
+                profile.id.clone(),
+                task.name.clone(),
+            ));
         }
     }
 
@@ -596,6 +618,346 @@ mod tests {
         let path = recovered_managed_log_path(&logs_dir, &[profile], &workspace.services[0], 1005);
 
         assert_eq!(path, Some(logs_dir.join("legacy-profile-frontend.log")));
+    }
+
+    #[test]
+    fn recovered_log_preserves_ambiguous_duplicate_behavior() {
+        let temporary = tempfile::tempdir().unwrap();
+        let frontend = temporary.path().join("frontend");
+        let logs_dir = temporary.path().join("logs");
+        fs::create_dir(&frontend).unwrap();
+        fs::create_dir(&logs_dir).unwrap();
+        let profile = LaunchProfile {
+            id: "current-profile".into(),
+            name: "dutypark".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "frontend".into(),
+                cwd: "frontend".into(),
+                command: "npm run dev".into(),
+                expected_port: Some(5173),
+                container: None,
+                prepare: None,
+            }],
+        };
+        let workspace = workspace_with_project(5173, &frontend);
+        let marker = "=== Cutting Board start 1000 · npm run dev ===\n";
+        fs::write(logs_dir.join("current-profile-frontend.log"), marker).unwrap();
+        fs::write(logs_dir.join("legacy-profile-frontend.log"), marker).unwrap();
+        fs::create_dir(logs_dir.join("archived-frontend.log")).unwrap();
+
+        let expected = legacy_recovered_managed_log_path(
+            &logs_dir,
+            std::slice::from_ref(&profile),
+            &workspace.services[0],
+            1000,
+        );
+        let actual = recovered_managed_log_path(
+            &logs_dir,
+            std::slice::from_ref(&profile),
+            &workspace.services[0],
+            1000,
+        );
+
+        assert_eq!(expected, None);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn recovered_log_preserves_missing_directory_behavior() {
+        let temporary = tempfile::tempdir().unwrap();
+        let frontend = temporary.path().join("frontend");
+        fs::create_dir(&frontend).unwrap();
+        let profile = LaunchProfile {
+            id: "current-profile".into(),
+            name: "dutypark".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "frontend".into(),
+                cwd: "frontend".into(),
+                command: "npm run dev".into(),
+                expected_port: Some(5173),
+                container: None,
+                prepare: None,
+            }],
+        };
+        let workspace = workspace_with_project(5173, &frontend);
+        let logs_dir = temporary.path().join("missing-logs");
+
+        let expected = legacy_recovered_managed_log_path(
+            &logs_dir,
+            std::slice::from_ref(&profile),
+            &workspace.services[0],
+            1000,
+        );
+        let actual = recovered_managed_log_path(
+            &logs_dir,
+            std::slice::from_ref(&profile),
+            &workspace.services[0],
+            1000,
+        );
+
+        assert_eq!(expected, None);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn recovered_log_skips_expensive_work_without_matching_profiles() {
+        let temporary = tempfile::tempdir().unwrap();
+        let frontend = temporary.path().join("frontend");
+        let logs_dir = temporary.path().join("logs");
+        fs::create_dir(&frontend).unwrap();
+        fs::create_dir(&logs_dir).unwrap();
+        let profile = LaunchProfile {
+            id: "current-profile".into(),
+            name: "dutypark".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "frontend".into(),
+                cwd: "frontend".into(),
+                command: "npm run dev".into(),
+                expected_port: Some(5174),
+                container: None,
+                prepare: None,
+            }],
+        };
+        let workspace = workspace_with_project(5173, &frontend);
+        fs::write(
+            logs_dir.join("current-profile-frontend.log"),
+            "=== Cutting Board start 1000 · npm run dev ===\n",
+        )
+        .unwrap();
+
+        let expected = legacy_recovered_managed_log_path(
+            &logs_dir,
+            std::slice::from_ref(&profile),
+            &workspace.services[0],
+            1000,
+        );
+        let actual = recovered_managed_log_path(
+            &logs_dir,
+            std::slice::from_ref(&profile),
+            &workspace.services[0],
+            1000,
+        );
+
+        assert_eq!(expected, None);
+        assert_eq!(actual, expected);
+    }
+
+    fn legacy_recovered_managed_log_path(
+        logs_dir: &Path,
+        profiles: &[LaunchProfile],
+        service: &ServiceSnapshot,
+        process_start: u64,
+    ) -> Option<PathBuf> {
+        let mut matches = Vec::new();
+        let process_commands = process_command_provenance(service);
+        for profile in profiles {
+            for task in &profile.tasks {
+                if !task_matches_service(profile, task, service) {
+                    continue;
+                }
+                let expected_name =
+                    format!("{}-{}.log", safe_name(&profile.id), safe_name(&task.name));
+                let suffix = format!("-{}.log", safe_name(&task.name));
+                let Ok(entries) = fs::read_dir(logs_dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let file_type = match entry.file_type() {
+                        Ok(file_type) => file_type,
+                        Err(_) => continue,
+                    };
+                    if !file_type.is_file() {
+                        continue;
+                    }
+                    let file_name = entry.file_name();
+                    let file_name = file_name.to_string_lossy();
+                    if file_name != expected_name && !file_name.ends_with(&suffix) {
+                        continue;
+                    }
+                    let path = entry.path();
+                    let Ok(markers) = read_log_start_markers(&path) else {
+                        continue;
+                    };
+                    let Some((rank, distance)) = markers
+                        .iter()
+                        .filter_map(|marker| {
+                            log_marker_match_score(
+                                marker,
+                                profile,
+                                task,
+                                service,
+                                &process_commands,
+                                process_start,
+                                file_name == expected_name,
+                            )
+                        })
+                        .min()
+                    else {
+                        continue;
+                    };
+                    matches.push((rank, distance, path, profile.id.clone(), task.name.clone()));
+                }
+            }
+        }
+
+        matches.sort_by(|left, right| {
+            (left.0, left.1, &left.2, &left.3, &left.4)
+                .cmp(&(right.0, right.1, &right.2, &right.3, &right.4))
+        });
+        let best = matches.first()?;
+        if matches
+            .get(1)
+            .is_some_and(|candidate| (candidate.0, candidate.1) == (best.0, best.1))
+        {
+            return None;
+        }
+        Some(best.2.clone())
+    }
+
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn benchmark_recovered_managed_log_path_reuses_directory_and_markers() {
+        use std::fmt::Write as _;
+
+        fn measure_pair(
+            iterations: usize,
+            mut baseline_call: impl FnMut() -> Option<PathBuf>,
+            mut targeted_call: impl FnMut() -> Option<PathBuf>,
+        ) -> (Vec<Duration>, Vec<Duration>) {
+            let mut baseline = Vec::with_capacity(iterations);
+            let mut targeted = Vec::with_capacity(iterations);
+            for iteration in 0..iterations {
+                if iteration % 2 == 0 {
+                    let started_at = Instant::now();
+                    let expected = baseline_call();
+                    baseline.push(started_at.elapsed());
+
+                    let started_at = Instant::now();
+                    let actual = targeted_call();
+                    targeted.push(started_at.elapsed());
+                    assert_eq!(actual, expected);
+                } else {
+                    let started_at = Instant::now();
+                    let expected = targeted_call();
+                    targeted.push(started_at.elapsed());
+
+                    let started_at = Instant::now();
+                    let actual = baseline_call();
+                    baseline.push(started_at.elapsed());
+                    assert_eq!(actual, expected);
+                }
+            }
+            baseline.sort();
+            targeted.sort();
+            (baseline, targeted)
+        }
+
+        let temporary = tempfile::tempdir().unwrap();
+        let frontend = temporary.path().join("frontend");
+        let logs_dir = temporary.path().join("logs");
+        fs::create_dir(&frontend).unwrap();
+        fs::create_dir(&logs_dir).unwrap();
+        let profiles = (0..8)
+            .map(|index| LaunchProfile {
+                id: format!("profile-{index}"),
+                name: format!("Profile {index}"),
+                project_root: temporary.path().to_string_lossy().into_owned(),
+                tasks: vec![LaunchTask {
+                    name: "frontend".into(),
+                    cwd: "frontend".into(),
+                    command: "npm run dev".into(),
+                    expected_port: Some(5173),
+                    container: None,
+                    prepare: None,
+                }],
+            })
+            .collect::<Vec<_>>();
+        let service = workspace_with_project(5173, &frontend).services[0].clone();
+        let process_start = 4_000_000;
+        let filler = "2026-09-12 info: build output line\n".repeat(32_768);
+        for index in 0..8 {
+            let mut contents = filler.clone();
+            let started_at = process_start - index * 60;
+            writeln!(
+                contents,
+                "=== Cutting Board start {started_at} · npm run dev ==="
+            )
+            .unwrap();
+            writeln!(
+                contents,
+                "=== Cutting Board task metadata {} ===",
+                serde_json::json!({
+                    "profile_id": format!("profile-{index}"),
+                    "task_name": "frontend",
+                    "cwd": frontend.to_string_lossy(),
+                })
+            )
+            .unwrap();
+            fs::write(
+                logs_dir.join(format!("profile-{index}-frontend.log")),
+                contents,
+            )
+            .unwrap();
+        }
+        fs::create_dir(logs_dir.join("archived-frontend.log")).unwrap();
+
+        let expected =
+            legacy_recovered_managed_log_path(&logs_dir, &profiles, &service, process_start);
+        let actual = recovered_managed_log_path(&logs_dir, &profiles, &service, process_start);
+        assert_eq!(actual, expected);
+
+        let (baseline, targeted) = measure_pair(
+            21,
+            || legacy_recovered_managed_log_path(&logs_dir, &profiles, &service, process_start),
+            || recovered_managed_log_path(&logs_dir, &profiles, &service, process_start),
+        );
+        eprintln!(
+            "recovered_managed_log_path benchmark n=21 files=8 log_bytes={} : full median={:?}, p95={:?}; targeted median={:?}, p95={:?}",
+            filler.len(),
+            baseline[10],
+            baseline[19],
+            targeted[10],
+            targeted[19]
+        );
+
+        let single_logs_dir = temporary.path().join("single-logs");
+        fs::create_dir(&single_logs_dir).unwrap();
+        fs::copy(
+            logs_dir.join("profile-0-frontend.log"),
+            single_logs_dir.join("profile-0-frontend.log"),
+        )
+        .unwrap();
+        let single_profiles = profiles[..1].to_vec();
+        let (single_baseline, single_targeted) = measure_pair(
+            21,
+            || {
+                legacy_recovered_managed_log_path(
+                    &single_logs_dir,
+                    &single_profiles,
+                    &service,
+                    process_start,
+                )
+            },
+            || {
+                recovered_managed_log_path(
+                    &single_logs_dir,
+                    &single_profiles,
+                    &service,
+                    process_start,
+                )
+            },
+        );
+        eprintln!(
+            "recovered_managed_log_path common-case n=21 files=1 log_bytes={} : full median={:?}, p95={:?}; targeted median={:?}, p95={:?}",
+            filler.len(),
+            single_baseline[10],
+            single_baseline[19],
+            single_targeted[10],
+            single_targeted[19]
+        );
     }
 
     #[test]
