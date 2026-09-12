@@ -1733,6 +1733,7 @@ mod tests {
             .unwrap();
         let pid = started.main_pid.expect("managed shell PID");
         let log_path = logs_dir.join("profile-api.log");
+        let canonical_log_path = log_path.canonicalize().unwrap();
         let marker_deadline = std::time::Instant::now() + Duration::from_secs(2);
         while std::time::Instant::now() < marker_deadline {
             if fs::read_to_string(&log_path)
@@ -1785,7 +1786,7 @@ mod tests {
         assert_eq!(snapshots[0].main_pid, Some(pid));
         assert_eq!(
             snapshots[0].external_log_path.as_deref(),
-            Some(log_path.to_string_lossy().as_ref())
+            Some(canonical_log_path.to_string_lossy().as_ref())
         );
         assert!(snapshots[0].log_tail.contains("detached-manager-marker"));
 

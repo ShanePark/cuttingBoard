@@ -237,9 +237,15 @@ fn nested_service_keeps_its_name_and_uses_the_vcs_workspace() {
     let project = detect_project(Some(&backend), &[]).unwrap();
 
     assert_eq!(project.name, "backend");
-    assert_eq!(Path::new(&project.root_path), backend);
+    assert_eq!(
+        Path::new(&project.root_path),
+        backend.canonicalize().unwrap()
+    );
     assert_eq!(project.workspace_name, "oasis26");
-    assert_eq!(Path::new(&project.workspace_root_path), workspace);
+    assert_eq!(
+        Path::new(&project.workspace_root_path),
+        workspace.canonicalize().unwrap()
+    );
 }
 
 #[test]
@@ -514,7 +520,10 @@ fn nested_repository_uses_its_nearest_vcs_workspace() {
 
     let project = detect_project(Some(&inner.join("src")), &[]).unwrap();
 
-    assert_eq!(Path::new(&project.workspace_root_path), inner);
+    assert_eq!(
+        Path::new(&project.workspace_root_path),
+        inner.canonicalize().unwrap()
+    );
     assert_eq!(project.workspace_name, "inner");
 }
 
@@ -542,8 +551,11 @@ fn registered_sibling_submodules_share_the_superproject_workspace() {
     for child in [&front, &server] {
         let project = detect_project(Some(&child.join("src")), &[]).unwrap();
 
-        assert_eq!(Path::new(&project.root_path), *child);
-        assert_eq!(Path::new(&project.workspace_root_path), superproject);
+        assert_eq!(Path::new(&project.root_path), child.canonicalize().unwrap());
+        assert_eq!(
+            Path::new(&project.workspace_root_path),
+            superproject.canonicalize().unwrap()
+        );
         assert_eq!(project.workspace_name, "OASIS");
     }
 }
@@ -561,9 +573,15 @@ fn concrete_argv_module_beats_cwd_repository_root() {
     let project =
         detect_project(Some(&workspace), &[classes.to_string_lossy().into_owned()]).unwrap();
 
-    assert_eq!(Path::new(&project.root_path), backend);
+    assert_eq!(
+        Path::new(&project.root_path),
+        backend.canonicalize().unwrap()
+    );
     assert_eq!(project.name, "backend");
-    assert_eq!(Path::new(&project.workspace_root_path), workspace);
+    assert_eq!(
+        Path::new(&project.workspace_root_path),
+        workspace.canonicalize().unwrap()
+    );
 }
 
 #[test]
