@@ -41,6 +41,8 @@ struct AppStateInner {
     settings_path: PathBuf,
     profiles_path: PathBuf,
     logs_dir: PathBuf,
+    settings_io: Arc<Mutex<()>>,
+    window_geometry: window::WindowGeometryPersistence,
     scan: Mutex<ScanState>,
     launch: Mutex<LaunchManager>,
     system_metrics: Mutex<SystemMetricsState>,
@@ -183,8 +185,23 @@ fn load_settings(state: State<'_, AppState>) -> Result<UiSettings, String> {
 }
 
 #[tauri::command]
-fn save_settings(state: State<'_, AppState>, settings: UiSettings) -> Result<UiSettings, String> {
+fn save_settings(
+    state: State<'_, AppState>,
+    mut settings: UiSettings,
+) -> Result<UiSettings, String> {
+    let _settings_io = lock(&state.0.settings_io)?;
+    if let Ok(current) = read_settings(&state.0.settings_path) {
+        preserve_saved_window_geometry(&mut settings, &current);
+    }
     persist_settings(&state.0.settings_path, settings)
+}
+
+fn preserve_saved_window_geometry(settings: &mut UiSettings, current: &UiSettings) {
+    settings.window_width = current.window_width;
+    settings.window_height = current.window_height;
+    settings.window_x = current.window_x;
+    settings.window_y = current.window_y;
+    settings.window_geometry_logical = current.window_geometry_logical;
 }
 
 #[tauri::command]
@@ -514,11 +531,18 @@ pub fn run() {
                     ));
                 }
             }
+            let settings_io = Arc::new(Mutex::new(()));
+            let window_geometry = window::WindowGeometryPersistence::new(
+                settings_path.clone(),
+                Arc::clone(&settings_io),
+            );
             app.manage(AppState(Arc::new(AppStateInner {
                 demo,
                 settings_path,
                 profiles_path,
                 logs_dir,
+                settings_io,
+                window_geometry,
                 scan: Mutex::new(ScanState::default()),
                 launch: Mutex::new(LaunchManager::default()),
                 system_metrics: Mutex::new(SystemMetricsState::default()),
@@ -536,10 +560,10 @@ pub fn run() {
             let state = window.app_handle().state::<AppState>();
             match event {
                 tauri::WindowEvent::Resized { .. } | tauri::WindowEvent::Moved { .. } => {
-                    window::persist_window_geometry(window, &state.0.settings_path);
+                    state.0.window_geometry.record_window(window);
                 }
                 tauri::WindowEvent::CloseRequested { .. } => {
-                    window::persist_window_geometry(window, &state.0.settings_path);
+                    state.0.window_geometry.flush_window(window);
                 }
                 _ => {}
             }
@@ -577,7 +601,7 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 if let Some(window) = app.get_webview_window("main") {
                     let window = window.as_ref().window();
-                    window::persist_window_geometry(&window, &state.0.settings_path);
+                    state.0.window_geometry.flush_window(&window);
                 }
             }
         });
@@ -587,6 +611,37 @@ pub fn run() {
 mod tests {
     use super::*;
     use crate::models::ServiceSnapshot;
+
+    #[test]
+    fn settings_save_preserves_latest_window_geometry() {
+        let mut requested = UiSettings {
+            theme_mode: "light".into(),
+            scan_interval_ms: 5_000,
+            window_width: 1_080,
+            window_height: 720,
+            window_x: Some(10),
+            window_y: Some(20),
+            window_geometry_logical: true,
+        };
+        let current = UiSettings {
+            window_width: 1_400,
+            window_height: 900,
+            window_x: Some(64),
+            window_y: Some(96),
+            window_geometry_logical: true,
+            ..UiSettings::default()
+        };
+
+        preserve_saved_window_geometry(&mut requested, &current);
+
+        assert_eq!(requested.theme_mode, "light");
+        assert_eq!(requested.scan_interval_ms, 5_000);
+        assert_eq!(requested.window_width, 1_400);
+        assert_eq!(requested.window_height, 900);
+        assert_eq!(requested.window_x, Some(64));
+        assert_eq!(requested.window_y, Some(96));
+        assert!(requested.window_geometry_logical);
+    }
 
     #[test]
     fn service_without_process_returns_unavailable_logs() {
@@ -613,11 +668,14 @@ mod tests {
             endpoint_count: 0,
             errors: vec![],
         };
+        let settings_io = Arc::new(Mutex::new(()));
         let state = AppState(Arc::new(AppStateInner {
             demo: false,
             settings_path: PathBuf::new(),
             profiles_path: PathBuf::new(),
             logs_dir: PathBuf::new(),
+            settings_io: Arc::clone(&settings_io),
+            window_geometry: window::WindowGeometryPersistence::new(PathBuf::new(), settings_io),
             scan: Mutex::new(ScanState {
                 workspace: Some(workspace),
                 service_index: HashMap::new(),
