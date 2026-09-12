@@ -160,6 +160,12 @@ function mapFixtures() {
       pairs: [[-2, 3], [0, 0]]
     },
     {
+      label: "same",
+      previous: "unchanged\n",
+      next: "unchanged\n",
+      pairs: [[-2, 0], [2, 8], [12, 20]]
+    },
+    {
       label: "append",
       previous: "first line\n",
       next: "first line\nsecond line\n",
@@ -170,6 +176,12 @@ function mapFixtures() {
       previous: "old output\n",
       next: "new output\n",
       pairs: [[-4, 4], [2, 11], [11, 100]]
+    },
+    {
+      label: "truncated",
+      previous: "long previous output\n",
+      next: "short",
+      pairs: [[-4, 4], [2, 11], [22, 100]]
     },
     {
       label: "unicode-crlf-ansi",
@@ -198,7 +210,12 @@ function mapFixtures() {
 
 function assertMapEquivalence(fixtures) {
   for (const fixture of fixtures) {
-    for (const [start, end] of fixture.pairs) {
+    const smallFixture = fixture.previous.length <= 64;
+    const pairs = smallFixture
+      ? Array.from({ length: fixture.previous.length + 9 }, (_, start) => start - 4)
+        .flatMap((start) => Array.from({ length: fixture.previous.length + 9 }, (_, end) => [start, end - 4]))
+      : fixture.pairs;
+    for (const [start, end] of pairs) {
       assert.deepEqual(
         mapConsoleOffsetPair(start, end, fixture.previous, fixture.next),
         legacyMapConsoleOffsetPair(start, end, fixture.previous, fixture.next),
