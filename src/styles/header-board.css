@@ -154,8 +154,7 @@
 }
 .section-header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; min-height: calc(36px - 6px * var(--tile-density)); margin: 0 3px calc(12px - 4px * var(--tile-density)); }
 .section-accent { flex: 0 0 3px; width: 3px; height: 14px; border-radius: 2px; background: var(--other); }
-.section-header h2 { display: flex; align-items: center; gap: 7px; min-width: 0; margin: 0; overflow: hidden; color: var(--text); font-size: 12px; line-height: 1; font-weight: 700; letter-spacing: .055em; white-space: nowrap; }
-.section-header h2:has(.group-title-button) { flex: 1 1 auto; }
+.section-header h2 { display: flex; flex: 1 1 0; align-items: center; gap: 7px; min-width: 0; margin: 0; overflow: hidden; color: var(--text); font-size: 12px; line-height: 1; font-weight: 700; letter-spacing: .055em; white-space: nowrap; }
 /* The name gives up room to the count, which stays whole however narrow the header gets. */
 .group-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .section-count {
