@@ -142,6 +142,7 @@ export interface ManagedTaskSnapshot {
   external_working_directory?: string | null;
   external_log_path?: string | null;
   started_at: number | null;
+  exit_code?: number | null;
   message: string | null;
   log_tail: string;
 }

@@ -22,7 +22,7 @@ use prepare::{
 pub(crate) use shell::shell_command;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
@@ -40,8 +40,11 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 struct RuntimeTask {
     child: Option<Child>,
     pid: Option<u32>,
+    process_group_id: Option<u32>,
     state: String,
     started_at: Option<u64>,
+    exit_code: Option<i32>,
+    exit_success: Option<bool>,
     message: Option<String>,
     log_path: PathBuf,
 }
@@ -94,6 +97,7 @@ impl LaunchManager {
                         state: "stopped".into(),
                         main_pid: None,
                         started_at: None,
+                        exit_code: None,
                         message: None,
                         log_tail: String::new(),
                         external_pid: None,
@@ -250,6 +254,61 @@ impl LaunchManager {
         }
     }
 
+    /// Count the registered task-to-service matches that could identify this task's external
+    /// process. A task is safe to take over only when this returns exactly one.
+    pub fn external_task_match_count(
+        profiles: &[LaunchProfile],
+        request: &TaskRequest,
+        workspace: Option<&WorkspaceSnapshot>,
+    ) -> Result<usize, String> {
+        let (target_profile, target_task) = find_task(profiles, request)?;
+        let Some(workspace) = workspace else {
+            return Ok(0);
+        };
+        let process_identities = workspace
+            .services
+            .iter()
+            .filter(|service| {
+                service.process.is_some()
+                    && task_matches_service(target_profile, target_task, service)
+            })
+            .filter_map(|service| {
+                service
+                    .process
+                    .as_ref()
+                    .map(|process| (process.pid, process.create_time))
+            })
+            .collect::<HashSet<_>>();
+        if process_identities.is_empty() {
+            return Ok(0);
+        }
+
+        let candidate_services = workspace
+            .services
+            .iter()
+            .filter(|service| {
+                service.process.as_ref().is_some_and(|process| {
+                    process_identities.contains(&(process.pid, process.create_time))
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut matching_tasks = HashSet::new();
+        for profile in profiles {
+            for task in &profile.tasks {
+                if candidate_services
+                    .iter()
+                    .any(|service| task_matches_service(profile, task, service))
+                {
+                    matching_tasks.insert((profile.id.clone(), task.name.clone()));
+                }
+            }
+        }
+
+        // Multiple scan entries for the same PID/start time are one process. Ambiguity can also
+        // come from multiple registered tasks that match that process, so report the larger set.
+        Ok(process_identities.len().max(matching_tasks.len()))
+    }
+
     pub fn start_task(
         &mut self,
         profiles: &[LaunchProfile],
@@ -271,15 +330,15 @@ impl LaunchManager {
     ) -> Result<ManagedTaskSnapshot, String> {
         self.refresh();
         let (profile, task) = find_task(profiles, request)?;
-        if let Some(mut external) = external_task_info(profile, task, workspace) {
-            self.attach_external_log(&mut external, logs_dir, profiles, profile, task, workspace);
-            return Ok(external_snapshot(&profile.id, &task.name, external));
-        }
         let key = task_key(&profile.id, &task.name);
         if let Some(runtime) = self.tasks.get(&key) {
             if is_active(&runtime.state) {
                 return Ok(snapshot_from(&profile.id, &task.name, runtime));
             }
+        }
+        if let Some(mut external) = external_task_info(profile, task, workspace) {
+            self.attach_external_log(&mut external, logs_dir, profiles, profile, task, workspace);
+            return Ok(external_snapshot(&profile.id, &task.name, external));
         }
 
         let cwd = resolve_cwd(profile, task)?;
@@ -381,8 +440,11 @@ impl LaunchManager {
         let runtime = RuntimeTask {
             child: Some(child),
             pid: Some(pid),
+            process_group_id: Some(pid),
             state: "starting".into(),
             started_at: Some(now_epoch()),
+            exit_code: None,
+            exit_success: None,
             message: Some(format!("Started {} as PID {pid}.", task.name)),
             log_path: log_path.clone(),
         };
@@ -423,7 +485,10 @@ impl LaunchManager {
             let runtime = self.tasks.get_mut(&key).expect("active runtime task");
             runtime.state = "stopping".into();
             runtime.message = Some(format!("Stopping {}…", task.name));
-            terminate_runtime(runtime)?;
+            if let Err(error) = terminate_runtime(runtime) {
+                runtime.message = Some(error.clone());
+                return Err(error);
+            }
             runtime.state = "stopped".into();
             runtime.message = Some(format!("Stopped {}.", task.name));
             return Ok(snapshot_from(&profile.id, &task.name, runtime));
@@ -604,41 +669,94 @@ impl LaunchManager {
         for runtime in self.tasks.values_mut() {
             if is_active(&runtime.state) {
                 runtime.state = "stopping".into();
-                let _ = terminate_runtime(runtime);
-                runtime.state = "stopped".into();
-                runtime.message = Some("Stopped while Cutting Board closed.".into());
+                match terminate_runtime(runtime) {
+                    Ok(()) => {
+                        runtime.state = "stopped".into();
+                        runtime.message = Some("Stopped while Cutting Board closed.".into());
+                    }
+                    Err(error) => runtime.message = Some(error),
+                }
             }
         }
     }
 
     fn refresh(&mut self) {
         for runtime in self.tasks.values_mut() {
-            let Some(child) = runtime.child.as_mut() else {
+            let child_status = match runtime.child.as_mut() {
+                Some(child) => match child.try_wait() {
+                    Ok(status) => status,
+                    Err(error) => {
+                        runtime.state = "running".into();
+                        runtime.message = Some(format!(
+                            "Could not inspect the managed process; keeping it active: {error}"
+                        ));
+                        continue;
+                    }
+                },
+                None => None,
+            };
+            if let Some(status) = child_status {
+                runtime.child = None;
+                runtime.pid = None;
+                runtime.exit_code = status.code();
+                runtime.exit_success = Some(status.success());
+                runtime.state = if status.success() {
+                    "stopped".into()
+                } else {
+                    "failed".into()
+                };
+                runtime.message = Some(format!("Process exited with {status}."));
+            } else if runtime.child.is_some() {
+                if runtime.state == "starting" {
+                    runtime.state = "running".into();
+                }
+                continue;
+            }
+
+            let Some(group_id) = runtime.process_group_id else {
                 continue;
             };
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    runtime.child = None;
-                    runtime.pid = None;
-                    if status.success() {
-                        runtime.state = "stopped".into();
-                        runtime.message = Some(format!("Process exited with {status}."));
-                    } else {
-                        runtime.state = "failed".into();
-                        runtime.message = Some(format!("Process exited with {status}."));
+            match process_group_has_live_members(group_id) {
+                Ok(true) => {
+                    if runtime.child.is_none() {
+                        runtime.state = "running".into();
+                        runtime.message = Some(match runtime.exit_code {
+                            Some(code) => format!(
+                                "The launch process exited with code {code}; a child process is still running."
+                            ),
+                            None => "The launch process exited; a child process is still running."
+                                .into(),
+                        });
                     }
                 }
-                Ok(None) => {
-                    if runtime.state == "starting" {
-                        runtime.state = "running".into();
+                Ok(false) => {
+                    runtime.process_group_id = None;
+                    runtime.pid = None;
+                    if runtime.child.is_none() {
+                        runtime.state = match runtime.exit_success {
+                            Some(true) => "stopped".into(),
+                            Some(false) => "failed".into(),
+                            None => runtime.state.clone(),
+                        };
+                        runtime.message = match (runtime.exit_success, runtime.exit_code) {
+                            (Some(true), Some(code)) => {
+                                Some(format!("Process exited with code {code}."))
+                            }
+                            (Some(false), Some(code)) => {
+                                Some(format!("Process exited with code {code}."))
+                            }
+                            (Some(true), None) => Some("Process exited successfully.".into()),
+                            (Some(false), None) => Some("Process exited unsuccessfully.".into()),
+                            (None, _) => runtime.message.clone(),
+                        };
                     }
                 }
                 Err(error) => {
-                    runtime.state = "failed".into();
+                    // Keep the task active when process-group visibility is uncertain. Starting
+                    // a replacement could otherwise overlap a child whose port is still bound.
+                    runtime.state = "running".into();
                     runtime.message =
-                        Some(format!("Could not inspect the managed process: {error}"));
-                    runtime.child = None;
-                    runtime.pid = None;
+                        Some(format!("Could not verify managed child processes: {error}"));
                 }
             }
         }
@@ -690,58 +808,200 @@ fn task_log_path(logs_dir: &Path, profile: &LaunchProfile, task: &LaunchTask) ->
 }
 
 fn terminate_runtime(runtime: &mut RuntimeTask) -> Result<(), String> {
-    let Some(pid) = runtime.pid else {
-        runtime.child = None;
-        return Ok(());
+    let Some(group_id) = runtime.process_group_id else {
+        return if runtime.child.is_none() {
+            Ok(())
+        } else {
+            Err("Could not verify the managed process group before stopping it.".into())
+        };
     };
     #[cfg(unix)]
-    unsafe {
-        if libc::kill(-(pid as i32), libc::SIGTERM) == -1 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                return Err(format!("Could not signal process group {pid}: {error}"));
-            }
-        }
-    }
+    send_process_group_signal(group_id, libc::SIGTERM)?;
     #[cfg(not(unix))]
     if let Some(child) = runtime.child.as_mut() {
         child
             .kill()
-            .map_err(|error| format!("Could not stop PID {pid}: {error}"))?;
+            .map_err(|error| format!("Could not stop PID {group_id}: {error}"))?;
     }
 
-    for _ in 0..25 {
-        if let Some(child) = runtime.child.as_mut() {
-            match child.try_wait() {
-                Ok(Some(_)) => {
-                    runtime.child = None;
-                    runtime.pid = None;
-                    return Ok(());
-                }
-                Ok(None) => {}
-                Err(error) => return Err(format!("Could not wait for PID {pid}: {error}")),
-            }
-        } else {
+    const TERM_GRACE: Duration = Duration::from_secs(2);
+    const KILL_GRACE: Duration = Duration::from_secs(1);
+    let term_deadline = std::time::Instant::now() + TERM_GRACE;
+    loop {
+        reap_runtime_leader(runtime, group_id)?;
+        if !process_group_has_live_members(group_id)? {
+            runtime.process_group_id = None;
             runtime.pid = None;
             return Ok(());
         }
-        thread::sleep(Duration::from_millis(80));
+        if std::time::Instant::now() >= term_deadline {
+            break;
+        }
+        thread::sleep(Duration::from_millis(40));
     }
 
     #[cfg(unix)]
-    unsafe {
-        let _ = libc::kill(-(pid as i32), libc::SIGKILL);
-    }
+    send_process_group_signal(group_id, libc::SIGKILL)?;
     #[cfg(not(unix))]
     if let Some(child) = runtime.child.as_mut() {
-        let _ = child.kill();
+        child
+            .kill()
+            .map_err(|error| format!("Could not force PID {group_id} to stop: {error}"))?;
     }
-    if let Some(child) = runtime.child.as_mut() {
-        let _ = child.wait();
+
+    let kill_deadline = std::time::Instant::now() + KILL_GRACE;
+    loop {
+        reap_runtime_leader(runtime, group_id)?;
+        if !process_group_has_live_members(group_id)? {
+            runtime.process_group_id = None;
+            runtime.pid = None;
+            return Ok(());
+        }
+        if std::time::Instant::now() >= kill_deadline {
+            break;
+        }
+        thread::sleep(Duration::from_millis(40));
     }
-    runtime.child = None;
-    runtime.pid = None;
+
+    Err(format!(
+        "Process group {group_id} still has live processes after SIGKILL."
+    ))
+}
+
+fn reap_runtime_leader(runtime: &mut RuntimeTask, group_id: u32) -> Result<(), String> {
+    let status = match runtime.child.as_mut() {
+        Some(child) => child
+            .try_wait()
+            .map_err(|error| format!("Could not wait for PID {group_id}: {error}"))?,
+        None => None,
+    };
+    if let Some(status) = status {
+        runtime.child = None;
+        runtime.pid = None;
+        runtime.exit_code = status.code();
+        runtime.exit_success = Some(status.success());
+        runtime.message = Some(format!("Process exited with {status}."));
+    }
     Ok(())
+}
+
+#[cfg(unix)]
+fn send_process_group_signal(group_id: u32, signal: i32) -> Result<(), String> {
+    let result = unsafe { libc::kill(-(group_id as i32), signal) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Could not signal process group {group_id}: {error}"
+        ))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_group_has_live_members(group_id: u32) -> Result<bool, String> {
+    let entries = fs::read_dir("/proc").map_err(|error| {
+        format!("Could not inspect /proc while stopping process group {group_id}: {error}")
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!("Could not inspect /proc while stopping process group {group_id}: {error}")
+        })?;
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let process_group = unsafe { libc::getpgid(pid as i32) };
+        if process_group < 0 {
+            // PIDs that exit between enumeration and inspection are harmless. An inaccessible
+            // process outside the owned group must not prevent cleanup of this task's group.
+            let error = io::Error::last_os_error();
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::ESRCH | libc::EACCES | libc::EPERM)
+            ) {
+                continue;
+            }
+            return Err(format!(
+                "Could not inspect PID {pid} while stopping process group {group_id}: {error}"
+            ));
+        }
+        if process_group as u32 != group_id {
+            continue;
+        }
+        let stat_path = entry.path().join("stat");
+        let stat = match fs::read_to_string(&stat_path) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                return Err(format!(
+                    "Could not inspect {} while stopping process group {group_id}: {error}",
+                    stat_path.display()
+                ));
+            }
+            Err(_) => continue,
+        };
+        let Some((state, process_group)) = linux_process_state_and_group(&stat) else {
+            return Err(format!(
+                "Could not parse {} while stopping process group {group_id}.",
+                stat_path.display()
+            ));
+        };
+        if process_group == group_id && state != 'Z' && state != 'X' {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_state_and_group(stat: &str) -> Option<(char, u32)> {
+    let (_, fields) = stat.rsplit_once(')')?;
+    let mut fields = fields.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    fields.next()?; // parent process ID
+    let process_group = fields.next()?.parse().ok()?;
+    Some((state, process_group))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_group_has_live_members(group_id: u32) -> Result<bool, String> {
+    let output = std::process::Command::new("ps")
+        .args(["-A", "-o", "pgid=,stat="])
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|error| format!("Could not inspect process group {group_id}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Could not inspect process group {group_id}: ps exited with {}.",
+            output.status
+        ));
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        let Some(actual_group) = fields.next().and_then(|value| value.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(status) = fields.next() else {
+            continue;
+        };
+        if actual_group == group_id
+            && status
+                .chars()
+                .next()
+                .is_some_and(|state| state != 'Z' && state != 'X')
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(not(unix))]
+fn process_group_has_live_members(_group_id: u32) -> Result<bool, String> {
+    Ok(false)
 }
 
 fn snapshot_from(profile_id: &str, task_name: &str, runtime: &RuntimeTask) -> ManagedTaskSnapshot {
@@ -751,6 +1011,7 @@ fn snapshot_from(profile_id: &str, task_name: &str, runtime: &RuntimeTask) -> Ma
         state: runtime.state.clone(),
         main_pid: runtime.pid,
         started_at: runtime.started_at,
+        exit_code: runtime.exit_code,
         message: runtime.message.clone(),
         log_tail: read_log_tail(&runtime.log_path).unwrap_or_default(),
         external_pid: None,
@@ -810,6 +1071,496 @@ fn is_active(state: &str) -> bool {
 mod tests {
     use super::*;
     use crate::models::ServiceSnapshot;
+    use std::ops::{Deref, DerefMut};
+
+    struct ManagedTestGuard(LaunchManager);
+
+    impl Deref for ManagedTestGuard {
+        type Target = LaunchManager;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl DerefMut for ManagedTestGuard {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.0
+        }
+    }
+
+    impl Drop for ManagedTestGuard {
+        fn drop(&mut self) {
+            self.0.stop_all();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_listener_process_fixture() {
+        let (Ok(port), Ok(marker)) = (
+            std::env::var("CUTTING_BOARD_TEST_LISTENER_PORT"),
+            std::env::var("CUTTING_BOARD_TEST_LISTENER_MARKER"),
+        ) else {
+            return;
+        };
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+        }
+        let port = port.parse::<u16>().unwrap();
+        let listener = match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => listener,
+            Err(error) => {
+                use std::io::Write;
+                writeln!(
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(marker)
+                        .unwrap(),
+                    "bind_error:{}:{error}",
+                    std::process::id()
+                )
+                .unwrap();
+                std::process::exit(9);
+            }
+        };
+        listener.set_nonblocking(true).unwrap();
+        {
+            use std::io::Write;
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(marker)
+                    .unwrap(),
+                "ready:{}",
+                std::process::id()
+            )
+            .unwrap();
+        }
+        loop {
+            let _ = listener.accept();
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn managed_listener_profile(root: &Path, port: u16) -> LaunchProfile {
+        let marker = root.join("listener-ready.log");
+        let script_path = root.join("start-listener.sh");
+        let executable = std::env::current_exe().unwrap();
+        let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+        let script = format!(
+            "set +m\nCUTTING_BOARD_TEST_LISTENER_PORT={port} CUTTING_BOARD_TEST_LISTENER_MARKER={} {} --exact launch::tests::managed_listener_process_fixture --nocapture >/dev/null 2>&1 &\nexit 0\n",
+            quote(&marker.to_string_lossy()),
+            quote(&executable.to_string_lossy()),
+        );
+        fs::write(&script_path, script).unwrap();
+        LaunchProfile {
+            id: "profile".into(),
+            name: "test".into(),
+            project_root: root.to_string_lossy().into_owned(),
+            tasks: vec![
+                LaunchTask {
+                    name: "api".into(),
+                    cwd: ".".into(),
+                    command: format!("sh {}", quote(&script_path.to_string_lossy())),
+                    expected_port: Some(port),
+                    container: None,
+                    prepare: None,
+                },
+                LaunchTask {
+                    name: "sibling".into(),
+                    cwd: ".".into(),
+                    command: "sleep 30".into(),
+                    expected_port: None,
+                    container: None,
+                    prepare: None,
+                },
+            ],
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn listener_pids(marker: &Path) -> Vec<u32> {
+        fs::read_to_string(marker)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.strip_prefix("ready:"))
+            .filter_map(|pid| pid.parse().ok())
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_listener_count(marker: &Path, count: usize) -> Vec<u32> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        loop {
+            let contents = fs::read_to_string(marker).unwrap_or_default();
+            assert!(
+                !contents.contains("bind_error:"),
+                "replacement listener could not bind the released port: {contents}"
+            );
+            let pids = listener_pids(marker);
+            if pids.len() >= count {
+                return pids;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "listener did not become ready"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_until_process_group_has_no_live_member(group_id: u32) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if !process_group_has_live_members(group_id).unwrap() {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "process group {group_id} still has live members"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_leader_exit(manager: &mut LaunchManager, request: &TaskRequest) -> u32 {
+        let key = task_key(&request.profile_id, &request.task_name);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            manager.refresh();
+            let runtime = manager.tasks.get(&key).expect("started runtime");
+            if runtime.child.is_none() {
+                assert_eq!(runtime.state, "running");
+                return runtime
+                    .process_group_id
+                    .expect("child keeps its process group");
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "launch leader did not exit while its child stayed alive"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    struct ExternalListenerGuard {
+        child: std::process::Child,
+        listener: Option<(u32, u64)>,
+        stopped: bool,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for ExternalListenerGuard {
+        fn drop(&mut self) {
+            if !self.stopped {
+                match self.child.try_wait() {
+                    Ok(None) => {
+                        // The fixture leader created a private session, so its process group
+                        // contains only this test's wrapper and descendants.
+                        unsafe {
+                            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+                        }
+                    }
+                    Ok(Some(_)) => self.kill_listener_if_current(),
+                    Err(_) => {
+                        let _ = self.child.kill();
+                        self.kill_listener_if_current();
+                    }
+                }
+            }
+            let _ = self.child.wait();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl ExternalListenerGuard {
+        fn kill_listener_if_current(&self) {
+            if let Some((pid, start_time)) = self.listener {
+                if process_start_time(pid) == Some(start_time) {
+                    unsafe {
+                        libc::kill(pid as i32, libc::SIGKILL);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    struct DummyChildGuard(std::process::Child);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for DummyChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_start_time(pid: u32) -> Option<u64> {
+        let pid = Pid::from_u32(pid);
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().without_tasks(),
+        );
+        system.process(pid).map(|process| process.start_time())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_process_start_time(pid: u32) -> u64 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(start_time) = process_start_time(pid) {
+                return start_time;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "process {pid} did not appear in the process table"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn duplicate_start_and_restart_clean_the_owned_child_tree_and_keep_sibling_alive() {
+        let temporary = tempfile::tempdir().unwrap();
+        let port_probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = port_probe.local_addr().unwrap().port();
+        drop(port_probe);
+        let profile = managed_listener_profile(temporary.path(), port);
+        let request = TaskRequest {
+            profile_id: profile.id.clone(),
+            task_name: "api".into(),
+        };
+        let sibling_request = TaskRequest {
+            profile_id: profile.id.clone(),
+            task_name: "sibling".into(),
+        };
+        let marker = temporary.path().join("listener-ready.log");
+        let mut manager = ManagedTestGuard(LaunchManager::default());
+
+        let started = manager
+            .start_task(
+                std::slice::from_ref(&profile),
+                &request,
+                temporary.path(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(started.state, "running");
+        let first_pids = wait_for_listener_count(&marker, 1);
+        let first_group_id = wait_for_leader_exit(&mut manager, &request);
+
+        let duplicate = manager
+            .start_task(
+                std::slice::from_ref(&profile),
+                &request,
+                temporary.path(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(duplicate.state, "running");
+        assert_eq!(listener_pids(&marker), first_pids);
+        assert_eq!(
+            manager
+                .tasks
+                .get(&task_key(&profile.id, "api"))
+                .and_then(|runtime| runtime.process_group_id),
+            Some(first_group_id)
+        );
+
+        let sibling = manager
+            .start_task(
+                std::slice::from_ref(&profile),
+                &sibling_request,
+                temporary.path(),
+                None,
+            )
+            .unwrap();
+        let sibling_pid = sibling.main_pid.expect("sibling launch PID");
+        let sibling_group_id = manager
+            .tasks
+            .get(&task_key(&profile.id, "sibling"))
+            .and_then(|runtime| runtime.process_group_id)
+            .expect("sibling process group");
+
+        let restart_started = std::time::Instant::now();
+        let restarted = manager
+            .restart_task(
+                std::slice::from_ref(&profile),
+                &request,
+                temporary.path(),
+                None,
+            )
+            .unwrap();
+        assert!(restart_started.elapsed() >= Duration::from_secs(1));
+        assert_eq!(restarted.state, "running");
+        let listener_pids = wait_for_listener_count(&marker, 2);
+        assert_ne!(listener_pids[0], listener_pids[1]);
+        wait_until_process_group_has_no_live_member(first_group_id);
+        assert!(process_group_has_live_members(sibling_group_id).unwrap());
+        assert!(process_group_has_live_members(sibling_pid).unwrap());
+
+        let stopped_sibling = manager
+            .stop_task(
+                std::slice::from_ref(&profile),
+                &sibling_request,
+                temporary.path(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(stopped_sibling.state, "stopped");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn external_restart_stops_only_matched_descendants_and_releases_port_before_spawn() {
+        let temporary = tempfile::tempdir().unwrap();
+        let port_probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = port_probe.local_addr().unwrap().port();
+        drop(port_probe);
+        let profile = managed_listener_profile(temporary.path(), port);
+        let request = TaskRequest {
+            profile_id: profile.id.clone(),
+            task_name: "api".into(),
+        };
+        let marker = temporary.path().join("listener-ready.log");
+        let executable = std::env::current_exe().unwrap();
+        let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+        let external_script = format!(
+            "set +m\nCUTTING_BOARD_TEST_LISTENER_PORT={port} CUTTING_BOARD_TEST_LISTENER_MARKER={} {} --exact launch::tests::managed_listener_process_fixture --nocapture >/dev/null 2>&1 &\nwait\n",
+            quote(&marker.to_string_lossy()),
+            quote(&executable.to_string_lossy()),
+        );
+        let mut command = std::process::Command::new("sh");
+        command
+            .args(["-c", &external_script])
+            .current_dir(temporary.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let child = command.spawn().unwrap();
+        let mut external = ExternalListenerGuard {
+            child,
+            listener: None,
+            stopped: false,
+        };
+        let root_start_time = wait_for_process_start_time(external.child.id());
+        let listener_pid = wait_for_listener_count(&marker, 1)[0];
+        let listener_start_time = wait_for_process_start_time(listener_pid);
+        external.listener = Some((listener_pid, listener_start_time));
+
+        let mut workspace = workspace_with_project(port, temporary.path());
+        workspace.services[0].process = Some(crate::models::ProcessInfo {
+            pid: external.child.id(),
+            parent_pid: None,
+            name: "sh".into(),
+            executable: None,
+            working_directory: Some(temporary.path().to_string_lossy().into_owned()),
+            command: "external test listener wrapper".into(),
+            launch_command: None,
+            create_time: root_start_time,
+            uptime_seconds: 0,
+            cpu_percent: None,
+            memory_bytes: None,
+            uid: Some(unsafe { libc::geteuid() }),
+        });
+        let mut unrelated = DummyChildGuard(
+            std::process::Command::new("sleep")
+                .arg("30")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut manager = ManagedTestGuard(LaunchManager::default());
+
+        let restarted = manager
+            .restart_task(
+                std::slice::from_ref(&profile),
+                &request,
+                temporary.path(),
+                Some(&workspace),
+            )
+            .unwrap();
+        external.stopped = true;
+
+        assert_eq!(restarted.state, "running");
+        wait_for_listener_count(&marker, 2);
+        assert!(unrelated.0.try_wait().unwrap().is_none());
+    }
+
+    #[test]
+    fn managed_task_reports_a_nonzero_exit_code() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = LaunchProfile {
+            id: "profile".into(),
+            name: "test".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "failing".into(),
+                cwd: ".".into(),
+                command: "exit 23".into(),
+                expected_port: None,
+                container: None,
+                prepare: None,
+            }],
+        };
+        let request = TaskRequest {
+            profile_id: profile.id.clone(),
+            task_name: "failing".into(),
+        };
+        let mut manager = ManagedTestGuard(LaunchManager::default());
+
+        manager
+            .start_task(
+                std::slice::from_ref(&profile),
+                &request,
+                temporary.path(),
+                None,
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let snapshot = loop {
+            let snapshot = manager
+                .snapshots(std::slice::from_ref(&profile), None, temporary.path())
+                .into_iter()
+                .next()
+                .unwrap();
+            if snapshot.state == "failed" {
+                break snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "task did not report its failing exit"
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+
+        assert_eq!(snapshot.state, "failed");
+        assert_eq!(snapshot.exit_code, Some(23));
+        assert!(snapshot.message.unwrap().contains("code 23"));
+    }
 
     fn workspace_with_project(port: u16, project_root: &Path) -> WorkspaceSnapshot {
         WorkspaceSnapshot {
@@ -899,8 +1650,11 @@ mod tests {
                 RuntimeTask {
                     child: None,
                     pid: Some(123),
+                    process_group_id: None,
                     state: "running".into(),
                     started_at: Some(1),
+                    exit_code: None,
+                    exit_success: None,
                     message: None,
                     log_path,
                 },
@@ -1074,8 +1828,11 @@ mod tests {
                 RuntimeTask {
                     child: None,
                     pid: Some(42),
+                    process_group_id: None,
                     state: "running".into(),
                     started_at: Some(1),
+                    exit_code: None,
+                    exit_success: None,
                     message: None,
                     log_path: temporary.path().join("frontend.log"),
                 },
@@ -1178,8 +1935,11 @@ mod tests {
                     RuntimeTask {
                         child: None,
                         pid: None,
+                        process_group_id: None,
                         state: state.into(),
                         started_at: None,
+                        exit_code: None,
+                        exit_success: None,
                         message: None,
                         log_path: temporary.path().join("web.log"),
                     },
@@ -1303,8 +2063,11 @@ mod tests {
                 RuntimeTask {
                     child: Some(old_child),
                     pid: Some(old_pid),
+                    process_group_id: Some(old_pid),
                     state: "running".into(),
                     started_at: Some(now_epoch()),
+                    exit_code: None,
+                    exit_success: None,
                     message: None,
                     log_path: logs_dir.join("profile-adm.log"),
                 },
@@ -1397,8 +2160,11 @@ mod tests {
                 RuntimeTask {
                     child: Some(old_child),
                     pid: Some(old_pid),
+                    process_group_id: Some(old_pid),
                     state: "running".into(),
                     started_at: Some(now_epoch()),
+                    exit_code: None,
+                    exit_success: None,
                     message: None,
                     log_path: log_path.clone(),
                 },

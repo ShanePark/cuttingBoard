@@ -10,7 +10,9 @@ test("normal app lifecycle handlers leave managed tasks running", () => {
     nativeSource.indexOf(".on_window_event"),
     nativeSource.indexOf(".invoke_handler")
   );
-  const runEvents = nativeSource.slice(nativeSource.indexOf(".run(|app, event|"));
+  const runStart = nativeSource.indexOf(".run(|app, event|");
+  const testModuleStart = nativeSource.indexOf("#[cfg(test)]", runStart);
+  const runEvents = nativeSource.slice(runStart, testModuleStart);
 
   assert.doesNotMatch(windowEvents, /stop_managed_tasks|\.stop_all\(\)/);
   assert.doesNotMatch(runEvents, /stop_managed_tasks|\.stop_all\(\)/);

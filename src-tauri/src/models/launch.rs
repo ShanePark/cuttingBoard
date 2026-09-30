@@ -79,6 +79,9 @@ pub struct ManagedTaskSnapshot {
     pub state: String,
     pub main_pid: Option<u32>,
     pub started_at: Option<u64>,
+    /// Exit code from the most recent completed managed process, when it exited normally.
+    #[serde(default)]
+    pub exit_code: Option<i32>,
     pub message: Option<String>,
     pub log_tail: String,
     /// PID of a process detected outside Cutting Board for this launch task.

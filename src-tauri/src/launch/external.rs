@@ -3,14 +3,16 @@ use crate::models::{
 };
 use std::{
     cmp::Reverse,
+    collections::HashSet,
     fs::{self, OpenOptions},
     io,
+    net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
     time::Duration,
 };
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 
 #[cfg(unix)]
 use std::time::Instant;
@@ -20,6 +22,8 @@ pub(super) struct ExternalTaskInfo {
     pub(super) pid: Option<u32>,
     pub(super) started_at: Option<u64>,
     pub(super) uid: Option<u32>,
+    pub(super) expected_port: Option<u16>,
+    pub(super) endpoint_addresses: Vec<IpAddr>,
     pub(super) working_directory: Option<String>,
     pub(super) log_path: Option<PathBuf>,
     pub(super) log_tail: String,
@@ -44,6 +48,18 @@ pub(super) fn external_task_info(
         pid: Some(process.pid),
         started_at: Some(process.create_time),
         uid: process.uid,
+        expected_port: task.expected_port,
+        endpoint_addresses: task
+            .expected_port
+            .into_iter()
+            .flat_map(|port| {
+                service
+                    .endpoints
+                    .iter()
+                    .filter(move |endpoint| endpoint.port == port)
+            })
+            .filter_map(|endpoint| endpoint.address.parse().ok())
+            .collect(),
         working_directory: process.working_directory.clone(),
         log_path: None,
         log_tail: String::new(),
@@ -61,6 +77,7 @@ pub(super) fn external_snapshot(
         state: "running".into(),
         main_pid: external.pid,
         started_at: external.started_at,
+        exit_code: None,
         message: None,
         log_tail: external.log_tail,
         external_pid: external.pid,
@@ -83,37 +100,266 @@ pub(super) fn stop_external_task(
         .started_at
         .ok_or_else(|| format!("{task_name} has no current process start time."))?;
     validate_external_process_identity(pid, started_at, external.uid)?;
+    let tree = external_process_tree(pid, started_at, external.uid)?;
+    signal_external_tree(&tree, external_term_signal())?;
+    if !wait_for_external_tree_exit(&tree, Duration::from_secs(2))? {
+        signal_external_tree(&tree, external_kill_signal())?;
+        if !wait_for_external_tree_exit(&tree, Duration::from_secs(1))? {
+            return Err(format!(
+                "{task_name} and its known child processes did not stop."
+            ));
+        }
+    }
 
-    send_external_signal(pid, external_term_signal())?;
-    for _ in 0..25 {
+    if let Some(port) = external.expected_port {
+        wait_for_port_release(task_name, port, &external.endpoint_addresses)?;
+    }
+    Ok(external_stopped_snapshot(
+        profile_id,
+        task_name,
+        started_at,
+        external.log_tail,
+    ))
+}
+
+#[derive(Debug, Clone)]
+struct ExternalProcessIdentity {
+    pid: u32,
+    started_at: u64,
+    uid: Option<u32>,
+    depth: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessTreeCandidate {
+    identity: ExternalProcessIdentity,
+    parent_pid: Option<u32>,
+    status: ProcessStatus,
+}
+
+fn external_process_tree(
+    root_pid: u32,
+    root_started_at: u64,
+    root_uid: Option<u32>,
+) -> Result<Vec<ExternalProcessIdentity>, String> {
+    let mut system = System::new_all();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    let root = system
+        .process(Pid::from_u32(root_pid))
+        .ok_or_else(|| "The process already exited. Refresh and try again.".to_string())?;
+    if root.start_time() != root_started_at {
+        return Err("The PID was reused by another process. Refresh before stopping it.".into());
+    }
+
+    let root_process_uid = root.user_id().map(|uid| **uid as u32);
+    let current_uid = effective_uid();
+    if (root_uid.is_some() && current_uid.is_some() && root_uid != current_uid)
+        || (root_process_uid.is_some() && current_uid.is_some() && root_process_uid != current_uid)
+    {
+        return Err("Cutting Board only stops processes owned by the current user.".into());
+    }
+    let expected_uid = current_uid
+        .or(root_uid)
+        .or(root_process_uid)
+        .ok_or_else(|| "Cutting Board could not verify the service process owner.".to_string())?;
+
+    let candidates = system
+        .processes()
+        .iter()
+        .map(|(pid, process)| ProcessTreeCandidate {
+            identity: ExternalProcessIdentity {
+                pid: pid.as_u32(),
+                started_at: process.start_time(),
+                uid: process.user_id().map(|uid| **uid as u32),
+                depth: 0,
+            },
+            parent_pid: process.parent().map(|parent| parent.as_u32()),
+            status: process.status(),
+        })
+        .collect::<Vec<_>>();
+    let mut tree = vec![ExternalProcessIdentity {
+        pid: root_pid,
+        started_at: root_started_at,
+        uid: root_process_uid.or(Some(expected_uid)),
+        depth: 0,
+    }];
+    let mut visited = HashSet::from([root_pid]);
+    let mut cursor = 0;
+    while cursor < tree.len() {
+        let parent_pid = tree[cursor].pid;
+        let child_depth = tree[cursor].depth + 1;
+        cursor += 1;
+        let children = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.parent_pid == Some(parent_pid)
+                    && !matches!(
+                        candidate.status,
+                        ProcessStatus::Zombie | ProcessStatus::Dead
+                    )
+                    && !visited.contains(&candidate.identity.pid)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for mut child in children {
+            if child.identity.uid != Some(expected_uid) {
+                return Err(format!(
+                    "Cutting Board could not safely stop child PID {} because its owner could not be verified.",
+                    child.identity.pid
+                ));
+            }
+            visited.insert(child.identity.pid);
+            child.identity.depth = child_depth;
+            tree.push(child.identity);
+        }
+    }
+    // Stop the root first so it cannot create new descendants while captured children stop.
+    tree.sort_by_key(|process| (process.depth != 0, Reverse(process.depth)));
+    Ok(tree)
+}
+
+fn signal_external_tree(
+    tree: &[ExternalProcessIdentity],
+    signal: ExternalSignal,
+) -> Result<(), String> {
+    for process in tree {
+        if !external_process_identity_is_current(process)? {
+            continue;
+        }
+        send_external_signal(process.pid, signal)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+type ExternalSignal = i32;
+
+#[cfg(not(unix))]
+type ExternalSignal = ();
+
+fn wait_for_external_tree_exit(
+    tree: &[ExternalProcessIdentity],
+    timeout: Duration,
+) -> Result<bool, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !tree.iter().try_fold(false, |alive, process| {
+            Ok::<_, String>(alive || external_process_identity_is_live(process))
+        })? {
+            return Ok(true);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
         thread::sleep(Duration::from_millis(80));
-        if !external_process_is_current(pid, started_at)? {
-            return Ok(external_stopped_snapshot(
-                profile_id,
-                task_name,
-                started_at,
-                external.log_tail,
+    }
+}
+
+fn external_process_identity_is_current(
+    identity: &ExternalProcessIdentity,
+) -> Result<bool, String> {
+    let state = current_process_state(identity.pid);
+    if !process_identity_is_live(identity, state.as_ref()) {
+        return Ok(false);
+    }
+    let uid = state.and_then(|(_, _, uid)| uid);
+    if identity.uid.is_some() && effective_uid().is_some() && uid != identity.uid {
+        return Err(format!(
+            "Cutting Board refused to signal PID {} after its owner changed.",
+            identity.pid
+        ));
+    }
+    Ok(true)
+}
+
+fn external_process_identity_is_live(identity: &ExternalProcessIdentity) -> bool {
+    process_identity_is_live(identity, current_process_state(identity.pid).as_ref())
+}
+
+fn process_identity_is_live(
+    identity: &ExternalProcessIdentity,
+    state: Option<&(u64, ProcessStatus, Option<u32>)>,
+) -> bool {
+    let Some((started_at, status, _)) = state else {
+        return false;
+    };
+    *started_at == identity.started_at
+        && !matches!(status, ProcessStatus::Zombie | ProcessStatus::Dead)
+}
+
+fn wait_for_port_release(task_name: &str, port: u16, endpoints: &[IpAddr]) -> Result<(), String> {
+    const PORT_RELEASE_TIMEOUT: Duration = Duration::from_secs(3);
+    const CONNECT_TIMEOUT: Duration = Duration::from_millis(150);
+    let addresses = if endpoints.is_empty() {
+        vec![
+            IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        ]
+    } else {
+        endpoints.to_vec()
+    };
+    let deadline = std::time::Instant::now() + PORT_RELEASE_TIMEOUT;
+    loop {
+        let mut occupied = false;
+        for mut address in addresses.iter().copied() {
+            if address.is_unspecified() {
+                address = match address {
+                    IpAddr::V4(_) => IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                    IpAddr::V6(_) => IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+                };
+            }
+            match TcpStream::connect_timeout(&SocketAddr::new(address, port), CONNECT_TIMEOUT) {
+                Ok(stream) => {
+                    drop(stream);
+                    occupied = true;
+                }
+                Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                    match TcpListener::bind(SocketAddr::new(address, port)) {
+                        Ok(listener) => drop(listener),
+                        Err(bind_error) if bind_error.kind() == io::ErrorKind::AddrInUse => {
+                            occupied = true;
+                        }
+                        Err(bind_error) => {
+                            return Err(format!(
+                                "Could not verify that {task_name} released port {port}: {bind_error}"
+                            ));
+                        }
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => occupied = true,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::AddrNotAvailable | io::ErrorKind::Unsupported
+                    ) && !address_family_available(address) => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Could not verify that {task_name} released port {port}: {error}"
+                    ));
+                }
+            }
+        }
+        if !occupied {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "{task_name} stopped, but port {port} is still in use."
             ));
         }
+        thread::sleep(Duration::from_millis(80));
     }
+}
 
-    // Revalidate immediately before escalating. A reused PID must never receive
-    // a signal belonging to the previous launch task.
-    validate_external_process_identity(pid, started_at, external.uid)?;
-    send_external_signal(pid, external_kill_signal())?;
-    for _ in 0..10 {
-        thread::sleep(Duration::from_millis(60));
-        if !external_process_is_current(pid, started_at)? {
-            return Ok(external_stopped_snapshot(
-                profile_id,
-                task_name,
-                started_at,
-                external.log_tail,
-            ));
-        }
+fn address_family_available(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(_) => true,
+        IpAddr::V6(_) => TcpListener::bind(SocketAddr::new(
+            IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+            0,
+        ))
+        .is_ok(),
     }
-
-    Err(format!("{task_name} did not stop."))
 }
 
 fn external_stopped_snapshot(
@@ -128,6 +374,7 @@ fn external_stopped_snapshot(
         state: "stopped".into(),
         main_pid: None,
         started_at: Some(started_at),
+        exit_code: None,
         message: Some(format!("Stopped {task_name}.")),
         log_tail,
         external_pid: None,
@@ -148,33 +395,37 @@ fn validate_external_process_identity(
     if uid.is_some() && current_uid.is_some() && uid != current_uid {
         return Err("Cutting Board only stops processes owned by the current user.".into());
     }
-    let actual_start_time = current_process_start_time(pid)
+    let (actual_start_time, status, actual_uid) = current_process_state(pid)
         .ok_or_else(|| "The process already exited. Refresh and try again.".to_string())?;
     if actual_start_time != started_at {
         return Err("The PID was reused by another process. Refresh before stopping it.".into());
     }
+    if matches!(status, ProcessStatus::Zombie | ProcessStatus::Dead) {
+        return Err("The process already exited. Refresh and try again.".into());
+    }
+    if uid.is_some() && effective_uid().is_some() && actual_uid != uid {
+        return Err("Cutting Board only stops processes owned by the current user.".into());
+    }
     Ok(())
 }
 
-fn external_process_is_current(pid: u32, started_at: u64) -> Result<bool, String> {
-    let Some(actual_start_time) = current_process_start_time(pid) else {
-        return Ok(false);
-    };
-    if actual_start_time != started_at {
-        return Err("The PID was reused by another process. Refresh before stopping it.".into());
-    }
-    Ok(true)
-}
-
-fn current_process_start_time(pid: u32) -> Option<u64> {
+fn current_process_state(pid: u32) -> Option<(u64, ProcessStatus, Option<u32>)> {
     let pid = Pid::from_u32(pid);
     let mut system = System::new();
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[pid]),
         true,
-        ProcessRefreshKind::nothing().without_tasks(),
+        ProcessRefreshKind::nothing()
+            .with_user(UpdateKind::Always)
+            .with_tasks(),
     );
-    system.process(pid).map(|process| process.start_time())
+    system.process(pid).map(|process| {
+        (
+            process.start_time(),
+            process.status(),
+            process.user_id().map(|uid| **uid as u32),
+        )
+    })
 }
 
 #[cfg(unix)]
@@ -194,7 +445,7 @@ fn external_kill_signal() -> i32 {
 fn external_kill_signal() {}
 
 #[cfg(unix)]
-fn send_external_signal(pid: u32, signal: i32) -> Result<(), String> {
+fn send_external_signal(pid: u32, signal: ExternalSignal) -> Result<(), String> {
     let result = unsafe { libc::kill(pid as i32, signal) };
     if result == 0 {
         return Ok(());
@@ -208,7 +459,7 @@ fn send_external_signal(pid: u32, signal: i32) -> Result<(), String> {
 }
 
 #[cfg(not(unix))]
-fn send_external_signal(pid: u32, _signal: ()) -> Result<(), String> {
+fn send_external_signal(pid: u32, _signal: ExternalSignal) -> Result<(), String> {
     let system = System::new_all();
     let process = system
         .process(Pid::from_u32(pid))
@@ -600,5 +851,44 @@ mod tests {
         )));
         assert!(!looks_like_log_file(Path::new("/srv/app/catalog.db")));
         assert!(!looks_like_log_file(Path::new("/srv/app/data/output.txt")));
+    }
+
+    #[test]
+    fn port_release_check_rejects_a_residual_listener() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let error = wait_for_port_release(
+            "dummy task",
+            port,
+            &[IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)],
+        )
+        .unwrap_err();
+
+        assert!(error.contains("is still in use"));
+        drop(listener);
+    }
+
+    #[test]
+    fn process_liveness_wait_does_not_require_owner_metadata() {
+        let identity = ExternalProcessIdentity {
+            pid: 42,
+            started_at: 123,
+            uid: Some(1000),
+            depth: 0,
+        };
+
+        assert!(process_identity_is_live(
+            &identity,
+            Some(&(123, ProcessStatus::Sleep, None))
+        ));
+        assert!(!process_identity_is_live(
+            &identity,
+            Some(&(123, ProcessStatus::Zombie, None))
+        ));
+        assert!(!process_identity_is_live(
+            &identity,
+            Some(&(124, ProcessStatus::Sleep, None))
+        ));
     }
 }

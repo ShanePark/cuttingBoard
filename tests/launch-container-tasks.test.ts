@@ -13,6 +13,7 @@ function container(name: string, workingDir: string | null): ContainerInfo {
     state: "running",
     status: "Up 5 hours (healthy)",
     ports: [45432],
+    port_mappings: [],
     compose_project: "oasis26",
     compose_service: "postgres",
     compose_working_dir: workingDir
@@ -54,12 +55,16 @@ test("a container task is a different task from a command task of the same name"
 
 test("container tasks are started and stopped through Docker, never as a shell command", () => {
   const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const control = readFileSync(new URL("../src-tauri/src/control_service.rs", import.meta.url), "utf8");
   const external = readFileSync(new URL("../src-tauri/src/launch/external.rs", import.meta.url), "utf8");
   const forms = readFileSync(new URL("../src/modal-forms.ts", import.meta.url), "utf8");
 
   for (const action of ["start", "stop", "restart"]) {
-    assert.match(lib, new RegExp(`launch_containers::${action}\\(&request, &container, state\\.0\\.demo\\)`));
+    assert.match(lib, new RegExp(`launch_containers::${action}\\(request, &container, state\\.0\\.demo\\)`));
   }
+  assert.match(lib, /run_ui_task_action\(&state, &request, control_service::TaskAction::/);
+  assert.match(lib, /pub\(crate\) fn execute_control_task_action\(/);
+  assert.match(control, /crate::execute_control_task_action\(&action_state, &request, action\)/);
   assert.match(lib, /launch_containers::stop_profile\(&profiles, &profile_id, state\.0\.demo\)/);
   assert.match(external, /task\.container_name\(\)\.is_some\(\)/);
   // The editor keeps the container binding of a task it did not create.

@@ -1,4 +1,6 @@
 mod cli;
+mod control;
+mod control_service;
 mod docker;
 mod launch;
 mod models;
@@ -26,8 +28,9 @@ use crate::{
 };
 use std::{
     collections::HashMap,
+    net::{Ipv4Addr, Ipv6Addr, TcpListener},
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, TryLockError},
     thread,
     time::Duration,
 };
@@ -45,7 +48,14 @@ struct AppStateInner {
     window_geometry: window::WindowGeometryPersistence,
     scan: Mutex<ScanState>,
     launch: Mutex<LaunchManager>,
+    control: control_service::ControlState,
     system_metrics: Mutex<SystemMetricsState>,
+}
+
+impl AppState {
+    fn control_service_state(&self) -> &control_service::ControlState {
+        &self.0.control
+    }
 }
 
 #[derive(Debug, Default)]
@@ -68,15 +78,9 @@ fn app_info(state: State<'_, AppState>) -> AppInfo {
 #[tauri::command]
 async fn scan_workspace(state: State<'_, AppState>) -> Result<WorkspaceSnapshot, String> {
     let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let (snapshot, index) = scanner::scan_workspace(state.0.demo)?;
-        let mut scan = lock(&state.0.scan)?;
-        scan.workspace = Some(snapshot.clone());
-        scan.service_index = index;
-        Ok(snapshot)
-    })
-    .await
-    .map_err(|error| format!("Service scan task failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || refresh_control_scan(&state))
+        .await
+        .map_err(|error| format!("Service scan task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -215,6 +219,11 @@ fn save_profile(
     profile: LaunchProfile,
 ) -> Result<Vec<LaunchProfile>, String> {
     reject_demo(state.inner())?;
+    let _profile_operation = state
+        .0
+        .control
+        .begin_profile_edit()
+        .map_err(|error| error.message)?;
     let current_profiles = read_profiles(&state.0.profiles_path)?;
     ensure_profile_inactive(
         state.inner(),
@@ -233,6 +242,11 @@ async fn delete_profile(
     reject_demo(state.inner())?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _profile_operation = state
+            .0
+            .control
+            .begin_profile_edit()
+            .map_err(|error| error.message)?;
         // Deleting is allowed while the profile runs. The tasks Cutting Board started are stopped
         // first so the delete never leaves a process running that no view can reach any more.
         lock(&state.0.launch)?.discard_profile(&profile_id);
@@ -270,6 +284,186 @@ async fn task_log_tail(state: State<'_, AppState>, request: TaskRequest) -> Resu
     .map_err(|error| format!("Task log read failed: {error}"))?
 }
 
+fn run_ui_task_action(
+    state: &AppState,
+    request: &TaskRequest,
+    action: control_service::TaskAction,
+) -> Result<ManagedTaskSnapshot, String> {
+    let lease = state
+        .0
+        .control
+        .begin_task_action(request, action)
+        .map_err(|error| error.message)?;
+    let result = execute_control_task_action(state, request, action);
+    lease.finish(&result);
+    result
+}
+
+/// The single native task-action path used by both Tauri and external control requests.
+pub(crate) fn execute_control_task_action(
+    state: &AppState,
+    request: &TaskRequest,
+    action: control_service::TaskAction,
+) -> Result<ManagedTaskSnapshot, String> {
+    reject_demo(state)?;
+    let profiles = profiles_for_state(state)?;
+    let profile = profiles
+        .iter()
+        .find(|profile| profile.id == request.profile_id)
+        .ok_or_else(|| "The launch profile no longer exists.".to_string())?;
+    let task = profile
+        .tasks
+        .iter()
+        .find(|task| task.name == request.task_name)
+        .ok_or_else(|| "The task no longer exists in this profile.".to_string())?;
+
+    if let Some(container) = launch_containers::container_for(&profiles, request) {
+        return match action {
+            control_service::TaskAction::Start => {
+                launch_containers::start(request, &container, state.0.demo)
+            }
+            control_service::TaskAction::Stop => {
+                launch_containers::stop(request, &container, state.0.demo)
+            }
+            control_service::TaskAction::Restart => {
+                launch_containers::restart(request, &container, state.0.demo)
+            }
+        };
+    }
+
+    let workspace = refresh_control_scan(state)?;
+
+    let match_count =
+        LaunchManager::external_task_match_count(&profiles, request, Some(&workspace))?;
+    let mut manager = lock(&state.0.launch)?;
+    let snapshots = manager.snapshots(&profiles, Some(&workspace), &state.0.logs_dir);
+    let current = snapshots
+        .iter()
+        .find(|snapshot| {
+            snapshot.profile_id == request.profile_id && snapshot.task_name == request.task_name
+        })
+        .cloned();
+    let managed_active = current.as_ref().is_some_and(|snapshot| {
+        matches!(snapshot.state.as_str(), "starting" | "running" | "stopping")
+            && snapshot.external_pid.is_none()
+    });
+    if current
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.external_pid.is_some())
+        && match_count > 1
+    {
+        return Err(
+            "The external process matches more than one registered task and cannot be controlled safely."
+                .into(),
+        );
+    }
+
+    if action == control_service::TaskAction::Start && !managed_active {
+        if let Some(port) = task.expected_port {
+            let matched_external = current
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.external_pid.is_some() && match_count == 1);
+            if !matched_external && port_is_occupied(port) {
+                return Err(format!(
+                    "The expected port {port} is already in use by a process that is not safely matched to this task."
+                ));
+            }
+        }
+    }
+
+    match action {
+        control_service::TaskAction::Start => {
+            manager.start_task(&profiles, request, &state.0.logs_dir, Some(&workspace))
+        }
+        control_service::TaskAction::Stop => {
+            manager.stop_task(&profiles, request, &state.0.logs_dir, Some(&workspace))
+        }
+        control_service::TaskAction::Restart => {
+            manager.restart_task(&profiles, request, &state.0.logs_dir, Some(&workspace))
+        }
+    }
+}
+
+fn port_is_occupied(port: u16) -> bool {
+    match TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)) {
+        Ok(listener) => drop(listener),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::AddrNotAvailable
+                    | std::io::ErrorKind::Unsupported
+                    | std::io::ErrorKind::InvalidInput
+            ) => {}
+        Err(_) => return true,
+    }
+
+    match TcpListener::bind((Ipv6Addr::UNSPECIFIED, port)) {
+        Ok(listener) => drop(listener),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::AddrNotAvailable
+                    | std::io::ErrorKind::Unsupported
+                    | std::io::ErrorKind::InvalidInput
+            ) => {}
+        Err(_) => return true,
+    }
+    false
+}
+
+pub(crate) fn control_profiles(state: &AppState) -> Result<Vec<LaunchProfile>, String> {
+    profiles_for_state(state)
+}
+
+pub(crate) fn control_is_demo(state: &AppState) -> bool {
+    state.0.demo
+}
+
+pub(crate) fn control_task_log_tail(
+    state: &AppState,
+    profiles: &[LaunchProfile],
+    request: &TaskRequest,
+) -> Result<String, String> {
+    if let Some(container) = launch_containers::container_for(profiles, request) {
+        let listing = docker::list_containers(state.0.demo);
+        let info = listing
+            .containers
+            .iter()
+            .find(|info| info.name == container)
+            .ok_or_else(|| "The registered container is unavailable.".to_string())?;
+        return docker::container_logs(&info.id, state.0.demo).map(|snapshot| snapshot.logs);
+    }
+    LaunchManager::task_log_tail(profiles, request, &state.0.logs_dir)
+}
+
+pub(crate) fn control_task_snapshots(
+    state: &AppState,
+    profiles: &[LaunchProfile],
+) -> Result<Option<Vec<ManagedTaskSnapshot>>, String> {
+    let mut launch = match state.0.launch.try_lock() {
+        Ok(launch) => launch,
+        Err(TryLockError::WouldBlock) => return Ok(None),
+        Err(TryLockError::Poisoned(_)) => return Err("Internal state lock was poisoned.".into()),
+    };
+    let workspace = current_workspace(state)?;
+    let mut snapshots = launch.snapshots(profiles, workspace.as_ref(), &state.0.logs_dir);
+    drop(launch);
+    snapshots.extend(launch_containers::snapshots(profiles, state.0.demo));
+    Ok(Some(snapshots))
+}
+
+pub(crate) fn refresh_control_scan(state: &AppState) -> Result<WorkspaceSnapshot, String> {
+    let (snapshot, index) = scanner::scan_workspace(state.0.demo)?;
+    let mut scan = lock(&state.0.scan)?;
+    scan.workspace = Some(snapshot.clone());
+    scan.service_index = index;
+    Ok(snapshot)
+}
+
+pub(crate) fn control_cached_scan(state: &AppState) -> Result<Option<WorkspaceSnapshot>, String> {
+    Ok(lock(&state.0.scan)?.workspace.clone())
+}
+
 #[tauri::command]
 async fn start_task(
     state: State<'_, AppState>,
@@ -278,16 +472,7 @@ async fn start_task(
     reject_demo(state.inner())?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (profiles, workspace) = launch_context(&state)?;
-        if let Some(container) = launch_containers::container_for(&profiles, &request) {
-            return launch_containers::start(&request, &container, state.0.demo);
-        }
-        lock(&state.0.launch)?.start_task(
-            &profiles,
-            &request,
-            &state.0.logs_dir,
-            workspace.as_ref(),
-        )
+        run_ui_task_action(&state, &request, control_service::TaskAction::Start)
     })
     .await
     .map_err(|error| format!("Launch task failed: {error}"))?
@@ -301,11 +486,7 @@ async fn stop_task(
     reject_demo(state.inner())?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (profiles, workspace) = launch_context(&state)?;
-        if let Some(container) = launch_containers::container_for(&profiles, &request) {
-            return launch_containers::stop(&request, &container, state.0.demo);
-        }
-        lock(&state.0.launch)?.stop_task(&profiles, &request, &state.0.logs_dir, workspace.as_ref())
+        run_ui_task_action(&state, &request, control_service::TaskAction::Stop)
     })
     .await
     .map_err(|error| format!("Stop task failed: {error}"))?
@@ -319,16 +500,7 @@ async fn restart_task(
     reject_demo(state.inner())?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (profiles, workspace) = launch_context(&state)?;
-        if let Some(container) = launch_containers::container_for(&profiles, &request) {
-            return launch_containers::restart(&request, &container, state.0.demo);
-        }
-        lock(&state.0.launch)?.restart_task(
-            &profiles,
-            &request,
-            &state.0.logs_dir,
-            workspace.as_ref(),
-        )
+        run_ui_task_action(&state, &request, control_service::TaskAction::Restart)
     })
     .await
     .map_err(|error| format!("Restart task failed: {error}"))?
@@ -342,6 +514,11 @@ async fn stop_profile(
     reject_demo(state.inner())?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _profile_operation = state
+            .0
+            .control
+            .begin_profile_action(&profile_id)
+            .map_err(|error| error.message)?;
         let (profiles, workspace) = launch_context(&state)?;
         let mut snapshots = launch_containers::stop_profile(&profiles, &profile_id, state.0.demo)?;
         snapshots.extend(lock(&state.0.launch)?.stop_profile(
@@ -485,10 +662,20 @@ pub fn run() {
     let options = match cli::parse_cli() {
         Ok(options) => options,
         Err(error) => {
+            if cli::control_was_requested() {
+                std::process::exit(control::print_invalid_cli_error(&error));
+            }
             eprintln!("{error}\n\nRun with --help for usage.");
             std::process::exit(2);
         }
     };
+    if let Some(command) = options.control.clone() {
+        let exit_code = control::run_cli(command);
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        return;
+    }
     if options.show_help {
         cli::print_help();
         return;
@@ -536,7 +723,7 @@ pub fn run() {
                 settings_path.clone(),
                 Arc::clone(&settings_io),
             );
-            app.manage(AppState(Arc::new(AppStateInner {
+            let state = AppState(Arc::new(AppStateInner {
                 demo,
                 settings_path,
                 profiles_path,
@@ -545,8 +732,29 @@ pub fn run() {
                 window_geometry,
                 scan: Mutex::new(ScanState::default()),
                 launch: Mutex::new(LaunchManager::default()),
+                control: control_service::ControlState::default(),
                 system_metrics: Mutex::new(SystemMetricsState::default()),
-            })));
+            }));
+            app.manage(state.clone());
+            #[cfg(unix)]
+            {
+                let control_state = state.clone();
+                match control::start_server(move |request| {
+                    control_service::dispatch(&control_state, request)
+                }) {
+                    Ok(server) => {
+                        app.manage(server);
+                    }
+                    Err(error) if error.contains("already active") => {
+                        return Err(
+                            format!("Could not start the local control server: {error}").into()
+                        );
+                    }
+                    Err(error) => {
+                        eprintln!("Local control is unavailable: {error}");
+                    }
+                }
+            }
             if let Some(seconds) = auto_close_seconds {
                 let handle = app.handle().clone();
                 thread::spawn(move || {
@@ -610,7 +818,38 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::ServiceSnapshot;
+    use crate::models::{LaunchTask, ServiceSnapshot};
+    use std::time::Instant;
+
+    fn test_app_state(directory: &std::path::Path) -> AppState {
+        let settings_path = directory.join("settings.json");
+        let profiles_path = directory.join("launch-profiles.json");
+        let logs_dir = directory.join("logs");
+        let settings_io = Arc::new(Mutex::new(()));
+        AppState(Arc::new(AppStateInner {
+            demo: false,
+            settings_path: settings_path.clone(),
+            profiles_path,
+            logs_dir,
+            settings_io: Arc::clone(&settings_io),
+            window_geometry: window::WindowGeometryPersistence::new(settings_path, settings_io),
+            scan: Mutex::new(ScanState::default()),
+            launch: Mutex::new(LaunchManager::default()),
+            control: control_service::ControlState::default(),
+            system_metrics: Mutex::new(SystemMetricsState::default()),
+        }))
+    }
+
+    struct StopTestTasks(AppState);
+
+    impl Drop for StopTestTasks {
+        fn drop(&mut self) {
+            let state = &self.0;
+            if let Ok(mut manager) = state.0.launch.lock() {
+                manager.stop_all();
+            }
+        }
+    }
 
     #[test]
     fn settings_save_preserves_latest_window_geometry() {
@@ -681,6 +920,7 @@ mod tests {
                 service_index: HashMap::new(),
             }),
             launch: Mutex::new(LaunchManager::default()),
+            control: control_service::ControlState::default(),
             system_metrics: Mutex::new(SystemMetricsState::default()),
         }));
 
@@ -690,5 +930,168 @@ mod tests {
         assert!(snapshot.logs.is_empty());
         assert_eq!(snapshot.source_path, None);
         assert!(snapshot.message.is_some());
+    }
+
+    #[test]
+    fn expected_port_probe_does_not_conflict_with_its_own_ipv4_listener() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        assert!(!port_is_occupied(port));
+    }
+
+    #[test]
+    fn expected_port_probe_detects_occupied_ipv4_and_ipv6_ports() {
+        let ipv4 = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let ipv4_port = ipv4.local_addr().unwrap().port();
+        assert!(port_is_occupied(ipv4_port));
+        drop(ipv4);
+
+        let Ok(ipv6) = TcpListener::bind((Ipv6Addr::UNSPECIFIED, 0)) else {
+            return;
+        };
+        let ipv6_port = ipv6.local_addr().unwrap().port();
+        assert!(port_is_occupied(ipv6_port));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ui_and_control_actions_share_launch_manager_lifecycle_and_snapshots() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = test_app_state(temporary.path());
+        let _cleanup = StopTestTasks(state.clone());
+        let profile = LaunchProfile {
+            id: "integration-profile".into(),
+            name: "Integration test".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "dummy".into(),
+                cwd: ".".into(),
+                command: "sleep 30".into(),
+                expected_port: None,
+                container: None,
+                prepare: None,
+            }],
+        };
+        persist_profile(&state.0.profiles_path, profile).unwrap();
+        let request = TaskRequest {
+            profile_id: "integration-profile".into(),
+            task_name: "dummy".into(),
+        };
+
+        let first =
+            run_ui_task_action(&state, &request, control_service::TaskAction::Start).unwrap();
+        assert_eq!(first.state, "running");
+        let profiles = profiles_for_state(&state).unwrap();
+        let snapshots = control_task_snapshots(&state, &profiles).unwrap().unwrap();
+        let shared = snapshots
+            .iter()
+            .find(|snapshot| snapshot.profile_id == request.profile_id)
+            .unwrap();
+        assert_eq!(shared.main_pid, first.main_pid);
+        assert_eq!(shared.state, first.state);
+
+        let accepted = control_service::dispatch(
+            &state,
+            control::ControlRequest::Start {
+                profile_id: request.profile_id.clone(),
+                task_name: request.task_name.clone(),
+            },
+        );
+        assert!(accepted.ok && accepted.accepted && !accepted.completed);
+        let operation_id = accepted.operation_id.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let repeated = loop {
+            let response = control_service::dispatch(
+                &state,
+                control::ControlRequest::Operation {
+                    operation_id: operation_id.clone(),
+                },
+            );
+            if response.completed {
+                break response;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "idempotent start did not complete"
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert!(repeated.ok);
+        let repeated_task = repeated.result.unwrap()["task"].clone();
+        assert_eq!(repeated_task["main_pid"], first.main_pid.unwrap());
+
+        let restarted =
+            run_ui_task_action(&state, &request, control_service::TaskAction::Restart).unwrap();
+        assert_eq!(restarted.state, "running");
+        let stopped =
+            run_ui_task_action(&state, &request, control_service::TaskAction::Stop).unwrap();
+        assert_eq!(stopped.state, "stopped");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn asynchronous_control_failure_and_overlap_are_reported_without_starting_processes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = test_app_state(temporary.path());
+        let missing = LaunchProfile {
+            id: "failure-profile".into(),
+            name: "Failure test".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "missing-directory".into(),
+                cwd: "not-here".into(),
+                command: "sleep 30".into(),
+                expected_port: None,
+                container: None,
+                prepare: None,
+            }],
+        };
+        persist_profile(&state.0.profiles_path, missing).unwrap();
+        let request = TaskRequest {
+            profile_id: "failure-profile".into(),
+            task_name: "missing-directory".into(),
+        };
+        let held = state
+            .0
+            .control
+            .begin_task_action(&request, control_service::TaskAction::Start)
+            .unwrap();
+        let busy = control_service::dispatch(
+            &state,
+            control::ControlRequest::Start {
+                profile_id: request.profile_id.clone(),
+                task_name: request.task_name.clone(),
+            },
+        );
+        assert_eq!(busy.error.unwrap().code, "busy");
+        drop(held);
+
+        let accepted = control_service::dispatch(
+            &state,
+            control::ControlRequest::Start {
+                profile_id: request.profile_id,
+                task_name: request.task_name,
+            },
+        );
+        assert!(accepted.accepted && !accepted.completed);
+        let operation_id = accepted.operation_id.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let failed = loop {
+            let response = control_service::dispatch(
+                &state,
+                control::ControlRequest::Operation {
+                    operation_id: operation_id.clone(),
+                },
+            );
+            if response.completed {
+                break response;
+            }
+            assert!(Instant::now() < deadline, "failed start did not complete");
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert!(!failed.ok);
+        assert_eq!(failed.error.unwrap().code, "missing_directory");
     }
 }

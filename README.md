@@ -41,8 +41,9 @@ The app is built with [Tauri 2](https://v2.tauri.app/), a TypeScript/Vite fronte
 - Save a project root and multiple named shell tasks—for example, backend, frontend, and watch commands.
 - Start and stop tasks individually or together, with an optional expected port for each task.
 - Track the process session Cutting Board started, inspect live output, and keep task logs locally.
-- Detects a task's expected port when another process is already using it; externally owned processes are never stopped by the profile manager.
+- Checks a task's expected port before starting. A process is stopped or restarted only when it matches a registered task and passes the existing process-identity checks.
 - Shows the output of a process started elsewhere when it writes to a file: redirected stdout/stderr or an open log file, such as a Spring Boot app with `logging.file.name`.
+- Expose registered launch tasks to local automation through the `cutting-board control` CLI, using the same task manager as the UI.
 
 <p align="center">
   <img src="assets/cutting-board-launch-profiles.png" alt="Cutting Board Launch Profiles view with task controls and live output" width="960" />
@@ -91,6 +92,49 @@ cutting-board --auto-close-seconds 5
 cutting-board --help
 cutting-board --version
 ```
+
+## External control CLI
+
+The `cutting-board control` commands let a local script or LLM inspect and operate saved launch tasks through the already-running Cutting Board app. The app must be running as the same user and include the control endpoint. Restart Cutting Board after updating to a build that adds this feature to activate the endpoint. The endpoint uses a private per-user Unix-domain socket and does not listen on TCP.
+
+Control addresses only registered profile tasks by profile ID and task name. A profile ID remains stable when its display name changes; a task is addressed by its current name, so use the values returned by `list` again after renaming a task. These commands do not accept arbitrary commands or PIDs, and summaries do not include saved commands, working directories, or environment variables.
+
+From the repository root, after building the debug app, list profiles and their task state, then restart one task and inspect its latest status and bounded log tail:
+
+```bash
+./src-tauri/target/debug/cutting-board control list
+./src-tauri/target/debug/cutting-board control restart --profile "<PROFILE_ID>" --task "<TASK_NAME>" --timeout-seconds 30
+./src-tauri/target/debug/cutting-board control status --profile "<PROFILE_ID>" --task "<TASK_NAME>"
+./src-tauri/target/debug/cutting-board control logs --profile "<PROFILE_ID>" --task "<TASK_NAME>" --lines 100
+```
+
+All commands print one JSON response to stdout. Every response has `ok`, `accepted`, and `completed`; a successful response may include `result`, and an error response includes `error.code` and `error.message`. A request that is still in progress uses an envelope like this:
+
+```json
+{
+  "ok": true,
+  "accepted": true,
+  "completed": false,
+  "operation_id": "<OPERATION_ID>"
+}
+```
+
+`list.result` has the shape `{ "profiles": [{ "id", "name", "tasks": [...] }], "scanned_at", "snapshot_stale", "refresh_error" }`. Task summaries include `profile_id`, `task_name`, `name`, optional `container` and `expected_port`, `state`, process IDs when available, `started_at`, `exit_code`, `message`, `in_flight`, and `last_operation` with its ID, action, state, timestamps, and safe error details. `status.result` contains `profile: {id, name}`, one `task` summary, and the same scan freshness fields. `snapshot_stale` is true if a listener scan failed or was partial, or a task snapshot was skipped because an operation is using the manager; `refresh_error` gives a safe reason when available. Cached state is returned when available, otherwise `state` is `unknown`. This does not mean the task is stopped. Managed command task states include `starting`, `running`, `stopping`, `restarting`, `stopped`, or `failed`; container tasks report Docker state. Operation states are `running`, `succeeded`, or `failed`. Timestamps, including `scanned_at`, are Unix epoch seconds, or `null` if no successful scan has completed. `operation.result` contains an `operation` summary and its `task` summary when available. `logs.result` contains `profile_id`, `task_name`, returned `logs`, actual line and byte counts, and `truncated`. Task and operation summaries never include saved commands, working directories, environment values, log paths, or raw log text; log text is returned only by an explicit bounded `logs` request.
+
+`accepted` means the app accepted the request; `completed` reports whether the operation has finished. If a start, stop, or restart exceeds the requested wait, the operation continues in the app. `operation` returns one snapshot; repeat it while the state is still in progress, then query the task for its current state:
+
+```bash
+./src-tauri/target/debug/cutting-board control operation "<OPERATION_ID>"
+./src-tauri/target/debug/cutting-board control status --profile "<PROFILE_ID>" --task "<TASK_NAME>"
+```
+
+The action wait defaults to 30 seconds and can be set up to 300 seconds with `--timeout-seconds`. This is only the caller's wait limit; it does not cancel the saved build command or Docker action. An in-progress operation can keep that task's operation slot busy until the underlying command finishes. The wait limit does not bound the total execution time of saved subprocesses. After an accepted action, a timed-out wait returns exit code `5` with the operation ID; polling does not cancel the operation. A connection/request deadline that expires before any request bytes may be sent also returns `timeout` with exit code `5`, and the action was not submitted. If request bytes may have been sent but no acknowledgement arrives, the CLI returns `acknowledgement_unknown` with exit code `7`: the app may have accepted the action. Do not automatically retry in that case. Check `status` and `last_operation` before deciding whether to send another action. A second start, stop, or restart for the same task is rejected as `busy` while its previous lifecycle operation is still in flight; poll that operation instead. Exit code `0` means the command completed successfully, `2` an invalid request, `3` a busy operation, `4` an unknown profile, task, or operation, `5` a caller wait timeout, `6` an action failure, and `7` that the app or its socket is unavailable or the acknowledgement is unknown. The corresponding stable error codes include `invalid_request`, `busy`, `unknown_profile`, `unknown_task`, `unknown_operation`, `unavailable`, and `acknowledgement_unknown`; action failures may include a more specific manager error code.
+
+A completed start means Cutting Board's manager spawned the task and still sees its process running. It does not mean the task's port is listening or that an HTTP health check passed. If a process already runs outside Cutting Board and matches the registered task's port and working directory, `start` reports that current task instead of starting a duplicate; use `restart` to replace it through the registered task. External processes are acted on only after the existing task-matching and process-identity checks succeed; control cannot target arbitrary discovered services or PIDs. A completed result and status include the current state and most recent managed exit code when available. The app retains up to 64 completed operation records in memory; records do not survive an app restart and older records can be pruned as new operations finish.
+
+For a managed command task, stop sends `SIGTERM` to that task's own process group, waits up to 2 seconds, then sends `SIGKILL` if needed and verifies the group exits for up to 1 second. For a strictly matched external task, Cutting Board revalidates the process identity and signals only that same-user PID and verified same-user descendants; it does not guess at or stop shared parent processes. Before replacing an external task, it checks its configured expected TCP port for up to 3 seconds and fails closed if it cannot verify release. Restart preparation runs before stopping the current process, so a failed build leaves the old process running.
+
+`logs` reads a bounded tail (200 lines by default, at most 1,000 lines and 65,536 bytes). For a container task, it starts with Docker's latest 200 timestamped lines and applies the requested bounds. Use `--lines` and the optional `--max-bytes` to request a smaller tail. Application output may contain credentials or other secrets, so request only the lines needed and handle the returned text accordingly.
 
 ## Development commands
 
