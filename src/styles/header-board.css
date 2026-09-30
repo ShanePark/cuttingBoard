@@ -338,6 +338,8 @@
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
+.port-chip-link { appearance: none; gap: 4px; border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent); cursor: pointer; pointer-events: auto; }
+.port-chip-link:hover { filter: brightness(1.15); }
 .port-overflow { background: var(--surface-alt); color: var(--text-dim); }
 .no-port-label { color: var(--text-dim); font-size: 11px; }
 .service-link {

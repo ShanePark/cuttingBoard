@@ -33,7 +33,7 @@ The app is built with [Tauri 2](https://v2.tauri.app/), a TypeScript/Vite fronte
 ### Docker
 
 - Reads `docker ps -a` when the Docker CLI is available.
-- Shows container state, image, status, published ports, and Compose project/service metadata.
+- Shows container state, image, status, published ports, and Compose project/service metadata. Recognized published TCP web ports open in a browser: for example, Mailpit's `8025` opens `http://localhost:8025/`, an nginx mapping of host `18080` to container `80` or `18080` opens `http://localhost:18080/`, and Solr's `8983` opens `http://localhost:8983/`. Recognized target ports `443`, `8443`, and `9443` use HTTPS. SMTP port `1025`, other non-web mappings, UDP mappings, and stopped containers remain non-clickable. Links require backend published-port mapping data, so an already-running older app needs a restart after updating to a build with this support.
 - Falls back to read-only container listener information when Docker cannot be queried.
 
 ### Launch Profiles

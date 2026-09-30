@@ -1,4 +1,4 @@
-use crate::models::{ContainerInfo, ContainerListing};
+use crate::models::{ContainerInfo, ContainerListing, PublishedPortMapping};
 
 pub(crate) fn container_listing() -> ContainerListing {
     ContainerListing {
@@ -11,6 +11,12 @@ pub(crate) fn container_listing() -> ContainerListing {
                 state: "running".into(),
                 status: "Up 2 hours".into(),
                 ports: vec![5432],
+                port_mappings: vec![PublishedPortMapping {
+                    host_ip: Some("0.0.0.0".into()),
+                    host_port: 5432,
+                    container_port: 5432,
+                    protocol: "tcp".into(),
+                }],
                 compose_project: Some("local-stack".into()),
                 compose_service: Some("database".into()),
                 compose_working_dir: Some("/Users/shane/Developer/local-stack".into()),
@@ -22,6 +28,20 @@ pub(crate) fn container_listing() -> ContainerListing {
                 state: "running".into(),
                 status: "Up 2 hours".into(),
                 ports: vec![1025, 8025],
+                port_mappings: vec![
+                    PublishedPortMapping {
+                        host_ip: Some("0.0.0.0".into()),
+                        host_port: 1025,
+                        container_port: 1025,
+                        protocol: "tcp".into(),
+                    },
+                    PublishedPortMapping {
+                        host_ip: Some("0.0.0.0".into()),
+                        host_port: 8025,
+                        container_port: 8025,
+                        protocol: "tcp".into(),
+                    },
+                ],
                 compose_project: Some("local-stack".into()),
                 compose_service: Some("mail".into()),
                 compose_working_dir: Some("/Users/shane/Developer/local-stack".into()),
@@ -33,6 +53,7 @@ pub(crate) fn container_listing() -> ContainerListing {
                 state: "exited".into(),
                 status: "Exited (0) 3 days ago".into(),
                 ports: vec![],
+                port_mappings: vec![],
                 compose_project: None,
                 compose_service: None,
                 compose_working_dir: None,

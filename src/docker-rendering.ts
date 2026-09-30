@@ -2,6 +2,7 @@ import { techIcon, uiIcon } from "./icons";
 import { escapeHtml as h } from "./html";
 import { imageTech, uniquePorts } from "./presentation";
 import { renderGroupCount, renderTileFoot, renderTileHeading, renderTileOrdinal } from "./tile-rendering";
+import { containerBrowserUrl, dockerTilePorts } from "./docker-port-links";
 import type { ContainerInfo, ContainerListing, ServiceSnapshot } from "./types";
 
 export type DockerLogState = {
@@ -58,6 +59,7 @@ export function dockerRenderSignature(context: DockerRenderingContext): string {
           image: container.image,
           state: container.state,
           ports: container.ports,
+          port_mappings: container.port_mappings,
           compose_project: container.compose_project,
           compose_service: container.compose_service,
           compose_working_dir: container.compose_working_dir
@@ -141,7 +143,11 @@ export function renderContainerTile(container: ContainerInfo, ordinal: number | 
       <div class="tile-metrics">
         <span class="metric metric-state ${busy ? "is-busy" : running ? "is-running" : "is-stopped"}" title="Container state">${uiIcon("docker", 13)}<span class="sr-only">State </span><span data-container-status-text>${h(ellipsis(stateText, 30))}</span></span>
       </div>
-      ${renderTileFoot(container.ports, "No published ports", "")}
+      ${renderTileFoot(dockerTilePorts(container), "No published ports", "", (port, label) => {
+        const url = containerBrowserUrl(container, port);
+        if (!url) return null;
+        return `<button type="button" class="port-chip port-chip-link" data-tile-action data-action="open-container-port" data-container-id="${h(container.id)}" data-port="${port}" aria-label="Open ${h(url)} in browser" title="Open ${h(url)}">${h(label)}${uiIcon("external", 11)}</button>`;
+      })}
     </article>`;
 }
 

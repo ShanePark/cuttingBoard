@@ -63,15 +63,23 @@ export function renderTileHeading(title: string): string {
       </div>`;
 }
 
-export function renderTileFoot(ports: number[], emptyLabel: string, trailing: string): string {
+export function renderTileFoot(ports: number[], emptyLabel: string, trailing: string, renderPortLink?: (port: number, label: string) => string | null): string {
   const labels = portBadgeLabels(ports);
   return `<div class="tile-foot">
         <div class="port-row">
-          ${labels.map((label) => `<span class="port-chip${label.startsWith("+") ? " port-overflow" : ""}" title="${escapeHtml(portChipDescription(label, ports))}" aria-label="${escapeHtml(portChipDescription(label, ports))}">${escapeHtml(label)}</span>`).join("")}
+          ${labels.map((label) => renderPortChip(label, ports, renderPortLink)).join("")}
           ${ports.length === 0 ? `<span class="no-port-label port-empty-icon" title="${escapeHtml(emptyLabel)}" aria-label="${escapeHtml(emptyLabel)}">${uiIcon("port", 14)}</span>` : ""}
         </div>
         ${trailing}
       </div>`;
+}
+
+function renderPortChip(label: string, ports: number[], renderPortLink?: (port: number, label: string) => string | null): string {
+  const numericPort = /^\d+$/.test(label) ? Number(label) : null;
+  const link = numericPort === null ? null : renderPortLink?.(numericPort, label);
+  if (link) return link;
+  const description = portChipDescription(label, ports);
+  return `<span class="port-chip${label.startsWith("+") ? " port-overflow" : ""}" title="${escapeHtml(description)}" aria-label="${escapeHtml(description)}">${escapeHtml(label)}</span>`;
 }
 
 function portChipDescription(label: string, ports: number[]): string {

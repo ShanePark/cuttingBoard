@@ -2,6 +2,7 @@ import "./styles.css";
 import { listen } from "@tauri-apps/api/event";
 import { open as choosePath } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { containerBrowserUrl } from "./docker-port-links";
 import { api } from "./api";
 import { renderAppShell } from "./app-shell";
 import { createBoardLayout } from "./board-layout";
@@ -1000,6 +1001,12 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "group-details") modalForms.showGroupDetails(serviceActions.groupForId(required(target.dataset.groupId)));
     else if (action === "container-group-details") modalForms.showContainerGroupDetails(required(target.dataset.groupName));
     else if (action === "select-container") selectContainer(required(target.dataset.containerId), false);
+    else if (action === "open-container-port") {
+      const container = findContainer(required(target.dataset.containerId));
+      const url = containerBrowserUrl(container, Number(required(target.dataset.port)));
+      if (!url) throw new Error("This container port does not expose a running HTTP or HTTPS service.");
+      await openUrl(url);
+    }
     else if (action === "start-container") await containerActions.operateContainer(required(target.dataset.containerId), true);
     else if (action === "stop-container") await containerActions.operateContainer(required(target.dataset.containerId), false);
     else if (action === "container-details") modalForms.showContainerDetails(findContainer(required(target.dataset.containerId)));

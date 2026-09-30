@@ -32,6 +32,7 @@ function container(name: string, workingDir: string | null): ContainerInfo {
     state: "running",
     status: "Up 5 hours (healthy)",
     ports: [45432],
+    port_mappings: [],
     compose_project: "oasis26",
     compose_service: name,
     compose_working_dir: workingDir

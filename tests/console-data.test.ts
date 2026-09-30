@@ -82,6 +82,7 @@ function container(id: string): ContainerInfo {
     state: "running",
     status: "Up",
     ports: [],
+    port_mappings: [],
     compose_project: null,
     compose_service: null,
     compose_working_dir: null

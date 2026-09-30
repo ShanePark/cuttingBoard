@@ -68,9 +68,17 @@ export interface ContainerInfo {
   state: string;
   status: string;
   ports: number[];
+  port_mappings: PublishedPortMapping[];
   compose_project: string | null;
   compose_service: string | null;
   compose_working_dir: string | null;
+}
+
+export interface PublishedPortMapping {
+  host_ip: string | null;
+  host_port: number;
+  container_port: number;
+  protocol: string;
 }
 
 export interface ContainerListing {
