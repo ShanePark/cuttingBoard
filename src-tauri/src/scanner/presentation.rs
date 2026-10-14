@@ -1,6 +1,7 @@
 use super::spring::{spring_context_path, SpringSettings};
 use crate::models::{Endpoint, ProjectInfo, ServiceSnapshot};
 use sha1::{Digest, Sha1};
+use std::collections::HashMap;
 use sysinfo::{Pid, Process, System};
 
 pub(crate) fn lowest_port(service: &ServiceSnapshot) -> u16 {
@@ -88,6 +89,62 @@ pub(crate) fn display_name(
         friendly_tech(tech).into()
     } else {
         value.into()
+    }
+}
+
+/// Services shown in the same board group under the same name, such as one Maven module run once
+/// per Spring profile, are told apart by their active profiles. Names stay untouched unless the
+/// duplicates' profiles differ, and a service without a profile keeps its name.
+pub(crate) fn disambiguate_display_names(services: &mut [ServiceSnapshot]) {
+    let mut by_group_and_name: HashMap<(Option<&str>, &str), Vec<usize>> = HashMap::new();
+    for (index, service) in services.iter().enumerate() {
+        if service.relevance == "dev" {
+            by_group_and_name
+                .entry((board_group_key(service), service.display_name.as_str()))
+                .or_default()
+                .push(index);
+        }
+    }
+    let duplicates = by_group_and_name
+        .into_values()
+        .filter(|indices| indices.len() > 1)
+        .collect::<Vec<_>>();
+    for indices in duplicates {
+        let profiles = indices
+            .iter()
+            .map(|index| services[*index].active_profiles.join(","))
+            .collect::<Vec<_>>();
+        if profiles.iter().all(|profile| *profile == profiles[0]) {
+            continue;
+        }
+        for (index, profile) in indices.into_iter().zip(profiles) {
+            if profile.is_empty() {
+                continue;
+            }
+            let service = &mut services[index];
+            service.display_name =
+                qualified_display_name(&service.display_name, &service.tech, &profile);
+        }
+    }
+}
+
+/// Mirrors `groupServices` in src/presentation-services.ts: the workspace root, else the project.
+fn board_group_key(service: &ServiceSnapshot) -> Option<&str> {
+    service.project.as_ref().map(|project| {
+        if project.workspace_root_path.is_empty() {
+            project.id.as_str()
+        } else {
+            project.workspace_root_path.as_str()
+        }
+    })
+}
+
+/// The card title drops a trailing technology label, so the qualifier goes before it.
+fn qualified_display_name(display_name: &str, tech: &str, qualifier: &str) -> String {
+    let tech_suffix = format!(" · {}", friendly_tech(tech));
+    match display_name.strip_suffix(&tech_suffix) {
+        Some(name) if !name.is_empty() => format!("{name} · {qualifier}{tech_suffix}"),
+        _ => format!("{display_name} · {qualifier}"),
     }
 }
 

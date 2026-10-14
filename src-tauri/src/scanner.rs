@@ -17,8 +17,8 @@ use classification::classify;
 pub(crate) use demo::demo_snapshot;
 use listeners::{current_uid, listeners_from_lsof, listeners_from_ss, ListenerRecord};
 use presentation::{
-    browser_url, display_name, lowest_port, origin_for, redact_command_full, service_id,
-    truncate_command,
+    browser_url, disambiguate_display_names, display_name, lowest_port, origin_for,
+    redact_command_full, service_id, truncate_command,
 };
 use project::{detect_project, inferred_existing_path};
 use spring::{refine_spring_listeners, resolve_spring_settings};
@@ -245,6 +245,13 @@ pub fn scan_workspace(
             );
         }
         services.push(service);
+    }
+
+    disambiguate_display_names(&mut services);
+    for service in &services {
+        if let Some(identity) = index.get_mut(&service.id) {
+            identity.display_name.clone_from(&service.display_name);
+        }
     }
 
     services.sort_by(|left, right| {

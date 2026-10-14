@@ -56,7 +56,7 @@ fn contains_any(text: &str, needles: &[&str]) -> bool {
 pub(crate) fn detect_project(cwd: Option<&Path>, args: &[String]) -> Option<ProjectInfo> {
     let mut candidates = Vec::new();
     if let Some(cwd) = cwd {
-        candidates.push(cwd.to_path_buf());
+        candidates.push((cwd.to_path_buf(), true));
     }
     for argument in args {
         let value = argument
@@ -67,25 +67,34 @@ pub(crate) fn detect_project(cwd: Option<&Path>, args: &[String]) -> Option<Proj
         if looks_like_absolute_path(value) {
             let path = PathBuf::from(value);
             if path.exists() {
-                candidates.push(if path.is_file() {
+                let directory = if path.is_file() {
                     path.parent()?.to_path_buf()
                 } else {
                     path
-                });
+                };
+                candidates.push((directory, false));
             }
         }
     }
     let mut seen = HashSet::new();
     let mut best: Option<(PathBuf, &'static str)> = None;
-    for candidate in candidates {
+    let mut cwd_root: Option<PathBuf> = None;
+    for (candidate, from_cwd) in candidates {
         let canonical = candidate.canonicalize().unwrap_or(candidate);
         if !seen.insert(canonical.clone()) {
             continue;
         }
         if let Some((root, source)) = project_root(&canonical) {
+            // Argument paths such as temp or data directories can sit in unrelated projects, so a
+            // root found from the working directory only yields to a more specific root inside it.
             let replace = best.as_ref().map_or(true, |(current, _)| {
                 root.components().count() > current.components().count()
-            });
+            }) && cwd_root
+                .as_ref()
+                .map_or(true, |cwd_root| root.starts_with(cwd_root));
+            if from_cwd {
+                cwd_root = Some(root.clone());
+            }
             if replace {
                 best = Some((root, source));
             }

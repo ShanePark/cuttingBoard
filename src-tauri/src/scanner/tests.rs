@@ -716,3 +716,163 @@ fn maven_module_id_survives_a_comment_containing_a_closing_bracket() {
 
     assert_eq!(project.name, "serv");
 }
+
+#[test]
+fn cwd_module_beats_argv_paths_in_an_unrelated_sibling_project() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("kfe");
+    let module = workspace.join("auth");
+    let compose = workspace.join("dev/dual-repository/external");
+    let app_data = compose.join("data/apps/auth");
+    fs::create_dir_all(&module).unwrap();
+    fs::create_dir_all(app_data.join("tmp")).unwrap();
+    fs::create_dir_all(app_data.join("home")).unwrap();
+    fs::create_dir(workspace.join(".git")).unwrap();
+    fs::write(compose.join("compose.yml"), "name: kfe-external-dev\n").unwrap();
+    fs::write(
+        module.join("pom.xml"),
+        "<project>\n  <parent>\n    <artifactId>root</artifactId>\n  </parent>\n  <artifactId>auth</artifactId>\n</project>\n",
+    )
+    .unwrap();
+    let args = vec![
+        "java".into(),
+        format!("-Djava.io.tmpdir={}", app_data.join("tmp").display()),
+        format!("-Duser.home={}", app_data.join("home").display()),
+        "-cp".into(),
+        "target/classes:target/auth/WEB-INF/lib/*".into(),
+        "kr.re.kisti.idr.auth.AuthApplication".into(),
+        "--spring.profiles.active=dev-external".into(),
+    ];
+
+    let project = detect_project(Some(&module), &args).unwrap();
+
+    assert_eq!(project.name, "auth");
+    assert_eq!(
+        Path::new(&project.root_path),
+        module.canonicalize().unwrap()
+    );
+    assert_eq!(project.workspace_name, "kfe");
+}
+
+#[test]
+fn argv_script_in_a_nested_package_beats_the_cwd_monorepo_root() {
+    let temporary = tempfile::tempdir().unwrap();
+    let repository = temporary.path().join("repo");
+    let package = repository.join("packages/api");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(repository.join("package.json"), "{\"name\": \"repo\"}\n").unwrap();
+    fs::write(package.join("package.json"), "{\"name\": \"api\"}\n").unwrap();
+    fs::write(package.join("server.js"), "").unwrap();
+
+    let project = detect_project(
+        Some(&repository),
+        &[
+            "node".into(),
+            package.join("server.js").to_string_lossy().into_owned(),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(project.name, "api");
+    assert_eq!(
+        Path::new(&project.root_path),
+        package.canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn deepest_argv_root_wins_when_the_cwd_has_no_project() {
+    let temporary = tempfile::tempdir().unwrap();
+    let plain = temporary.path().join("plain");
+    let shallow = temporary.path().join("shallow");
+    let deep = temporary.path().join("group/deep");
+    for directory in [&plain, &shallow, &deep] {
+        fs::create_dir_all(directory).unwrap();
+    }
+    fs::write(shallow.join("package.json"), "{\"name\": \"shallow\"}\n").unwrap();
+    fs::write(deep.join("package.json"), "{\"name\": \"deep\"}\n").unwrap();
+    let args = vec![
+        "node".into(),
+        shallow.to_string_lossy().into_owned(),
+        format!("--data={}", deep.display()),
+    ];
+
+    for cwd in [Some(plain.as_path()), None] {
+        let project = detect_project(cwd, &args).unwrap();
+
+        assert_eq!(project.name, "deep");
+        assert_eq!(Path::new(&project.root_path), deep.canonicalize().unwrap());
+    }
+}
+
+fn board_service(
+    id: &str,
+    display_name: &str,
+    workspace: Option<&str>,
+    profiles: &[&str],
+) -> ServiceSnapshot {
+    ServiceSnapshot {
+        id: id.into(),
+        display_name: display_name.into(),
+        tech: "spring".into(),
+        category: "api".into(),
+        relevance: "dev".into(),
+        endpoints: Vec::new(),
+        process: None,
+        project: workspace.map(|workspace| ProjectInfo {
+            workspace_root_path: workspace.into(),
+            workspace_name: workspace.rsplit('/').next().unwrap_or_default().into(),
+            ..project()
+        }),
+        status: "healthy".into(),
+        warnings: Vec::new(),
+        origin_kind: "unknown".into(),
+        origin_label: None,
+        can_terminate: false,
+        browser_url: None,
+        active_profiles: profiles.iter().map(|profile| (*profile).into()).collect(),
+    }
+}
+
+#[test]
+fn duplicate_names_in_a_board_group_are_told_apart_by_spring_profile() {
+    let mut services = vec![
+        board_service("a", "auth · Spring Boot", Some("/w/kfe"), &["dev-internal"]),
+        board_service("b", "auth · Spring Boot", Some("/w/kfe"), &["dev-external"]),
+        board_service("c", "adm · Spring Boot", Some("/w/kfe"), &["dev-internal"]),
+        board_service("d", "adm · Spring Boot", Some("/w/kfe"), &[]),
+        board_service("e", "serv · Spring Boot", Some("/w/kfe"), &["dev"]),
+        board_service("f", "serv · Spring Boot", Some("/w/kfe"), &["dev"]),
+        board_service("g", "user · Spring Boot", Some("/w/kfe"), &["dev-internal"]),
+        board_service(
+            "h",
+            "auth · Spring Boot",
+            Some("/w/other"),
+            &["dev-internal"],
+        ),
+        board_service("i", "java", None, &["local"]),
+        board_service("j", "java", None, &["prod", "cloud"]),
+    ];
+
+    disambiguate_display_names(&mut services);
+
+    let names = services
+        .iter()
+        .map(|service| service.display_name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        vec![
+            "auth · dev-internal · Spring Boot",
+            "auth · dev-external · Spring Boot",
+            "adm · dev-internal · Spring Boot",
+            "adm · Spring Boot",
+            "serv · Spring Boot",
+            "serv · Spring Boot",
+            "user · Spring Boot",
+            "auth · Spring Boot",
+            "java · local",
+            "java · prod,cloud",
+        ]
+    );
+}
