@@ -3,6 +3,15 @@ import { escapeHtml as h } from "./html";
 import { imageTech, uniquePorts } from "./presentation";
 import { renderGroupCount, renderTileFoot, renderTileHeading, renderTileOrdinal } from "./tile-rendering";
 import { containerBrowserUrl, dockerTilePorts } from "./docker-port-links";
+import {
+  composeDownControl,
+  composeDownOutputKind,
+  composeDownStateClass,
+  composeDownStatusText,
+  groupContainers,
+  type ComposeDownConsoleState,
+  type ContainerGroup
+} from "./docker-groups";
 import type { ContainerInfo, ContainerListing, ServiceSnapshot } from "./types";
 
 export type DockerLogState = {
@@ -32,6 +41,8 @@ export type DockerConsoleRenderingContext = {
   consoleOpen: boolean;
   container: ContainerInfo | null;
   logState: DockerLogState;
+  /** A `docker compose down` run shown in place of the selected container's logs. */
+  composeDown: ComposeDownConsoleState | null;
   containerOperationBusy: (id: string) => boolean;
   renderConsoleResizer: () => string;
   renderConsoleJumpButton: () => string;
@@ -42,6 +53,7 @@ export type DockerRenderingContext = {
   fallbackServices: readonly ServiceSnapshot[];
   tile: DockerTileRenderingContext;
   console: DockerConsoleRenderingContext;
+  composeDownBusy: (project: string) => boolean;
   renderFallbackServiceTile: (service: ServiceSnapshot, ordinal: number, ordinalTotal: number) => string;
   renderGroupTitle: (title: string, itemCount: number, action: string, attributes: string, displayTitle?: string, actionTitle?: string) => string;
   loadingState: (message: string) => string;
@@ -67,9 +79,13 @@ export function dockerRenderSignature(context: DockerRenderingContext): string {
       }
     : null;
   const containerActions = context.containerListing?.containers.map((container) => [container.id, context.tile.containerOperationBusy(container.id)]) ?? [];
+  const composeProjects = [...new Set(context.containerListing?.containers.flatMap((container) => container.compose_project ?? []) ?? [])];
+  const composeActions = composeProjects.map((project) => [project, context.composeDownBusy(project)]);
   return JSON.stringify([
     containerStructure,
     containerActions,
+    composeActions,
+    context.console.composeDown ? [context.console.composeDown.project, context.console.composeDown.status, context.console.composeDown.error] : null,
     context.tile.selectedContainerId,
     context.fallbackServices.map((service) => [service.id, uniquePorts(service)]),
     context.tile.activeBottomPanel
@@ -94,23 +110,15 @@ export function renderDockerView(context: DockerRenderingContext): string {
   const groups = groupContainers(context.containerListing.containers);
   return `<div class="docker-view split-view"><div class="split-view-list"><div class="board">${groups.map((group) => `
     <section class="service-section" data-tiles="${group.containers.length}" aria-labelledby="container-group-${h(encodeURIComponent(group.name))}">
-      <header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-group-${h(encodeURIComponent(group.name))}">${context.renderGroupTitle(group.name, group.containers.length, "container-group-details", `data-group-name="${h(group.name)}"`, group.name.toUpperCase())}${renderGroupCount(group.containers.length)}</h2></header>
+      <header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-group-${h(encodeURIComponent(group.name))}">${context.renderGroupTitle(group.name, group.containers.length, "container-group-details", `data-group-name="${h(group.name)}"`, group.name.toUpperCase())}${renderGroupCount(group.containers.length)}</h2>${renderComposeGroupActions(group, context)}</header>
       <div class="tile-grid">${group.containers.map((container, index) => renderContainerTile(container, index + 1, group.containers.length, true, context.tile)).join("")}</div>
     </section>`).join("")}</div></div>${consoleMarkup}</div>`;
 }
 
-export function groupContainers(containers: ContainerInfo[]): Array<{ name: string; containers: ContainerInfo[] }> {
-  const map = new Map<string, ContainerInfo[]>();
-  for (const container of containers) {
-    const name = container.compose_project ?? "Standalone containers";
-    const group = map.get(name) ?? [];
-    group.push(container);
-    map.set(name, group);
-  }
-  return [...map].map(([name, items]) => ({
-    name,
-    containers: items.sort((a, b) => Number(b.state === "running") - Number(a.state === "running") || a.name.localeCompare(b.name))
-  })).sort((a, b) => a.name === "Standalone containers" ? 1 : b.name === "Standalone containers" ? -1 : a.name.localeCompare(b.name));
+function renderComposeGroupActions(group: ContainerGroup, context: DockerRenderingContext): string {
+  const control = composeDownControl(group, group.project !== null && context.composeDownBusy(group.project));
+  if (!control) return "";
+  return `<div class="section-actions"><button class="section-action icon-only-button stop-group-action" type="button" data-action="compose-down-group" data-compose-project="${h(control.project)}" title="${h(control.title)}" aria-label="${h(control.ariaLabel)}" ${control.disabled ? "disabled" : ""}${control.busy ? " aria-busy=\"true\"" : ""}>${uiIcon(control.busy ? "refresh" : "stop", 15)}</button></div>`;
 }
 
 export function renderContainerTile(container: ContainerInfo, ordinal: number | undefined, ordinalTotal: number | undefined, showActions: boolean, context: DockerTileRenderingContext): string {
@@ -161,6 +169,7 @@ export function dockerConsoleOutputKind(container: ContainerInfo | null, logStat
 
 export function renderDockerConsole(context: DockerConsoleRenderingContext, consoleClass = "docker-console", consoleKind = "container"): string {
   if (!context.consoleOpen) return "";
+  if (context.composeDown) return renderComposeDownConsole(context.composeDown, context, consoleClass);
   const container = context.container;
   const stateClass = container ? containerStateClass(container) : "idle";
   const busy = container ? context.containerOperationBusy(container.id) : false;
@@ -177,6 +186,31 @@ export function renderDockerConsole(context: DockerConsoleRenderingContext, cons
     </header>
     <div class="console-output-shell"><div class="console-output docker-console-output" data-console-output-kind="${dockerConsoleOutputKind(container, context.logState)}" role="log" aria-live="polite" aria-label="${outputLabel}">${renderDockerLogOutput(container, context.logState)}</div>${context.renderConsoleJumpButton()}</div>
   </section>`;
+}
+
+function renderComposeDownConsole(state: ComposeDownConsoleState, context: DockerConsoleRenderingContext, consoleClass: string): string {
+  const stateClass = composeDownStateClass(state);
+  return `<section class="launch-console ${consoleClass} state-${stateClass}" aria-labelledby="docker-console-title" data-console-kind="compose" data-console-compose-project="${h(state.project)}">
+    ${context.renderConsoleResizer()}
+    <header class="console-header">
+      <div class="console-title"><span class="console-icon state-${stateClass}" aria-hidden="true">${uiIcon("docker", 16)}</span><div><h2 id="docker-console-title">docker compose down · ${h(state.project)}</h2></div></div>
+      <div class="console-meta" aria-label="Compose status"><span class="console-state state-${stateClass}" role="status"><span class="task-state-dot" aria-hidden="true"></span><span data-console-status-text>${h(composeDownStatusText(state))}</span></span></div>
+    </header>
+    <div class="console-output-shell"><div class="console-output docker-console-output" data-console-output-kind="${composeDownOutputKind(state)}" role="log" aria-live="polite" aria-label="docker compose down output for ${h(state.project)}">${renderComposeDownOutput(state)}</div>${context.renderConsoleJumpButton()}</div>
+  </section>`;
+}
+
+export function renderComposeDownOutput(state: ComposeDownConsoleState): string {
+  const kind = composeDownOutputKind(state);
+  const alert = state.error ? `<div class="console-alert">${uiIcon("warning", 14)}<span>${h(state.error)}</span></div>` : "";
+  if (kind === "log" || kind === "log-alert") return `${alert}<textarea class="console-log" aria-readonly="true" spellcheck="false" wrap="soft" aria-label="Log output">${h(state.log)}</textarea>`;
+  if (kind === "loading") {
+    return `<div class="console-message"><span class="console-message-icon">${uiIcon("refresh", 18)}</span><strong>Running docker compose down</strong><span>Waiting for docker compose output…</span></div>`;
+  }
+  if (kind === "error") {
+    return `${alert}<div class="console-message is-failed"><span class="console-message-icon">${uiIcon("warning", 18)}</span><strong>docker compose down failed</strong><span>Docker did not return any output for ${h(state.project)}.</span></div>`;
+  }
+  return `<div class="console-message"><span class="console-message-icon">${uiIcon("log", 18)}</span><strong>No output</strong><span>docker compose down finished without output for ${h(state.project)}.</span></div>`;
 }
 
 export function renderDockerLogOutput(container: ContainerInfo | null, logState: DockerLogState): string {

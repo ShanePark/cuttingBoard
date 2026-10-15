@@ -5,6 +5,7 @@ import type {
   DockerLogState
 } from "./docker-rendering";
 import type { ServicesConsoleTarget } from "./services-rendering";
+import type { ComposeDownConsoleState } from "./docker-groups";
 
 export type ContainerConsoleDataContext = {
   api: {
@@ -41,6 +42,7 @@ export function createContainerConsoleData(context: ContainerConsoleDataContext)
       logRequestId: 0
     }
   };
+  let composeDown: ComposeDownConsoleState | null = null;
 
   function state(tab: ContainerTab): ContainerViewState {
     return containerViewStates[tab];
@@ -125,9 +127,30 @@ export function createContainerConsoleData(context: ContainerConsoleDataContext)
     }
   }
 
+  function composeDownState(): ComposeDownConsoleState | null {
+    return composeDown;
+  }
+
+  /** Shows a new `docker compose down` run in the Docker console, replacing any earlier one. */
+  function beginComposeDown(project: string): void {
+    composeDown = { project, log: "", status: "running", error: null };
+  }
+
+  function updateComposeDownLog(project: string, log: string): void {
+    if (composeDown?.project !== project || composeDown.log === log) return;
+    composeDown = { ...composeDown, log };
+    if (context.getActiveTab() === "docker") context.updateDockerConsoleDom();
+  }
+
+  function finishComposeDown(project: string, succeeded: boolean, error: string | null): void {
+    if (composeDown?.project !== project) return;
+    composeDown = { ...composeDown, status: succeeded ? "succeeded" : "failed", error: succeeded ? null : error };
+  }
+
   function selectContainer(id: string): void {
     findContainer(id);
     const tab = activeContainerTab();
+    if (tab === "docker") composeDown = null;
     if (context.getActiveTab() === "services") context.captureServicesConsoleState();
     const viewState = state(tab);
     viewState.selectedContainerId = id;
@@ -148,6 +171,10 @@ export function createContainerConsoleData(context: ContainerConsoleDataContext)
     syncSelectedContainer,
     clearDockerSelection,
     refreshSelectedContainerLogs,
-    selectContainer
+    selectContainer,
+    composeDownState,
+    beginComposeDown,
+    updateComposeDownLog,
+    finishComposeDown
   };
 }

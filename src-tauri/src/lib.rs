@@ -14,10 +14,10 @@ mod window;
 use crate::{
     launch::{containers as launch_containers, LaunchManager},
     models::{
-        AppInfo, ContainerActionResult, ContainerListing, ContainerLogSnapshot, ContainerRequest,
-        LaunchProfile, ManagedTaskSnapshot, RestartServiceRequest, ServiceIdentity,
-        ServiceLogSnapshot, ServiceRequest, SystemMetrics, TaskRequest, TerminateRequest,
-        TerminationResult, UiSettings, WorkspaceSnapshot,
+        AppInfo, ComposeProjectRequest, ContainerActionResult, ContainerListing,
+        ContainerLogSnapshot, ContainerRequest, LaunchProfile, ManagedTaskSnapshot,
+        RestartServiceRequest, ServiceIdentity, ServiceLogSnapshot, ServiceRequest, SystemMetrics,
+        TaskRequest, TerminateRequest, TerminationResult, UiSettings, WorkspaceSnapshot,
     },
     storage::{
         delete_profile as remove_profile, demo_profiles, load_profiles as read_profiles,
@@ -50,6 +50,7 @@ struct AppStateInner {
     launch: Mutex<LaunchManager>,
     control: control_service::ControlState,
     system_metrics: Mutex<SystemMetricsState>,
+    compose_down_logs: docker::ComposeDownLogs,
 }
 
 impl AppState {
@@ -181,6 +182,31 @@ async fn stop_container(
     tauri::async_runtime::spawn_blocking(move || Ok(docker::stop_container(&container_id)))
         .await
         .map_err(|error| format!("Docker stop task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn compose_down(
+    state: State<'_, AppState>,
+    request: ComposeProjectRequest,
+) -> Result<ContainerActionResult, String> {
+    reject_demo(state.inner())?;
+    let project = request.project;
+    docker::begin_compose_down(&project, &state.0.compose_down_logs)?;
+    let state = Arc::clone(&state.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(docker::compose_down(&project, &state.compose_down_logs))
+    })
+    .await
+    .map_err(|error| format!("Docker compose down task failed: {error}"))?
+}
+
+#[tauri::command]
+fn compose_down_log(
+    state: State<'_, AppState>,
+    request: ComposeProjectRequest,
+) -> Result<String, String> {
+    reject_demo(state.inner())?;
+    docker::compose_down_log(&request.project, &state.0.compose_down_logs)
 }
 
 #[tauri::command]
@@ -734,6 +760,7 @@ pub fn run() {
                 launch: Mutex::new(LaunchManager::default()),
                 control: control_service::ControlState::default(),
                 system_metrics: Mutex::new(SystemMetricsState::default()),
+                compose_down_logs: docker::ComposeDownLogs::default(),
             }));
             app.manage(state.clone());
             #[cfg(unix)]
@@ -785,6 +812,8 @@ pub fn run() {
             service_logs,
             start_container,
             stop_container,
+            compose_down,
+            compose_down_log,
             load_settings,
             save_settings,
             load_profiles,
@@ -837,6 +866,7 @@ mod tests {
             launch: Mutex::new(LaunchManager::default()),
             control: control_service::ControlState::default(),
             system_metrics: Mutex::new(SystemMetricsState::default()),
+            compose_down_logs: docker::ComposeDownLogs::default(),
         }))
     }
 
@@ -922,6 +952,7 @@ mod tests {
             launch: Mutex::new(LaunchManager::default()),
             control: control_service::ControlState::default(),
             system_metrics: Mutex::new(SystemMetricsState::default()),
+            compose_down_logs: docker::ComposeDownLogs::default(),
         }));
 
         let snapshot = read_service_logs(&state, "service").unwrap();

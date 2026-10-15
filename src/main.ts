@@ -9,6 +9,7 @@ import { createBoardLayout } from "./board-layout";
 import { createContainerConsoleData } from "./container-console-data";
 import { createConsoleController, type ConsoleOutputPatch } from "./console-controller";
 import { createContainerActions } from "./container-actions";
+import { composeDownOperationKey, composeDownOutputKind } from "./docker-groups";
 import { createLaunchActions, launchProfileBlocksEditing, launchProfileOperationKey } from "./launch-actions";
 import { patchLaunchSelection } from "./launch-dom";
 import { launchProfileIsFullyStopped, orderLaunchProfiles } from "./launch-state";
@@ -40,6 +41,7 @@ import {
   containerStateText,
   dockerConsoleOutputKind,
   dockerRenderSignature,
+  renderComposeDownOutput,
   renderDockerLogOutput,
   renderDockerView
 } from "./docker-rendering";
@@ -203,12 +205,14 @@ const consoleController = createConsoleController({
     selectedTaskDomKey: () => selectedTaskDomKeyForProfiles(profiles, selectedTaskKey),
     selectedServiceId: () => selectedServiceId,
     servicesConsoleTarget: () => servicesConsoleTarget,
-    container: (tab) => containerConsoleData.state(tab)
+    container: (tab) => containerConsoleData.state(tab),
+    composeDownProject: () => containerConsoleData.composeDownState()?.project ?? null
   },
   render: {
     rerender: (force) => render(force),
     service: renderServiceConsolePatch,
     docker: renderDockerConsolePatch,
+    compose: renderComposeDownConsolePatch,
     launch: renderLaunchConsolePatch
   }
 });
@@ -349,6 +353,18 @@ const containerActions = createContainerActions({
   updateDockerContainerStatuses,
   updateDockerConsoleDom: () => consoleController.updateDockerConsoleDom(),
   updateServiceConsoleDom: () => consoleController.updateServiceConsoleDom(),
+  openModal,
+  closeModal,
+  composeDownConsole: {
+    begin: (project) => {
+      containerConsoleData.beginComposeDown(project);
+      consoleController.resetComposeSelection(project);
+      if (!consoleController.isPanelOpen("console")) consoleController.toggleBottomPanel("console");
+    },
+    updateLog: (project, log) => containerConsoleData.updateComposeDownLog(project, log),
+    finish: (project, succeeded, error) => containerConsoleData.finishComposeDown(project, succeeded, error)
+  },
+  scheduler: window,
   toast,
   messageOf
 });
@@ -505,7 +521,8 @@ async function pollActiveConsoleLogs(): Promise<void> {
       return;
     }
     if (activeTab === "docker") {
-      await refreshSelectedContainerLogs();
+      // A compose down run polls its own output while it replaces the container logs.
+      if (!containerConsoleData.composeDownState()) await refreshSelectedContainerLogs();
       return;
     }
     await refreshSelectedLaunchLogs();
@@ -716,6 +733,16 @@ function renderDockerConsolePatch(tab: ContainerTab, containerId: string | null)
   };
 }
 
+function renderComposeDownConsolePatch(project: string): ConsoleOutputPatch {
+  const state = containerConsoleData.composeDownState();
+  if (state?.project !== project) return { markup: "", kind: "empty", log: "" };
+  return {
+    markup: renderComposeDownOutput(state),
+    kind: composeDownOutputKind(state),
+    log: state.log
+  };
+}
+
 function renderLaunchConsolePatch(): ConsoleOutputPatch | null {
   const ref = launchTaskRefForKey(profiles, selectedTaskKey);
   if (!ref) return null;
@@ -756,6 +783,7 @@ function dockerConsoleRenderingContext(tab: ContainerTab): DockerConsoleRenderin
     consoleOpen: consoleController.isPanelOpen("console"),
     container,
     logState: viewState.logState,
+    composeDown: tab === "docker" ? containerConsoleData.composeDownState() : null,
     containerOperationBusy,
     renderConsoleResizer: () => consoleController.renderConsoleResizer(),
     renderConsoleJumpButton: () => consoleController.renderConsoleJumpButton()
@@ -770,6 +798,7 @@ function dockerRenderingContext(): DockerRenderingContext {
     fallbackServices,
     tile: dockerTileRenderingContext("docker"),
     console: dockerConsoleRenderingContext("docker"),
+    composeDownBusy: (project) => operations.has(composeDownOperationKey(project)),
     renderFallbackServiceTile: (service, ordinal, ordinalTotal) => renderServiceTile(service, ordinal, ordinalTotal, { info: false, stop: service.can_terminate, open: Boolean(service.browser_url) }, serviceTileContext),
     renderGroupTitle,
     loadingState,
@@ -1000,6 +1029,8 @@ async function handleClick(event: Event): Promise<void> {
     else if (action === "confirm-stop-service-group") await serviceActions.confirmStopGroup(required(target.dataset.groupId));
     else if (action === "group-details") modalForms.showGroupDetails(serviceActions.groupForId(required(target.dataset.groupId)));
     else if (action === "container-group-details") modalForms.showContainerGroupDetails(required(target.dataset.groupName));
+    else if (action === "compose-down-group") containerActions.requestComposeDown(required(target.dataset.composeProject));
+    else if (action === "confirm-compose-down-group") await containerActions.confirmComposeDown(required(target.dataset.composeProject));
     else if (action === "select-container") selectContainer(required(target.dataset.containerId), false);
     else if (action === "open-container-port") {
       const container = findContainer(required(target.dataset.containerId));
@@ -1117,5 +1148,6 @@ async function chooseProfileRoot(): Promise<void> {
 function closeModal(): void {
   serviceActions.resetPending();
   launchActions.resetPending();
+  containerActions.resetPending();
   closeModalView();
 }

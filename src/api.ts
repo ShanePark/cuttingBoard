@@ -27,6 +27,9 @@ export const api = {
     invoke<ContainerActionResult>("start_container", { request: { container_id: containerId } }),
   stopContainer: (containerId: string) =>
     invoke<ContainerActionResult>("stop_container", { request: { container_id: containerId } }),
+  composeDown: (project: string) =>
+    invoke<ContainerActionResult>("compose_down", { request: { project } }),
+  composeDownLog: (project: string) => invoke<string>("compose_down_log", { request: { project } }),
   loadSettings: () => invoke<UiSettings>("load_settings"),
   saveSettings: (settings: UiSettings) => invoke<UiSettings>("save_settings", { settings }),
   terminate: (serviceId: string) => invoke<TerminationResult>("terminate_service", { request: { service_id: serviceId } }),

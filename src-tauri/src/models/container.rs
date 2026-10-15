@@ -37,6 +37,11 @@ pub struct ContainerRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComposeProjectRequest {
+    pub project: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContainerActionResult {
     pub success: bool,
     pub message: String,

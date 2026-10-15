@@ -3,7 +3,7 @@ use std::{
     ffi::OsStr,
     io,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Child, Command, Output, Stdio},
 };
 
 const NOT_FOUND_MESSAGE: &str = "Docker CLI was not found in PATH or standard macOS locations.";
@@ -18,6 +18,25 @@ where
     S: AsRef<OsStr>,
 {
     Command::new(executable).args(args).output()
+}
+
+/// Starts Docker Compose with piped output so it selects a project's containers by label only.
+/// Compose would otherwise load `COMPOSE_FILE` or a compose file found in the working directory or
+/// its parents and act on that file's services instead.
+pub(crate) fn spawn_compose_by_label<I, S>(executable: &Path, args: I) -> io::Result<Child>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    Command::new(executable)
+        .args(args)
+        .current_dir("/")
+        .env_remove("COMPOSE_FILE")
+        .env_remove("COMPOSE_PROJECT_NAME")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
 }
 
 pub(crate) fn resolve_executable() -> Option<PathBuf> {

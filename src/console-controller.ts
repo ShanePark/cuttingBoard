@@ -52,11 +52,13 @@ export type ConsoleControllerContext = {
     selectedServiceId: () => string | null;
     servicesConsoleTarget: () => ServicesConsoleTarget | null;
     container: (tab: ContainerTab) => ConsoleContainerState;
+    composeDownProject: () => string | null;
   };
   render: {
     rerender: (force?: boolean) => void;
     service: (serviceId: string | null) => ConsoleOutputPatch;
     docker: (tab: ContainerTab, containerId: string | null) => ConsoleOutputPatch;
+    compose: (project: string) => ConsoleOutputPatch;
     launch: () => ConsoleOutputPatch | null;
   };
 };
@@ -108,6 +110,7 @@ export class ConsoleController {
   private logSearch: ConsoleLogSearch | null = null;
   private readonly taskScroll: ScrollState = { key: null, top: 0, restoring: false, selection: null };
   private readonly serviceScroll: ScrollState = { key: null, top: 0, restoring: false, selection: null };
+  private readonly composeScroll: ScrollState = { key: null, top: 0, restoring: false, selection: null };
   private readonly containerScroll: Record<ContainerTab, ContainerScrollState> = {
     services: { containerId: null, top: 0, restoring: false, selection: null },
     docker: { containerId: null, top: 0, restoring: false, selection: null }
@@ -397,6 +400,14 @@ export class ConsoleController {
     const output = this.context.elements.workspace.querySelector<HTMLElement>(".docker-console .console-output, .docker-service-console .console-output");
     if (!output) return;
     const consoleElement = output.closest<HTMLElement>(".docker-console, .docker-service-console");
+    if (consoleElement?.dataset.consoleKind === "compose") {
+      const project = consoleElement.dataset.consoleComposeProject || null;
+      if (project === null || project !== this.context.state.composeDownProject()) return;
+      this.composeScroll.key = project;
+      this.composeScroll.top = consoleScrollElement(output).scrollTop;
+      this.composeScroll.selection = captureConsoleLogSelection(output);
+      return;
+    }
     const tab: ContainerTab = consoleElement?.classList.contains("docker-service-console") ? "services" : "docker";
     const state = this.context.state.container(tab);
     const containerId = consoleElement?.dataset.consoleContainerId || null;
@@ -422,6 +433,13 @@ export class ConsoleController {
     this.serviceScroll.key = key;
     this.serviceScroll.top = 0;
     this.serviceScroll.selection = null;
+  }
+
+  /** Starts a new `docker compose down` run scrolled from the top with no carried-over selection. */
+  resetComposeSelection(project: string): void {
+    this.composeScroll.key = project;
+    this.composeScroll.top = 0;
+    this.composeScroll.selection = null;
   }
 
   resetContainerSelection(tab: ContainerTab, containerId: string | null): void {
@@ -455,6 +473,13 @@ export class ConsoleController {
   updateDockerConsoleDom(): void {
     const consoleElement = this.context.elements.workspace.querySelector<HTMLElement>(".docker-console, .docker-service-console");
     if (!consoleElement) return;
+    if (consoleElement.dataset.consoleKind === "compose") {
+      const project = consoleElement.dataset.consoleComposeProject || null;
+      if (project === null || project !== this.context.state.composeDownProject()) return;
+      const output = consoleElement.querySelector<HTMLElement>(".console-output");
+      if (output) this.patchOutput(output, this.context.render.compose(project));
+      return;
+    }
     const tab: ContainerTab = consoleElement.classList.contains("docker-service-console") ? "services" : "docker";
     const state = this.context.state.container(tab);
     const containerId = consoleElement.dataset.consoleContainerId || null;
@@ -485,7 +510,11 @@ export class ConsoleController {
       this.serviceScroll.selection = captureConsoleLogSelection(output);
     } else {
       const dockerConsole = output.closest<HTMLElement>(".docker-console, .docker-service-console");
-      if (dockerConsole) {
+      if (dockerConsole?.dataset.consoleKind === "compose") {
+        this.composeScroll.key = dockerConsole.dataset.consoleComposeProject || null;
+        this.composeScroll.top = scrollElement.scrollTop;
+        this.composeScroll.selection = captureConsoleLogSelection(output);
+      } else if (dockerConsole) {
         const tab: ContainerTab = dockerConsole.classList.contains("docker-service-console") ? "services" : "docker";
         const state = this.context.state.container(tab);
         const scroll = this.containerScroll[tab];
@@ -519,6 +548,17 @@ export class ConsoleController {
       return;
     }
     const dockerConsole = target.closest<HTMLElement>(".docker-console, .docker-service-console");
+    if (dockerConsole?.dataset.consoleKind === "compose") {
+      const project = dockerConsole.dataset.consoleComposeProject || null;
+      if (project === null || project !== this.context.state.composeDownProject()) return;
+      const scrollElement = consoleScrollElement(target);
+      this.composeScroll.key = project;
+      this.composeScroll.top = scrollElement.scrollTop;
+      this.composeScroll.selection = captureConsoleLogSelection(target);
+      if (!this.composeScroll.restoring) this.consoleFollow = isConsoleAtBottom(scrollElement, CONSOLE_BOTTOM_EPSILON);
+      this.updateConsoleScrollAffordance(target);
+      return;
+    }
     if (dockerConsole) {
       const tab: ContainerTab = dockerConsole.classList.contains("docker-service-console") ? "services" : "docker";
       const state = this.context.state.container(tab);
@@ -581,6 +621,10 @@ export class ConsoleController {
     if (!output) return;
     this.restorePresentedLog(output);
     const consoleElement = output.closest<HTMLElement>(".docker-console, .docker-service-console");
+    if (consoleElement?.dataset.consoleKind === "compose") {
+      this.restoreComposeConsoleScroll(output, consoleElement.dataset.consoleComposeProject || null);
+      return;
+    }
     const tab: ContainerTab = consoleElement?.classList.contains("docker-service-console") ? "services" : "docker";
     const state = this.context.state.container(tab);
     const scroll = this.containerScroll[tab];
@@ -592,6 +636,22 @@ export class ConsoleController {
     if (!follow) this.consoleFollow = false;
     scrollElement.scrollTop = scrollTopForConsoleUpdate(scrollElement, savedScrollTop, follow);
     scroll.containerId = state.selectedContainerId;
+    scroll.top = scrollElement.scrollTop;
+    scroll.selection = captureConsoleLogSelection(output);
+    this.updateConsoleScrollAffordance(output);
+    window.setTimeout(() => { scroll.restoring = false; }, 0);
+  }
+
+  private restoreComposeConsoleScroll(output: HTMLElement, project: string | null): void {
+    const scroll = this.composeScroll;
+    restoreConsoleLogSelection(output, scroll.key === project ? scroll.selection : null);
+    scroll.restoring = true;
+    const savedScrollTop = scroll.key === project ? scroll.top : 0;
+    const scrollElement = consoleScrollElement(output);
+    const follow = this.consoleFollow && !hasConsoleLogSelection(output);
+    if (!follow) this.consoleFollow = false;
+    scrollElement.scrollTop = scrollTopForConsoleUpdate(scrollElement, savedScrollTop, follow);
+    scroll.key = project;
     scroll.top = scrollElement.scrollTop;
     scroll.selection = captureConsoleLogSelection(output);
     this.updateConsoleScrollAffordance(output);
@@ -1071,6 +1131,10 @@ export class ConsoleController {
   private consoleOutputKey(output: HTMLElement): string | null {
     const consoleElement = output.closest<HTMLElement>(".launch-console");
     if (!consoleElement) return null;
+    if (consoleElement.dataset.consoleKind === "compose") {
+      const project = consoleElement.dataset.consoleComposeProject;
+      return project ? `compose:${project}` : null;
+    }
     if (consoleElement.classList.contains("docker-console") || consoleElement.classList.contains("docker-service-console")) {
       const containerId = consoleElement.dataset.consoleContainerId;
       if (!containerId) return null;
