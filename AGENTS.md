@@ -38,6 +38,12 @@
 - Distinguish failures caused by the current change from pre-existing failures.
 - Report what changed, the checks run and their results, unverified areas, and remaining risks or assumptions.
 
+## Frontend Visual Checks
+
+- Check UI changes headlessly. Do not open app windows, drive the desktop (`xdotool`, `wmctrl`, `import`), or start extra app instances on the user's display while they are working; the end-of-session restart below is the only window an agent opens.
+- With the Vite dev server running (`npm run dev` on port 1420, or the one the dev launcher started), run `npm run screenshots -- <outdir>` with `<outdir>` in a task-specific temporary directory. It drives Playwright's headless Chromium against `scripts/screenshots/mock-tauri.mjs`, which mirrors the backend demo mode, and captures the Services, Docker and Launch tabs, a selected card with its console, the settings and details dialogs in dark and light themes, plus a 600px-wide layout. It exits non-zero on a page error, console error or the fatal start screen.
+- Headless Chromium approximates the WebKitGTK webview closely enough for layout, colour and theme checks; mention any WebKitGTK-specific risk that it cannot show. Extend the mock when a change needs data or states it does not cover, keeping it in step with the demo fixtures.
+
 ## macOS Development
 
 - At the end of each development session on macOS, run a fresh application build and restart the app from that build. Prefer `npm run tauri build -- --bundles app` for the local restart workflow; use `npm run tauri build` (or the equivalent `make build` target) when all distributables are required.
