@@ -1,116 +1,93 @@
 const COMFORTABLE_TILE_WIDTH = 300;
 const COMPACT_TILE_WIDTH = 248;
-// A board with only a handful of cards keeps its roomy layout. Past that the cards compact
-// gradually with every extra card, so a busy machine still shows most of its work at once.
-const COMFORTABLE_TILE_COUNT = 10;
-const COMPACT_TILE_COUNT = 26;
+// Cards come in two sizes only. A board turns compact once it holds this many cards and turns
+// roomy again only after dropping well below that, so a card or two coming and going around the
+// threshold never resizes the whole board back and forth.
+const COMPACT_ENTER_TILE_COUNT = 13;
+const COMPACT_LEAVE_TILE_COUNT = 9;
+const MOVE_DURATION_MS = 220;
+const APPEAR_DURATION_MS = 160;
 
 export type BoardLayoutContext = {
   workspace: HTMLElement;
   onResize: () => void;
 };
 
-/** How compact a board holding this many cards should be, from 0 (roomy) to 1 (fully compact). */
-export function boardDensity(tileCount: number): number {
-  const ratio = (tileCount - COMFORTABLE_TILE_COUNT) / (COMPACT_TILE_COUNT - COMFORTABLE_TILE_COUNT);
-  return Math.round(Math.min(1, Math.max(0, ratio)) * 100) / 100;
+/** Whether a board holding this many cards uses compact cards, given whether it already did. */
+export function boardIsCompact(tileCount: number, wasCompact: boolean | undefined): boolean {
+  if (wasCompact) return tileCount > COMPACT_LEAVE_TILE_COUNT;
+  return tileCount >= COMPACT_ENTER_TILE_COUNT;
 }
-
-export type BoardSpace = {
-  /** Width available to the cards, gaps included. */
-  width: number;
-  gap: number;
-  /** How compact the cards are before the layout asks for anything narrower. */
-  baseDensity: number;
-};
-
-export type BoardPlan = { columns: number; density: number };
 
 /**
- * Picks the column count that suits the groups on screen, and how compact the cards have to be
- * to reach it. A group spans one column per card, so the column count decides how each group
- * breaks up: four columns split a six-card group into 4 + 2, three columns into an even 3 + 3.
- * Candidates are scored on the rows they cost first, then on the holes they leave inside groups,
- * then on how far the cards have to shrink — so cards only give up size to save a row.
+ * How many columns fit the board at this card size. The count depends on the room alone, never
+ * on the cards, so cards coming and going leave every other card in its column.
  */
-export function boardPlan(groupSizes: readonly number[], space: BoardSpace): BoardPlan {
-  const widest = Math.max(1, Math.floor((space.width + space.gap) / (COMPACT_TILE_WIDTH + space.gap)));
-  let best: BoardPlan & BoardCost = { columns: 1, density: densityForColumns(1, space), ...estimateBoardCost(groupSizes, 1) };
-  for (let columns = 2; columns <= widest; columns++) {
-    const candidate = { columns, density: densityForColumns(columns, space), ...estimateBoardCost(groupSizes, columns) };
-    if (isTidier(candidate, best)) best = candidate;
-  }
-  return { columns: best.columns, density: best.density };
+export function boardColumns(width: number, gap: number, compact: boolean): number {
+  const tileWidth = compact ? COMPACT_TILE_WIDTH : COMFORTABLE_TILE_WIDTH;
+  return Math.max(1, Math.floor((width + gap) / (tileWidth + gap)));
 }
 
-function isTidier(candidate: BoardPlan & BoardCost, best: BoardPlan & BoardCost): boolean {
-  if (candidate.height !== best.height) return candidate.height < best.height;
-  if (candidate.gaps !== best.gaps) return candidate.gaps < best.gaps;
-  if (candidate.density !== best.density) return candidate.density < best.density;
-  return candidate.columns > best.columns;
+type Offset = { left: number; top: number };
+type BoardSnapshot = {
+  view: string | undefined;
+  width: number;
+  compact: boolean;
+  sections: Map<string, Offset>;
+  tiles: Map<string, Offset>;
+};
+
+function tileKey(tile: HTMLElement): string | null {
+  const { metricsId, containerId, profileId, taskName } = tile.dataset;
+  if (metricsId) return `service:${metricsId}`;
+  if (containerId) return `container:${containerId}`;
+  if (profileId && taskName !== undefined) return `task:${profileId}\u0000${taskName}`;
+  return null;
 }
 
-/** How compact the cards have to be for this many of them to fit side by side. */
-function densityForColumns(columns: number, space: BoardSpace): number {
-  const cardWidth = (space.width - (columns - 1) * space.gap) / columns;
-  const shortfall = (COMFORTABLE_TILE_WIDTH - cardWidth) / (COMFORTABLE_TILE_WIDTH - COMPACT_TILE_WIDTH);
-  // Rounded up, so the cards are never left a fraction of a pixel too wide for the column.
-  const needed = Math.ceil(Math.min(1, Math.max(0, shortfall)) * 100) / 100;
-  return Math.max(space.baseDensity, needed);
-}
-
-type BoardRow = { free: number; height: number };
-type BoardCost = { height: number; gaps: number };
-
-// Heights are counted in half-card rows so a group header still weighs something next to the
-// cards below it, and gaps are the cells a group leaves empty on its own last row.
-const GROUP_HEADER_HEIGHT = 1;
-const CARD_ROW_HEIGHT = 2;
-
-function estimateBoardCost(groupSizes: readonly number[], columns: number): BoardCost {
-  const rows: BoardRow[] = [];
-  let gaps = 0;
-  for (const size of groupSizes) {
-    const span = Math.min(Math.max(1, size), columns);
-    const cardRows = Math.ceil(size / span);
-    gaps += span * cardRows - size;
-    // Groups land where `grid-auto-flow: row dense` puts them: the first row with room to spare.
-    const row = rows.find((candidate) => candidate.free >= span) ?? addBoardRow(rows, columns);
-    row.free -= span;
-    row.height = Math.max(row.height, GROUP_HEADER_HEIGHT + cardRows * CARD_ROW_HEIGHT);
-  }
-  return { height: rows.reduce((total, row) => total + row.height, 0), gaps };
-}
-
-function addBoardRow(rows: BoardRow[], columns: number): BoardRow {
-  const row = { free: columns, height: 0 };
-  rows.push(row);
-  return row;
+function offsetWithin(element: HTMLElement, origin: DOMRect): Offset {
+  const rect = element.getBoundingClientRect();
+  return { left: rect.left - origin.left, top: rect.top - origin.top };
 }
 
 export function createBoardLayout(context: BoardLayoutContext) {
+  const compactByView = new Map<string, boolean>();
+  let previous: BoardSnapshot | null = null;
+
   const applyBoardLayout = (): void => {
     const board = context.workspace.querySelector<HTMLElement>(".board");
-    if (!board) return;
+    if (!board) {
+      previous = null;
+      return;
+    }
+    const view = context.workspace.dataset.view;
+    const viewKey = view ?? "";
     const groups = [...board.querySelectorAll<HTMLElement>(".service-section")];
-    // The board is measured at the density the card count alone asks for. Planning a denser
-    // layout only shrinks the padding and the gap further, so the room measured here is never
-    // more than the room the chosen layout gets.
     // Launch stacks keep both their preview cards and hidden task cards in the DOM; section metadata
     // is the single source of truth for how many tiles the board is actually laying out.
     const renderedTileCount = groups.reduce((total, group) => total + (Number(group.dataset.tiles) || 1), 0);
-    const baseDensity = boardDensity(renderedTileCount);
-    board.style.setProperty("--tile-density", String(baseDensity));
+    const compact = boardIsCompact(renderedTileCount, compactByView.get(viewKey));
+    compactByView.set(viewKey, compact);
+    // The gap and padding follow the density, so they are measured after it is set.
+    board.style.setProperty("--tile-density", compact ? "1" : "0");
     const styles = window.getComputedStyle(board);
     const gap = Number.parseFloat(styles.columnGap) || 0;
     const width = board.clientWidth - Number.parseFloat(styles.paddingLeft) - Number.parseFloat(styles.paddingRight);
-    const plan = boardPlan(groups.map((group) => Number(group.dataset.tiles) || 1), { width, gap, baseDensity });
-    board.style.setProperty("--tile-density", String(plan.density));
-    board.style.setProperty("--board-columns", String(plan.columns));
-    for (const section of board.querySelectorAll<HTMLElement>(".service-section")) {
+    const columns = boardColumns(width, gap, compact);
+    board.style.setProperty("--board-columns", String(columns));
+    for (const section of groups) {
       const tiles = Number(section.dataset.tiles) || 1;
-      section.style.setProperty("--section-span", String(Math.min(Math.max(1, tiles), plan.columns)));
+      section.style.setProperty("--section-span", String(Math.min(Math.max(1, tiles), columns)));
     }
+    const next = snapshotBoard(board, groups, { view, width: board.clientWidth, compact });
+    // Only a change of cards moves anything; a new tab, a resize or a size step simply redraws.
+    const animate = previous !== null
+      && previous.view === next.view
+      && previous.width === next.width
+      && previous.compact === next.compact
+      && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (animate) animateBoardChanges(groups, previous!, next);
+    previous = next;
   };
 
   const installBoardObserver = (): void => {
@@ -121,4 +98,75 @@ export function createBoardLayout(context: BoardLayoutContext) {
   };
 
   return { applyBoardLayout, installBoardObserver };
+}
+
+function boardTiles(section: HTMLElement): HTMLElement[] {
+  return [...section.querySelectorAll<HTMLElement>(".service-tile:not(.launch-profile-stack-card)")]
+    .filter((tile) => tile.offsetParent !== null);
+}
+
+function sectionKey(section: HTMLElement): string | null {
+  return section.getAttribute("aria-labelledby");
+}
+
+/**
+ * Records where every section sits on the board and every card sits in its section. Cards are
+ * measured against their section so a card moves on its own only when it changes place inside
+ * its group; the section's own movement carries it the rest of the way.
+ */
+function snapshotBoard(
+  board: HTMLElement,
+  groups: readonly HTMLElement[],
+  meta: Pick<BoardSnapshot, "view" | "width" | "compact">
+): BoardSnapshot {
+  const boardRect = board.getBoundingClientRect();
+  const sections = new Map<string, Offset>();
+  const tiles = new Map<string, Offset>();
+  for (const section of groups) {
+    const key = sectionKey(section);
+    if (!key) continue;
+    sections.set(key, offsetWithin(section, boardRect));
+    const sectionRect = section.getBoundingClientRect();
+    for (const tile of boardTiles(section)) {
+      const id = tileKey(tile);
+      if (id) tiles.set(`${key}\u0000${id}`, offsetWithin(tile, sectionRect));
+    }
+  }
+  return { ...meta, sections, tiles };
+}
+
+function animateBoardChanges(groups: readonly HTMLElement[], before: BoardSnapshot, after: BoardSnapshot): void {
+  for (const section of groups) {
+    const key = sectionKey(section);
+    if (!key) continue;
+    const from = before.sections.get(key);
+    const to = after.sections.get(key);
+    if (!from) {
+      appear(section);
+      continue;
+    }
+    if (to) slide(section, from, to);
+    for (const tile of boardTiles(section)) {
+      const id = tileKey(tile);
+      if (!id) continue;
+      const tileFrom = before.tiles.get(`${key}\u0000${id}`);
+      const tileTo = after.tiles.get(`${key}\u0000${id}`);
+      if (!tileFrom) appear(tile);
+      else if (tileTo) slide(tile, tileFrom, tileTo);
+    }
+  }
+}
+
+function slide(element: HTMLElement, from: Offset, to: Offset): void {
+  const dx = from.left - to.left;
+  const dy = from.top - to.top;
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+  element.animate(
+    [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }],
+    { duration: MOVE_DURATION_MS, easing: "cubic-bezier(.2, .8, .2, 1)" }
+  );
+}
+
+function appear(element: HTMLElement): void {
+  element.animate([{ opacity: 0 }, { opacity: 1 }], { duration: APPEAR_DURATION_MS, easing: "ease-out" });
 }
