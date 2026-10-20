@@ -45,6 +45,7 @@ export type DockerConsoleRenderingContext = {
   composeDown: ComposeDownConsoleState | null;
   containerOperationBusy: (id: string) => boolean;
   renderConsoleResizer: () => string;
+  renderConsoleToggle: () => string;
   renderConsoleJumpButton: () => string;
 };
 
@@ -100,7 +101,7 @@ export function renderDockerView(context: DockerRenderingContext): string {
   }
   if (!context.containerListing.available) {
     if (fallback.length) {
-      return `<div class="docker-view split-view"><div class="split-view-list"><div class="inline-notice"><strong>Docker could not be queried.</strong><span>${h(context.containerListing.message ?? "Docker is unavailable.")}</span></div><div class="board"><section class="service-section" data-tiles="${fallback.length}" aria-labelledby="container-listeners-title"><header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-listeners-title"><span class="group-title-text">CONTAINER LISTENERS</span>${renderGroupCount(fallback.length)}</h2></header><div class="tile-grid">${fallback.map((service, index) => context.renderFallbackServiceTile(service, index + 1, fallback.length)).join("")}</div></section></div></div>${consoleMarkup}</div>`;
+      return `<div class="docker-view split-view"><div class="split-view-list"><div class="inline-notice"><strong>Docker could not be queried.</strong><span>${h(context.containerListing.message ?? "Docker is unavailable.")}</span></div><div class="board"><section class="service-section" data-tiles="${fallback.length}" aria-labelledby="container-listeners-title"><header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-listeners-title"><span class="group-title-text">Container listeners</span>${renderGroupCount(fallback.length)}</h2></header><div class="tile-grid">${fallback.map((service, index) => context.renderFallbackServiceTile(service, index + 1, fallback.length)).join("")}</div></section></div></div>${consoleMarkup}</div>`;
     }
     return `<div class="docker-view split-view"><div class="split-view-list">${context.emptyState("Docker is unavailable", context.containerListing.message ?? "The Docker CLI could not be queried.")}</div>${consoleMarkup}</div>`;
   }
@@ -110,7 +111,7 @@ export function renderDockerView(context: DockerRenderingContext): string {
   const groups = groupContainers(context.containerListing.containers);
   return `<div class="docker-view split-view"><div class="split-view-list"><div class="board">${groups.map((group) => `
     <section class="service-section" data-tiles="${group.containers.length}" aria-labelledby="container-group-${h(encodeURIComponent(group.name))}">
-      <header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-group-${h(encodeURIComponent(group.name))}">${context.renderGroupTitle(group.name, group.containers.length, "container-group-details", `data-group-name="${h(group.name)}"`, group.name.toUpperCase())}${renderGroupCount(group.containers.length)}</h2>${renderComposeGroupActions(group, context)}</header>
+      <header class="section-header"><span class="section-accent accent-container"></span><h2 id="container-group-${h(encodeURIComponent(group.name))}">${context.renderGroupTitle(group.name, group.containers.length, "container-group-details", `data-group-name="${h(group.name)}"`)}${renderGroupCount(group.containers.length)}</h2>${renderComposeGroupActions(group, context)}</header>
       <div class="tile-grid">${group.containers.map((container, index) => renderContainerTile(container, index + 1, group.containers.length, true, context.tile)).join("")}</div>
     </section>`).join("")}</div></div>${consoleMarkup}</div>`;
 }
@@ -168,7 +169,6 @@ export function dockerConsoleOutputKind(container: ContainerInfo | null, logStat
 }
 
 export function renderDockerConsole(context: DockerConsoleRenderingContext, consoleClass = "docker-console", consoleKind = "container"): string {
-  if (!context.consoleOpen) return "";
   if (context.composeDown) return renderComposeDownConsole(context.composeDown, context, consoleClass);
   const container = context.container;
   const stateClass = container ? containerStateClass(container) : "idle";
@@ -178,25 +178,27 @@ export function renderDockerConsole(context: DockerConsoleRenderingContext, cons
     : "No container selected";
   const title = container?.name ?? "Container console";
   const outputLabel = container ? `Logs for ${h(container.name)}` : "Docker container logs";
-  return `<section class="launch-console ${consoleClass}${container ? ` state-${stateClass}` : " launch-console-empty"}" aria-labelledby="docker-console-title" data-console-kind="${h(consoleKind)}" data-console-container-id="${h(container?.id ?? "")}">
+  return `<section class="launch-console ${consoleClass}${container ? ` state-${stateClass}` : " launch-console-empty"}${context.consoleOpen ? "" : " is-minimized"}" aria-labelledby="docker-console-title" data-console-kind="${h(consoleKind)}" data-console-container-id="${h(container?.id ?? "")}">
     ${context.renderConsoleResizer()}
     <header class="console-header">
       <div class="console-title"><span class="console-icon state-${stateClass}" aria-hidden="true">${uiIcon("docker", 16)}</span><div><h2 id="docker-console-title">${h(title)}</h2></div></div>
       <div class="console-meta" aria-label="Container status"><span class="console-state state-${stateClass}"><span class="task-state-dot" aria-hidden="true"></span><span data-console-status-text>${h(statusText)}</span></span></div>
+      ${context.renderConsoleToggle()}
     </header>
-    <div class="console-output-shell"><div class="console-output docker-console-output" data-console-output-kind="${dockerConsoleOutputKind(container, context.logState)}" role="log" aria-live="polite" aria-label="${outputLabel}">${renderDockerLogOutput(container, context.logState)}</div>${context.renderConsoleJumpButton()}</div>
+    ${context.consoleOpen ? `<div class="console-output-shell"><div class="console-output docker-console-output" data-console-output-kind="${dockerConsoleOutputKind(container, context.logState)}" role="log" aria-live="polite" aria-label="${outputLabel}">${renderDockerLogOutput(container, context.logState)}</div>${context.renderConsoleJumpButton()}</div>` : ""}
   </section>`;
 }
 
 function renderComposeDownConsole(state: ComposeDownConsoleState, context: DockerConsoleRenderingContext, consoleClass: string): string {
   const stateClass = composeDownStateClass(state);
-  return `<section class="launch-console ${consoleClass} state-${stateClass}" aria-labelledby="docker-console-title" data-console-kind="compose" data-console-compose-project="${h(state.project)}">
+  return `<section class="launch-console ${consoleClass} state-${stateClass}${context.consoleOpen ? "" : " is-minimized"}" aria-labelledby="docker-console-title" data-console-kind="compose" data-console-compose-project="${h(state.project)}">
     ${context.renderConsoleResizer()}
     <header class="console-header">
       <div class="console-title"><span class="console-icon state-${stateClass}" aria-hidden="true">${uiIcon("docker", 16)}</span><div><h2 id="docker-console-title">docker compose down · ${h(state.project)}</h2></div></div>
       <div class="console-meta" aria-label="Compose status"><span class="console-state state-${stateClass}" role="status"><span class="task-state-dot" aria-hidden="true"></span><span data-console-status-text>${h(composeDownStatusText(state))}</span></span></div>
+      ${context.renderConsoleToggle()}
     </header>
-    <div class="console-output-shell"><div class="console-output docker-console-output" data-console-output-kind="${composeDownOutputKind(state)}" role="log" aria-live="polite" aria-label="docker compose down output for ${h(state.project)}">${renderComposeDownOutput(state)}</div>${context.renderConsoleJumpButton()}</div>
+    ${context.consoleOpen ? `<div class="console-output-shell"><div class="console-output docker-console-output" data-console-output-kind="${composeDownOutputKind(state)}" role="log" aria-live="polite" aria-label="docker compose down output for ${h(state.project)}">${renderComposeDownOutput(state)}</div>${context.renderConsoleJumpButton()}</div>` : ""}
   </section>`;
 }
 

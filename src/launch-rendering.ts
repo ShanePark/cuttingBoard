@@ -9,8 +9,8 @@ import {
   matchedServiceForTask
 } from "./presentation";
 import {
+  launchProfileIsCollapsible,
   launchProfileIsExpanded,
-  launchProfileIsFullyStopped,
   launchProfileIsIdle,
   launchTaskCanStart,
   launchTaskCanStop,
@@ -53,8 +53,12 @@ export type LaunchConsoleRenderingContext = {
   consoleOpen: boolean;
   snapshotFor: (profileId: string, taskName: string) => ManagedTaskSnapshot | undefined;
   renderConsoleResizer: () => string;
+  renderConsoleToggle: () => string;
   renderConsoleJumpButton: () => string;
 };
+
+// The front card plus the edges of two more is enough to read as a stack.
+const STACK_LAYERS = 3;
 
 export function bulkActionIcon(name: "play" | "stop"): string {
   return `<span class="bulk-action-icon bulk-action-${name}" aria-hidden="true">${uiIcon(name, 15, "bulk-action-icon-back")}${uiIcon(name, 15, "bulk-action-icon-front")}</span>`;
@@ -67,7 +71,7 @@ export function renderProfile(profile: LaunchProfile, context: LaunchRenderingCo
   const canStart = profile.tasks.some((task) => launchTaskCanStart(context.snapshotFor(profile.id, task.name)?.state ?? "stopped"));
   // Nothing in the profile is running, so the whole group recedes and says so in its header.
   const idle = launchProfileIsIdle(states);
-  const fullyStopped = launchProfileIsFullyStopped(states);
+  const collapsible = launchProfileIsCollapsible(states);
   const expanded = launchProfileIsExpanded(states, context.expandedProfiles.has(profile.id));
   const taskListId = `launch-tasks-${encodeURIComponent(profile.id)}`;
   const profileBusy = context.operations.has(context.launchProfileOperationKey(profile.id)) || context.launchProfileHasTaskOperation(profile);
@@ -78,25 +82,25 @@ export function renderProfile(profile: LaunchProfile, context: LaunchRenderingCo
     ? `<button class="secondary-button danger-button icon-only-button bulk-action-button" type="button" data-action="stop-profile" data-profile-id="${h(profile.id)}" aria-label="Stop all tasks" title="${profileBusy ? "Stopping tasks" : "Stop all tasks"}" ${profileBusy ? "disabled" : ""}>${bulkActionIcon("stop")}</button>`
     : "";
   const toggleAttributes = `type="button" data-action="toggle-profile" data-profile-id="${h(profile.id)}" aria-controls="${h(taskListId)}" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? "Collapse" : "Expand"} tasks in ${h(profile.name)}" title="${expanded ? "Collapse tasks" : "Expand tasks"}"`;
-  const headerToggle = fullyStopped && expanded
+  // The header disclosure is the one keyboard control in both states; the stack is a larger pointer target for it.
+  const headerToggle = collapsible
     ? `<button class="launch-profile-toggle launch-profile-header-toggle icon-only-button" ${toggleAttributes}>${uiIcon("chevronDown", 14)}</button>`
     : "";
-  const stackToggle = fullyStopped && !expanded
-    ? `<button class="launch-profile-stack-toggle launch-profile-toggle" ${toggleAttributes}><span class="launch-profile-stack-hint" aria-hidden="true">${uiIcon("chevronDown", 14)}</span></button>`
+  const stackToggle = !expanded
+    ? `<button class="launch-profile-stack-toggle launch-profile-toggle" ${toggleAttributes} tabindex="-1" aria-hidden="true"></button>`
     : "";
-  const headerSummary = expanded
-    ? `${renderGroupCount(profile.tasks.length)}${idle ? `<span class="section-state">Stopped</span>` : ""}`
-    : "";
+  const headerSummary = `${renderGroupCount(profile.tasks.length)}${expanded && idle ? `<span class="section-state">Stopped</span>` : ""}`;
+  const stackedTasks = profile.tasks.slice(0, STACK_LAYERS);
   const collapsedStack = !expanded
-    ? `<div class="launch-profile-stack" style="--stack-depth:${Math.min(Math.max(profile.tasks.length - 1, 0), 4)}" aria-label="${h(profile.tasks.length === 1 ? `Stopped task in ${profile.name}` : `${profile.tasks.length} stopped tasks in ${profile.name}`)}">
-        <div class="launch-profile-stack-cards" aria-hidden="true">${profile.tasks.map((task, index) => renderTask(profile, task, context, { interactive: false, stackIndex: Math.min(index, 4) })).join("")}</div>
+    ? `<div class="launch-profile-stack" style="--stack-depth:${stackedTasks.length - 1}" aria-label="${h(`${profile.tasks.length} stopped tasks in ${profile.name}`)}">
+        <div class="launch-profile-stack-cards" aria-hidden="true">${stackedTasks.map((task, index) => renderTask(profile, task, context, { interactive: false, stackIndex: index })).join("")}</div>
         ${stackToggle}
       </div>`
     : "";
   return `<section class="launch-profile service-section${idle ? " is-idle" : ""}${expanded ? "" : " is-collapsed"}" data-tiles="${expanded ? profile.tasks.length : 1}" aria-labelledby="launch-profile-${h(profile.id)}">
     <header class="section-header launch-profile-header">
       <span class="section-accent accent-runtime" aria-hidden="true"></span>
-      <div class="launch-profile-heading">${headerToggle}<h2 id="launch-profile-${h(profile.id)}">${context.renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name.toUpperCase(), `View ${profile.name} details`)}${headerSummary}</h2></div>
+      <div class="launch-profile-heading">${headerToggle}<h2 id="launch-profile-${h(profile.id)}">${context.renderGroupTitle(profile.name, profile.tasks.length, "profile-details", `data-profile-id="${h(profile.id)}"`, profile.name, `View ${profile.name} details`)}${headerSummary}</h2></div>
       <div class="section-actions launch-profile-actions">
         ${runAll}${stopAll}
         <button class="section-action icon-only-button" type="button" data-action="edit-profile" data-profile-id="${h(profile.id)}" aria-label="Edit ${h(profile.name)}" title="Edit profile" ${context.appIsDemo ? "disabled" : ""}>${uiIcon("settings", 15)}</button>
@@ -213,20 +217,21 @@ export function ensureSelectedTask(
 }
 
 export function renderLaunchConsole(ref: LaunchTaskRef | null, context: LaunchConsoleRenderingContext): string {
-  if (!context.consoleOpen) return "";
+  const minimized = context.consoleOpen ? "" : " is-minimized";
   if (!ref) {
-    return `<section class="launch-console launch-console-empty" aria-labelledby="launch-console-title">${context.renderConsoleResizer()}<header class="console-header"><div class="console-title"><span class="console-icon" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">Task console</h2></div></div><div class="console-meta" aria-label="Task status"><span class="console-state"><span class="task-state-dot" aria-hidden="true"></span>No task selected</span></div></header><div class="console-output-shell"><div class="console-output console-empty-output" data-console-output-kind="empty" role="status"><div class="console-message"><strong>No tasks available</strong><span>Add at least one task to this launch profile.</span></div></div>${context.renderConsoleJumpButton()}</div></section>`;
+    return `<section class="launch-console launch-console-empty${minimized}" aria-labelledby="launch-console-title">${context.renderConsoleResizer()}<header class="console-header"><div class="console-title"><span class="console-icon" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">Task console</h2></div></div><div class="console-meta" aria-label="Task status"><span class="console-state"><span class="task-state-dot" aria-hidden="true"></span>No task selected</span></div>${context.renderConsoleToggle()}</header>${context.consoleOpen ? `<div class="console-output-shell"><div class="console-output console-empty-output" data-console-output-kind="empty" role="status"><div class="console-message"><strong>No tasks available</strong><span>Add at least one task to this launch profile.</span></div></div>${context.renderConsoleJumpButton()}</div>` : ""}</section>`;
   }
   const { profile, task } = ref;
   const snapshot = context.snapshotFor(profile.id, task.name);
   const state: LaunchState = snapshot?.state ?? "stopped";
-  return `<section class="launch-console state-${state}" aria-labelledby="launch-console-title" data-console-task-key="${h(launchTaskDomKey(profile.id, task.name))}">
+  return `<section class="launch-console state-${state}${minimized}" aria-labelledby="launch-console-title" data-console-task-key="${h(launchTaskDomKey(profile.id, task.name))}">
     ${context.renderConsoleResizer()}
     <header class="console-header">
       <div class="console-title"><span class="console-icon state-${state}" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="launch-console-title">${h(task.name)}</h2></div></div>
       <div class="console-meta" aria-label="Task status"><span class="console-state state-${state}"><span class="task-state-dot" aria-hidden="true"></span>${h(stateLabel(state))}</span></div>
+      ${context.renderConsoleToggle()}
     </header>
-    <div class="console-output-shell"><div class="console-output" data-console-output-kind="${launchConsoleOutputKind(snapshot, state)}" role="log" aria-live="polite" aria-label="Output for ${h(task.name)}">${renderConsoleOutput(snapshot, state)}</div>${context.renderConsoleJumpButton()}</div>
+    ${context.consoleOpen ? `<div class="console-output-shell"><div class="console-output" data-console-output-kind="${launchConsoleOutputKind(snapshot, state)}" role="log" aria-live="polite" aria-label="Output for ${h(task.name)}">${renderConsoleOutput(snapshot, state)}</div>${context.renderConsoleJumpButton()}</div>` : ""}
   </section>`;
 }
 

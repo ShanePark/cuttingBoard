@@ -12,7 +12,7 @@ import { createContainerActions } from "./container-actions";
 import { composeDownOperationKey, composeDownOutputKind } from "./docker-groups";
 import { createLaunchActions, launchProfileBlocksEditing, launchProfileOperationKey } from "./launch-actions";
 import { patchLaunchSelection } from "./launch-dom";
-import { launchProfileIsFullyStopped, orderLaunchProfiles } from "./launch-state";
+import { launchProfileIsCollapsible, orderLaunchProfiles } from "./launch-state";
 import { createServiceActions } from "./service-actions";
 import { createKeyboardNavigation, focusContainerCard, focusServiceCard, focusTaskRow } from "./keyboard-navigation";
 import { createLaunchRefresh } from "./launch-refresh";
@@ -197,8 +197,7 @@ const updateController = createUpdateController(
 let containerConsoleData!: ReturnType<typeof createContainerConsoleData>;
 const consoleController = createConsoleController({
   elements: {
-    workspace: workspaceElement,
-    bottomTabs: byId("bottom-tabs")
+    workspace: workspaceElement
   },
   state: {
     selectedTaskKey: () => selectedTaskKey,
@@ -216,7 +215,6 @@ const consoleController = createConsoleController({
     launch: renderLaunchConsolePatch
   }
 });
-byId("bottom-tabs").innerHTML = consoleController.renderBottomPanelTabs();
 
 const serviceConsoleData = createServiceConsoleData({
   api: { serviceLogs: api.serviceLogs },
@@ -665,6 +663,7 @@ function servicesRenderingContext(): ServicesRenderingContext {
       serviceLogElapsedSeconds: serviceConsoleData.serviceLogElapsedSeconds,
       docker: dockerConsoleRenderingContext("services"),
       renderConsoleResizer: () => consoleController.renderConsoleResizer(),
+      renderConsoleToggle: () => consoleController.renderConsoleToggle(),
       renderConsoleJumpButton: () => consoleController.renderConsoleJumpButton()
     },
     containerOperationBusy,
@@ -786,6 +785,7 @@ function dockerConsoleRenderingContext(tab: ContainerTab): DockerConsoleRenderin
     composeDown: tab === "docker" ? containerConsoleData.composeDownState() : null,
     containerOperationBusy,
     renderConsoleResizer: () => consoleController.renderConsoleResizer(),
+    renderConsoleToggle: () => consoleController.renderConsoleToggle(),
     renderConsoleJumpButton: () => consoleController.renderConsoleJumpButton()
   };
 }
@@ -935,6 +935,7 @@ function launchConsoleRenderingContext(): LaunchConsoleRenderingContext {
     consoleOpen: consoleController.isPanelOpen("console"),
     snapshotFor,
     renderConsoleResizer: () => consoleController.renderConsoleResizer(),
+    renderConsoleToggle: () => consoleController.renderConsoleToggle(),
     renderConsoleJumpButton: () => consoleController.renderConsoleJumpButton()
   };
 }
@@ -1055,7 +1056,7 @@ async function handleClick(event: Event): Promise<void> {
       const profileId = required(target.dataset.profileId);
       const profile = findProfile(profileId);
       const states = profile.tasks.map((task) => snapshotFor(profile.id, task.name)?.state ?? "stopped");
-      if (!launchProfileIsFullyStopped(states)) return;
+      if (!launchProfileIsCollapsible(states)) return;
       if (expandedLaunchProfiles.has(profileId)) expandedLaunchProfiles.delete(profileId);
       else expandedLaunchProfiles.add(profileId);
       renderLaunch(true);

@@ -1,72 +1,91 @@
-/* The console height repeats the clamp applied in main.ts so a window that shrinks before the
-   resize observer runs still leaves room for the list above it. */
-.launch-console { position: relative; z-index: 10; bottom: auto; min-width: 0; min-height: 0; height: max(220px, min(var(--console-height, 336px), calc(100dvh - 270px))); max-height: 100%; display: flex; flex-direction: column; margin: 0 20px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 18px 18px 0 0; background: color-mix(in srgb, var(--surface) 94%, var(--accent)); box-shadow: 0 -12px 34px color-mix(in srgb, var(--shadow) 84%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent); }
-.service-console, .docker-console { border-bottom-color: var(--hairline); }
-.launch-console-empty { border-color: var(--hairline); }
-.console-resizer { position: relative; flex: 0 0 11px; height: 11px; min-height: 11px; cursor: ns-resize; touch-action: none; }
-.console-resizer::after { content: ""; position: absolute; top: 50%; left: 50%; width: 42px; height: 3px; transform: translate(-50%, -50%); border-radius: 999px; background: var(--border); opacity: .55; }
-.console-resizer:hover::after, .console-resizer:focus-visible::after { background: var(--accent); opacity: 1; }
-.console-resizer:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+/* The console height repeats the clamp applied in src/console-controller.ts (MIN 220, DEFAULT 336,
+   board min 140) so a window that shrinks before the resize observer runs still leaves room for
+   the list above it. The console floats as its own panel, --panel-gap below the board and a page inset
+   above the window edge. */
+.launch-console { position: relative; z-index: 10; bottom: auto; min-width: 0; min-height: 0; height: max(220px, min(var(--console-height, 336px), calc(100dvh - 270px))); max-height: 100%; display: flex; flex-direction: column; margin: var(--panel-gap) var(--page-inset) var(--page-inset); overflow: hidden; border: 1px solid var(--hairline); border-radius: var(--panel-radius); background: var(--panel); box-shadow: var(--shadow-panel); }
+/* Minimized, the console is just its header bar and the board takes the height back. */
+.launch-console.is-minimized { height: auto; }
+/* The handle overlays the panel's top edge, so it costs no height; it only shows while it is
+   hovered, focused or dragged. */
+.console-resizer { position: absolute; z-index: 4; top: 0; right: 0; left: 0; height: 10px; cursor: ns-resize; touch-action: none; }
+.console-resizer::after { content: ""; position: absolute; top: 4px; left: 50%; width: 48px; height: 3px; transform: translateX(-50%); border-radius: var(--radius-pill); background: var(--accent); opacity: 0; transition: opacity 120ms ease; }
+.console-resizer:hover::after, .console-resizer:focus-visible::after { opacity: 1; }
+.console-resizer:focus-visible { outline: 0; }
 body.is-console-resizing { cursor: ns-resize; }
-body.is-console-resizing .console-resizer::after { background: var(--accent); opacity: 1; }
+body.is-console-resizing .console-resizer::after { opacity: 1; }
 body.is-console-resizing .console-log { user-select: none; }
-.console-header { flex: 0 0 64px; height: 64px; min-height: 64px; display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap; gap: 12px 18px; overflow: hidden; padding: 12px 16px; border-bottom: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-alt) 38%, var(--surface)); }
-.console-title { min-width: 0; flex: 1 1 46%; display: flex; align-items: center; gap: 10px; overflow: hidden; }
-.console-icon { width: 34px; height: 34px; display: grid; flex: 0 0 34px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); }
-.console-icon.state-running { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 13%, transparent); }
-.console-icon.state-starting, .console-icon.state-stopping { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, transparent); background: color-mix(in srgb, var(--warning) 13%, transparent); }
-.console-icon.state-failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 13%, transparent); }
-.console-icon.state-external { color: var(--violet); border-color: color-mix(in srgb, var(--violet) 35%, transparent); background: color-mix(in srgb, var(--violet) 13%, transparent); }
-.console-title h2 { margin: 0; color: var(--text); font-size: 14px; font-weight: 750; letter-spacing: .01em; }
+.console-header { flex: 0 0 48px; height: 48px; min-height: 48px; display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap; gap: 8px 16px; overflow: hidden; padding: 0 12px; }
+.console-title { min-width: 0; flex: 1 1 46%; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+.console-icon { width: 28px; height: 28px; display: grid; flex: 0 0 28px; place-items: center; border-radius: var(--radius-sm); background: var(--surface); color: var(--text-muted); }
+.console-icon.state-running { color: var(--ok); }
+.console-icon.state-starting, .console-icon.state-stopping { color: var(--warning); }
+.console-icon.state-failed { color: var(--danger); }
+.console-icon.state-external { color: var(--violet); }
+.console-title h2 { margin: 0; overflow: hidden; color: var(--text); font-size: 13px; font-weight: 600; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
 .console-title > div { min-width: 0; overflow: hidden; }
-.console-meta { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 6px; overflow: hidden; }
-.console-state { min-height: 28px; height: auto; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border-radius: 999px; background: var(--surface-alt); color: var(--text-dim); font-size: 10px; font-weight: 700; white-space: nowrap; }
-.console-state.state-running { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
-.console-state.state-starting, .console-state.state-stopping { background: color-mix(in srgb, var(--warning) 17%, transparent); color: var(--warning); }
-.console-state.state-failed { background: color-mix(in srgb, var(--danger) 17%, transparent); color: var(--danger); }
-.console-state.state-external { background: color-mix(in srgb, var(--violet) 17%, transparent); color: var(--violet); }
-.console-output-shell { position: relative; flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
-.console-output { position: relative; flex: 1 1 auto; height: auto; min-height: 0; max-height: none; display: flex; flex-direction: column; overflow: hidden; padding: 15px 16px 18px; background: color-mix(in srgb, var(--canvas) 88%, #050608); color: var(--text-muted); scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
-.console-output::-webkit-scrollbar { width: 9px; height: 9px; }
+/* The minimize toggle closes up to the status chip instead of taking the header's full gap. */
+.console-toggle { margin-left: -8px; }
+.console-toggle .ui-icon { transition: transform 120ms ease; }
+.console-toggle[aria-expanded="false"] .ui-icon { transform: rotate(180deg); }
+.console-meta { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 6px; overflow: hidden; color: var(--text-dim); }
+/* State chips stay neutral; only the dot carries the state colour. */
+.console-state { --console-state-color: var(--text-dim); min-height: 24px; height: auto; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: var(--radius-pill); background: var(--surface); color: var(--text-muted); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.console-state .task-state-dot { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--console-state-color); }
+.console-state.state-running { --console-state-color: var(--ok); }
+.console-state.state-starting, .console-state.state-stopping { --console-state-color: var(--warning); }
+.console-state.state-failed { --console-state-color: var(--danger); color: var(--danger); }
+.console-state.state-external { --console-state-color: var(--violet); }
+.console-output-shell { position: relative; flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; padding: 0 8px 8px; }
+.console-output { position: relative; flex: 1 1 auto; height: auto; min-height: 0; max-height: none; display: flex; flex-direction: column; overflow: hidden; padding: 12px; border-radius: var(--radius-md); background: var(--surface); color: var(--text-muted); scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
+.console-output::-webkit-scrollbar { width: 8px; height: 8px; }
 .console-output::-webkit-scrollbar-track { background: transparent; }
-.console-output::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 9px; background: var(--border); background-clip: padding-box; }
-.console-output:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
+.console-output::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: var(--radius-pill); background: var(--border); background-clip: padding-box; }
+.console-output:focus-within { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 60%, transparent); }
 /* Ligature shaping (JetBrains Mono and similar) roughly doubles the layout time of a 64 KB log tail, and a log should show its characters literally anyway. */
-.console-log { position: relative; z-index: 1; flex: 1 1 auto; width: 100%; min-height: 0; margin: 0; padding: 0; border: 0; outline: 0; resize: none; color: var(--text-muted); background: transparent; font: 11px/1.58 "SF Mono", Menlo, "JetBrains Mono", "Ubuntu Mono", monospace; font-variant-ligatures: none; white-space: pre-wrap; overflow-x: hidden; overflow-y: auto; overflow-wrap: anywhere; word-break: break-word; user-select: text; cursor: text; caret-color: var(--accent); tab-size: 2; }
+.console-log { position: relative; z-index: 1; flex: 1 1 auto; width: 100%; min-height: 0; margin: 0; padding: 0; border: 0; outline: 0; resize: none; color: var(--text-muted); background: transparent; font-family: var(--font-mono); font-size: 12px; line-height: 1.55; font-variant-ligatures: none; white-space: pre-wrap; overflow-x: hidden; overflow-y: auto; overflow-wrap: anywhere; word-break: break-word; user-select: text; cursor: text; caret-color: var(--accent); tab-size: 2; }
 .console-log:focus-visible { outline: 0; }
 .console-output > .console-alert { flex: 0 0 auto; }
+/* The highlight layer copies the log's computed font metrics in console-controller.ts; keep its own font unset. */
 .console-search-highlights { position: absolute; z-index: 0; box-sizing: border-box; overflow: hidden; pointer-events: none; }
 .console-search-highlight-text { position: absolute; box-sizing: border-box; width: 100%; min-width: 100%; margin: 0; padding: 0; color: transparent; white-space: pre-wrap; overflow: visible; overflow-wrap: anywhere; word-break: break-word; user-select: none; pointer-events: none; }
 .console-search-match { color: transparent; background: color-mix(in srgb, var(--accent) 28%, transparent); }
 .console-search-match.is-current { background: color-mix(in srgb, var(--accent) 58%, transparent); }
 .console-search-highlight-text::highlight(console-search-match) { color: transparent; background: color-mix(in srgb, var(--accent) 28%, transparent); }
 .console-search-highlight-text::highlight(console-search-current) { color: transparent; background: color-mix(in srgb, var(--accent) 58%, transparent); }
-.console-search { position: absolute; z-index: 3; top: 10px; right: 12px; display: flex; align-items: center; gap: 4px; max-width: calc(100% - 24px); padding: 5px; border: 1px solid color-mix(in srgb, var(--border) 82%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--surface) 84%, transparent); box-shadow: 0 5px 18px color-mix(in srgb, var(--shadow) 65%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
-.console-search-input { width: min(240px, 32vw); min-width: 110px; height: 28px; padding: 4px 8px; border: 1px solid var(--hairline); border-radius: 6px; background: var(--canvas); color: var(--text); font-size: 11px; }
-.console-search-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.console-search-count { min-width: 68px; color: var(--text-dim); font-size: 10px; text-align: center; white-space: nowrap; }
+/* Offsets include the output shell's 8px inset so the bar floats inside the log well. */
+.console-search { position: absolute; z-index: 3; top: 8px; right: 16px; display: flex; align-items: center; gap: 2px; max-width: calc(100% - 32px); padding: 4px; border: 1px solid var(--hairline); border-radius: var(--radius-pill); background: var(--panel); box-shadow: var(--shadow-menu); }
+.console-search-input { width: min(240px, 32vw); min-width: 110px; height: 28px; padding: 0 10px; border: 1px solid transparent; border-radius: var(--radius-pill); background: var(--surface); color: var(--text); font-size: 12px; transition: border-color 120ms ease, box-shadow 120ms ease; }
+.console-search-input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); outline: none; }
+.console-search-count { min-width: 64px; color: var(--text-dim); font-size: 11px; font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
 .console-search.is-empty .console-search-count { color: var(--text-muted); }
-.console-search-button { width: 28px; height: 28px; min-width: 28px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text-muted); font-size: 15px; line-height: 1; cursor: pointer; }
-.console-search-button:hover, .console-search-button:focus-visible { border-color: var(--hairline); background: var(--surface-hover); color: var(--accent); }
+.console-search-button { width: 28px; height: 28px; min-width: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); font-size: 15px; line-height: 1; cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
+.console-search-button:hover, .console-search-button:focus-visible { background: var(--surface-hover); color: var(--text); }
 .console-search-button:disabled { opacity: .35; cursor: default; }
-.console-search-button.console-search-close { color: var(--text-dim); font-size: 19px; }
+.console-search-button.console-search-close { color: var(--text-dim); font-size: 18px; }
 @media (max-width: 650px) {
-  .console-search { right: 8px; max-width: calc(100% - 16px); }
+  .console-search { right: 12px; max-width: calc(100% - 24px); }
   .console-search-input { width: auto; min-width: 0; flex: 1 1 auto; }
   .console-search-count { min-width: 52px; }
 }
-.console-jump-bottom { position: absolute; right: 14px; bottom: 13px; width: 40px; height: 40px; min-width: 40px; min-height: 40px; display: inline-grid; place-items: center; padding: 0; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border)); border-radius: 50%; background: color-mix(in srgb, var(--surface) 92%, var(--accent)); box-shadow: 0 5px 16px color-mix(in srgb, var(--shadow) 70%, transparent); color: var(--text); cursor: pointer; }
+.console-jump-bottom { position: absolute; z-index: 3; right: 20px; bottom: 20px; width: 32px; height: 32px; min-width: 32px; min-height: 32px; display: inline-grid; place-items: center; padding: 0; border: 1px solid var(--hairline); border-radius: 50%; background: var(--panel); box-shadow: var(--shadow-menu); color: var(--text-muted); cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
+.console-jump-bottom > .ui-icon { width: 16px; height: 16px; flex-basis: 16px; }
 .console-jump-bottom[hidden] { display: none; }
-.console-jump-bottom:hover, .console-jump-bottom:focus-visible { border-color: var(--accent); background: var(--surface-hover); color: var(--accent); }
-.console-message { min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; padding: 28px 18px; color: var(--text-dim); text-align: center; font-size: 11px; line-height: 1.5; }
-.console-message strong { color: var(--text-muted); font-size: 12px; }
-.console-message-icon { display: grid; place-items: center; width: 35px; height: 35px; margin-bottom: 2px; border-radius: 10px; background: var(--surface-alt); color: var(--text-dim); }
+.console-jump-bottom:hover, .console-jump-bottom:focus-visible { background: var(--surface-hover); color: var(--text); }
+.console-message { min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 24px 16px; color: var(--text-dim); text-align: center; font-size: 12px; line-height: 1.5; }
+.console-message strong { color: var(--text-muted); font-size: 13px; font-weight: 600; }
+.console-message-icon { display: grid; place-items: center; width: 32px; height: 32px; margin-bottom: 4px; border-radius: var(--radius-md); background: var(--surface-alt); color: var(--text-dim); }
 .service-log-spinner { animation: spin .8s linear infinite; }
-.console-message.is-external .console-message-icon { background: color-mix(in srgb, var(--violet) 15%, transparent); color: var(--violet); }
-.console-message.is-failed .console-message-icon { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
-.console-alert { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 12px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); font: 10px/1.45 -apple-system, BlinkMacSystemFont, sans-serif; }
-.console-alert .ui-icon { flex: 0 0 auto; margin-top: 1px; }
-.console-progress { border-color: color-mix(in srgb, var(--accent) 32%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
-.console-progress-failed { border-color: color-mix(in srgb, var(--danger) 32%, transparent); background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
-.console-progress-icon { display: inline-flex; flex: 0 0 auto; margin-top: 1px; }
+.console-message.is-external .console-message-icon { color: var(--violet); }
+.console-message.is-failed .console-message-icon { background: var(--danger-dim); color: var(--danger); }
+.console-alert { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 12px; padding: 8px 10px; border: 0; border-radius: var(--radius-sm); background: var(--danger-dim); color: var(--danger); font: 12px/1.45 var(--font-sans); }
+.console-alert .ui-icon { flex: 0 0 auto; margin-top: 2px; }
+.console-progress { background: var(--surface-alt); color: var(--text-muted); }
+.console-progress-failed { background: var(--danger-dim); color: var(--danger); }
+.console-progress-icon { display: inline-flex; flex: 0 0 auto; margin-top: 2px; color: var(--accent); }
 .console-progress-icon.is-failed { color: var(--danger); }
+@media (prefers-reduced-motion: reduce) {
+  .console-resizer::after,
+  .console-search-input,
+  .console-search-button,
+  .console-jump-bottom { transition: none; }
+}

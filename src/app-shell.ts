@@ -20,7 +20,6 @@ export function renderAppShell(): string {
       </div>
     </header>
     <main id="workspace" class="workspace" aria-live="polite"></main>
-    <nav id="bottom-tabs" class="bottom-tabs" aria-label="Panels"></nav>
     <footer id="status-footer" class="footer" hidden><span id="app-status"></span></footer>
   </div>
   <div id="modal-root"></div>

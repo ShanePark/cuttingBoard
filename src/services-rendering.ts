@@ -73,6 +73,7 @@ export type ServicesConsoleRenderingContext = {
   serviceLogElapsedSeconds: (state: ServiceLogState) => number;
   docker: DockerConsoleRenderingContext;
   renderConsoleResizer: () => string;
+  renderConsoleToggle: () => string;
   renderConsoleJumpButton: () => string;
 };
 
@@ -133,7 +134,7 @@ export function renderServicesView(context: ServicesRenderingContext): string {
     <section class="service-section" data-tiles="${group.services.length + group.containers.length}" aria-labelledby="group-${h(encodeURIComponent(group.id))}">
       <header class="section-header">
         <span class="section-accent accent-${h(group.accent)}"></span>
-        <h2 id="group-${h(encodeURIComponent(group.id))}">${renderGroupTitle(group.name, group.services.length, "group-details", `data-group-id="${h(group.id)}"`, group.name.toUpperCase())}${renderGroupCount(boardGroupCards(group))}</h2>
+        <h2 id="group-${h(encodeURIComponent(group.id))}">${renderGroupTitle(group.name, group.services.length, "group-details", `data-group-id="${h(group.id)}"`)}${renderGroupCount(boardGroupCards(group))}</h2>
         ${renderGroupActions(group, context)}
       </header>
       <div class="tile-grid">${renderServiceGroupTiles(group, context)}</div>
@@ -256,7 +257,6 @@ export function serviceConsoleOutputKind(service: ServiceSnapshot | null, contex
 }
 
 export function renderServiceConsole(context: ServicesRenderingContext): string {
-  if (!context.console.open) return "";
   if (context.selection.consoleTarget?.kind === "container") return renderDockerConsole(context.console.docker, "service-console docker-service-console", "container");
   const service = context.selection.consoleTarget?.kind === "service"
     ? context.services.find((item) => item.id === context.selection.consoleTarget?.id) ?? null
@@ -270,13 +270,14 @@ export function renderServiceConsole(context: ServicesRenderingContext): string 
   const consoleState = restartProgress
     ? `<span class="console-state state-starting" role="status"><span class="task-state-dot" aria-hidden="true"></span>Restarting</span>`
     : "";
-  return `<section class="launch-console service-console${service || restartProgress ? ` state-${stateClass}` : " launch-console-empty"}" aria-labelledby="service-console-title" data-console-service-id="${h(service?.id ?? restartProgress?.serviceId ?? "")}">
+  return `<section class="launch-console service-console${service || restartProgress ? ` state-${stateClass}` : " launch-console-empty"}${context.console.open ? "" : " is-minimized"}" aria-labelledby="service-console-title" data-console-service-id="${h(service?.id ?? restartProgress?.serviceId ?? "")}">
     ${context.console.renderConsoleResizer()}
     <header class="console-header">
       <div class="console-title"><span class="console-icon state-${stateClass}" aria-hidden="true">${uiIcon("terminal", 16)}</span><div><h2 id="service-console-title">${h(title)}</h2></div></div>
       ${consoleState ? `<div class="console-meta" aria-label="Service status">${consoleState}</div>` : ""}
+      ${context.console.renderConsoleToggle()}
     </header>
-    <div class="console-output-shell"><div class="console-output" data-console-output-kind="${serviceConsoleOutputKind(service, context.console)}" role="log" aria-live="polite" aria-label="${outputLabel}">${renderServiceLogOutput(service, context.console)}</div>${context.console.renderConsoleJumpButton()}</div>
+    ${context.console.open ? `<div class="console-output-shell"><div class="console-output" data-console-output-kind="${serviceConsoleOutputKind(service, context.console)}" role="log" aria-live="polite" aria-label="${outputLabel}">${renderServiceLogOutput(service, context.console)}</div>${context.console.renderConsoleJumpButton()}</div>` : ""}
   </section>`;
 }
 

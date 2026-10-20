@@ -1,136 +1,97 @@
-.bottom-tabs {
-  min-width: 0;
-  height: 34px;
-  display: flex;
-  align-items: stretch;
-  gap: 4px;
-  padding: 0 18px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  border-top: 1px solid var(--hairline);
-  background: var(--canvas);
-}
-.bottom-tabs::-webkit-scrollbar { display: none; }
-.bottom-tab {
-  position: relative;
-  min-width: 112px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 0 14px;
-  border: 1px solid transparent;
-  border-top: 0;
-  border-radius: 0 0 12px 12px;
-  background: transparent;
-  color: var(--text-dim);
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.bottom-tab .bottom-tab-caret { margin-left: 1px; }
-.bottom-tab:not(.is-active) .bottom-tab-caret { transform: rotate(180deg); }
-.bottom-tab:hover { color: var(--text); background: color-mix(in srgb, var(--surface-alt) 54%, transparent); }
-.bottom-tab:focus-visible { z-index: 1; color: var(--text); outline-offset: -3px; }
-.bottom-tab.is-active { z-index: 1; color: var(--text); border-color: var(--hairline); background: var(--surface); }
-.bottom-tab.is-active .ui-icon:first-child { color: var(--accent); }
-.bottom-tab.is-active::after {
-  content: "";
-  position: absolute;
-  top: -1px;
-  right: 12px;
-  left: 12px;
-  height: 3px;
-  border-radius: 0 0 999px 999px;
-  background: var(--accent);
-}
-
-.footer { height: 26px; display: flex; align-items: center; padding: 0 20px; overflow: hidden; color: var(--text-dim); background: var(--canvas); font-size: 10px; white-space: nowrap; }
+.footer { height: 24px; display: flex; align-items: center; padding: 0 var(--page-inset); overflow: hidden; color: var(--text-dim); background: var(--canvas); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .footer[hidden] { display: none; }
 .footer span { overflow: hidden; text-overflow: ellipsis; }
-.empty-state { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; }
+.empty-state { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 24px; text-align: center; }
 .split-view-list > .empty-state { min-height: 100%; }
-.empty-state h2 { margin: 0; color: var(--text); font-size: 18px; }
-.empty-state p { max-width: 520px; margin: 9px 0 18px; color: var(--text-muted); font-size: 13px; line-height: 1.55; }
-.spinner { width: 24px; height: 24px; margin-bottom: 14px; border: 2px solid var(--hairline); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+.empty-state h2 { margin: 0; color: var(--text); font-size: 15px; font-weight: 600; }
+.empty-state p { max-width: 520px; margin: 8px 0 16px; color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+.spinner { width: 20px; height: 20px; margin-bottom: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.inline-notice { display: flex; align-items: baseline; gap: 10px; margin: 16px 24px 0; padding: 12px 14px; border: 1px solid var(--warning); border-radius: 10px; background: color-mix(in srgb, var(--warning) 9%, var(--surface)); color: var(--text-muted); font-size: 12px; }
-.inline-notice strong { color: var(--warning); }
+.inline-notice { display: flex; align-items: baseline; gap: 8px; margin: var(--panel-gap) var(--page-inset) 0; padding: 10px 12px; border: 0; border-radius: var(--radius-md); background: var(--surface); color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.inline-notice strong { color: var(--warning); font-weight: 600; }
 
-.launch-list { display: grid; gap: calc(14px - 4px * var(--tile-density)); padding: calc(18px - 5px * var(--tile-density)) calc(20px - 6px * var(--tile-density)) 26px; }
-.launch-profile { align-self: stretch; padding: calc(16px - 5px * var(--tile-density)); }
-.launch-profile-header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; margin-bottom: calc(14px - 4px * var(--tile-density)); }
-.launch-profile-heading { min-width: 0; flex: 1 1 220px; display: flex; align-items: center; gap: 8px; }
-.launch-profile-stack { position: relative; min-width: 0; }
+/* The launch list is also a `.board`, so it takes the board's padding and gap; board-layout.ts
+   measures those on the same element. */
+.launch-profile { align-self: stretch; }
+.launch-profile-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; margin-bottom: calc(12px - 4px * var(--tile-density)); }
+.launch-profile-heading { min-width: 0; flex: 1 1 220px; display: flex; align-items: center; gap: 4px; }
+/* Back cards peek out below the front one, each layer narrower; transforms leave layout alone, so the padding reserves their room. */
+.launch-profile-stack { --stack-step: calc(7px - 2px * var(--tile-density)); position: relative; min-width: 0; padding-bottom: calc(var(--stack-depth) * var(--stack-step)); }
 .launch-profile-stack-cards { display: grid; min-width: 0; }
 .launch-profile-stack-card {
-  --stack-layer: calc(var(--stack-depth) - var(--stack-index));
-  --stack-offset: calc(var(--stack-layer) * (7px - 2px * var(--tile-density)));
+  --stack-scale: calc(1 - var(--stack-index) * .05);
   grid-area: 1 / 1;
-  width: calc(100% - var(--stack-offset));
-  margin-inline-start: var(--stack-offset);
   min-width: 0;
   pointer-events: none;
   z-index: calc(10 - var(--stack-index));
-  transform: translate3d(0, 0, 0);
-  transition: transform 160ms ease, filter 160ms ease;
+  transform: translate3d(0, calc(var(--stack-index) * var(--stack-step)), 0) scale(var(--stack-scale));
+  transform-origin: 50% 100%;
+  transition: transform 160ms ease, border-color 120ms ease;
 }
-.launch-profile-stack:hover .launch-profile-stack-card,
-.launch-profile-stack:focus-within .launch-profile-stack-card {
-  /* Widen the existing fan a little; transforms preserve the stack's measured height. */
-  transform: translate3d(calc(var(--stack-layer) * 2px), 0, 0);
-  filter: brightness(1.035);
+.launch-profile-stack-cards > .task-card.launch-profile-stack-card { border-color: var(--hairline); }
+.launch-profile-stack-cards > .task-card.launch-profile-stack-card:first-child { box-shadow: 0 1px 3px color-mix(in srgb, var(--shadow) 40%, transparent); }
+/* `--surface-alt` sits apart from the panel in both themes, so the layer edges stay readable. */
+.launch-profile-stack-cards > .task-card.launch-profile-stack-card:nth-child(2) { border-color: var(--border); background-color: color-mix(in srgb, var(--surface-alt) 60%, transparent); }
+.launch-profile-stack-cards > .task-card.launch-profile-stack-card:nth-child(3) { border-color: var(--hairline); background-color: color-mix(in srgb, var(--surface-alt) 35%, transparent); }
+.launch-profile-stack-card:not(:first-child) > * { visibility: hidden; }
+.launch-profile-stack:hover .launch-profile-stack-card {
+  /* Fan the layers a little further apart; the panel padding absorbs the extra 2px per layer. */
+  transform: translate3d(0, calc(var(--stack-index) * (var(--stack-step) + 2px)), 0) scale(var(--stack-scale));
 }
+.launch-profile-stack:hover .launch-profile-stack-cards > .task-card.launch-profile-stack-card:first-child { border-color: var(--border); }
 .launch-profile-stack-card .tile-metrics { flex-wrap: nowrap; overflow: hidden; }
 .launch-profile-stack-card .metric { overflow: hidden; text-overflow: ellipsis; }
-.launch-profile-toggle { flex: 0 0 30px; width: 30px; height: 30px; color: var(--text-muted); }
-.launch-profile-toggle:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 36%, transparent); outline: none; }
+.launch-profile-toggle { flex: 0 0 28px; width: 28px; height: 28px; color: var(--text-muted); }
+.launch-profile-header-toggle { flex-basis: 24px; width: 24px; height: 24px; }
+.launch-profile-toggle:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); outline: none; }
+/* One disclosure in one place: pointing right while folded, down while open. */
 .launch-profile-header-toggle .ui-icon { transition: transform 130ms ease; }
-.launch-profile-header-toggle[aria-expanded="true"] .ui-icon { transform: rotate(180deg); }
-.launch-profile-stack-toggle { position: absolute; z-index: 10; inset: 0; display: block; width: 100%; height: 100%; min-height: 0; padding: 0; border: 1px solid transparent; border-radius: calc(16px - 3px * var(--tile-density)); background: transparent; cursor: pointer; }
-.launch-profile-stack-toggle:hover { border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: color-mix(in srgb, var(--accent) 4%, transparent); }
-.launch-profile-stack-hint { position: absolute; right: 10px; bottom: 10px; width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--text-dim) 45%, var(--hairline)); border-radius: 9px; background: color-mix(in srgb, var(--surface-alt) 86%, transparent); color: var(--text-muted); }
-.launch-profile-stack-toggle:hover .launch-profile-stack-hint, .launch-profile-stack-toggle:focus-visible .launch-profile-stack-hint { border-color: var(--accent); color: var(--text); }
-.launch-profile-heading h2 { min-width: 0; flex: 1 1 auto; margin: 0; overflow: hidden; color: var(--text); font-size: 12px; line-height: 1; font-weight: 700; letter-spacing: .055em; white-space: nowrap; }
+.launch-profile-header-toggle[aria-expanded="false"] .ui-icon { transform: rotate(-90deg); }
+.launch-profile-stack-toggle { position: absolute; z-index: 10; inset: 0; display: block; width: 100%; height: 100%; min-height: 0; padding: 0; border: 0; border-radius: calc(var(--radius-lg) - 4px * var(--tile-density)); background: transparent; cursor: pointer; }
+/* Type comes from `.section-header h2`, so a profile title matches a service group title. */
+.launch-profile-heading h2 { min-width: 0; flex: 1 1 auto; margin: 0; overflow: hidden; line-height: 1; white-space: nowrap; }
+.launch-profile[data-tiles="1"] .launch-profile-heading h2,
 .launch-profile.is-collapsed .launch-profile-heading h2 {
   overflow: visible;
   line-height: 1.18;
   white-space: normal;
 }
+.launch-profile[data-tiles="1"] .launch-profile-heading .group-title-button,
 .launch-profile.is-collapsed .launch-profile-heading .group-title-button {
   display: block;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   overflow: visible;
   text-overflow: clip;
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.launch-profile[data-tiles="1"] .launch-profile-heading .group-title-text,
 .launch-profile.is-collapsed .launch-profile-heading .group-title-text {
   overflow: visible;
   text-overflow: clip;
   overflow-wrap: anywhere;
 }
-.launch-profile-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 6px; margin-left: auto; }
-.launch-profile.is-collapsed .launch-profile-heading { flex: 1 1 0; }
-.launch-profile.is-collapsed .launch-profile-actions { flex: 0 0 auto; margin-left: auto; }
-.launch-profile-actions .primary-button, .launch-profile-actions .secondary-button { min-height: 36px; padding: 7px 10px; border-radius: 9px; font-size: 11px; }
+.launch-profile-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 4px; margin-left: auto; }
+.launch-profile[data-tiles="1"] .launch-profile-heading, .launch-profile.is-collapsed .launch-profile-heading { flex: 1 1 0; }
+.launch-profile[data-tiles="1"] .launch-profile-actions, .launch-profile.is-collapsed .launch-profile-actions { flex: 0 0 auto; margin-left: auto; }
+.launch-profile-actions .primary-button, .launch-profile-actions .secondary-button { min-height: 28px; padding: 0 12px; border-radius: var(--radius-pill); font-size: 12px; }
 .launch-profile-actions .section-action { white-space: nowrap; }
-.launch-profile-actions .bulk-action-button { width: 38px; min-width: 38px; height: 38px; min-height: 38px; padding: 0; }
-.bulk-action-icon { position: relative; display: inline-block; width: 18px; height: 18px; }
-.bulk-action-icon > .ui-icon { position: absolute; inset: 0; width: 15px; height: 15px; }
-.bulk-action-icon-back { transform: translate(-2px, -1px); opacity: .62; }
+.launch-profile-actions .bulk-action-button { width: 28px; min-width: 28px; height: 28px; min-height: 28px; padding: 0; }
+.bulk-action-icon { position: relative; display: inline-block; width: 16px; height: 16px; }
+.bulk-action-icon > .ui-icon { position: absolute; inset: 0; width: 14px; height: 14px; }
+.bulk-action-icon-back { transform: translate(-2px, -1px); opacity: .55; }
 .bulk-action-icon-front { transform: translate(2px, 1px); }
 .task-list { display: grid; grid-template-columns: repeat(var(--section-span, 1), minmax(0, 1fr)); gap: calc(10px - 3px * var(--tile-density)); }
 .task-list[hidden] { display: none; }
 .task-card { cursor: pointer; }
-.task-card:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 38%, transparent), 0 6px 17px var(--shadow); outline: none; }
-.task-card.state-failed.is-selected { border-color: color-mix(in srgb, var(--danger) 72%, var(--border)); box-shadow: inset 3px 0 0 var(--danger), 0 7px 22px var(--shadow); }
-.task-card .task-card-action { flex: 0 0 32px; }
-.task-card .task-card-action.is-unavailable:disabled { border-color: var(--hairline); background: var(--surface-alt); color: var(--text-dim); cursor: default; }
+.task-card:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); outline: none; }
+/* Selection stays neutral; a failed selection swaps the selection ring for a danger ring. */
+.task-card.state-failed.is-selected { border-color: color-mix(in srgb, var(--danger) 60%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 45%, transparent); }
+.task-card .task-card-action { flex: 0 0 auto; }
+.task-card .task-card-action.is-unavailable:disabled { border-color: transparent; background: transparent; color: var(--text-dim); cursor: default; }
 .task-card .start-action:disabled .ui-icon-refresh { animation: spin .8s linear infinite; }
-.restart-action { border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--hairline)); background: color-mix(in srgb, var(--accent) 9%, var(--surface-alt)); color: var(--accent); }
-.restart-action:hover, .restart-action:focus-visible { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--surface-alt)); }
+.restart-action { border: 1px solid transparent; background: var(--surface-alt); color: var(--text-muted); transition: background-color 120ms ease, color 120ms ease; }
+.restart-action:hover, .restart-action:focus-visible { border-color: transparent; background: var(--surface-hover); color: var(--text); }
 .restart-action:disabled .restart-icon-ring { animation: spin .8s linear infinite; }
 
 .split-view { min-width: 0; min-height: 100%; height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
@@ -140,26 +101,29 @@
 .launch-view > .split-view-list, .services-view > .split-view-list, .docker-view > .split-view-list { min-height: 0; }
 .launch-view > .split-view-list > .launch-list { width: 100%; }
 
-/* An idle profile has nothing running: the section sinks toward the canvas and names its state. */
-.launch-profile.is-idle { border-color: color-mix(in srgb, var(--hairline) 70%, transparent); background: color-mix(in srgb, var(--panel) 40%, var(--canvas)); }
+/* An idle profile has nothing running: the panel sinks toward the canvas, drops its lift and names its state. */
+.launch-profile.is-idle { border-color: var(--hairline); background: color-mix(in srgb, var(--panel) 55%, var(--canvas)); box-shadow: none; }
 .launch-profile.is-idle .section-accent { background: var(--text-dim); opacity: .4; }
 .launch-profile.is-idle .launch-profile-heading h2 { color: var(--text-dim); }
-.section-state { flex: 0 0 auto; height: calc(19px - 3px * var(--tile-density)); display: inline-flex; align-items: center; padding: 0 7px; border: 1px solid color-mix(in srgb, var(--text-dim) 40%, transparent); border-radius: 999px; color: var(--text-dim); font-size: calc(9.5px - 1px * var(--tile-density)); letter-spacing: .08em; text-transform: uppercase; }
+.section-state { flex: 0 0 auto; height: calc(20px - 2px * var(--tile-density)); display: inline-flex; align-items: center; padding: 0 8px; border: 0; border-radius: var(--radius-pill); background: var(--surface-alt); color: var(--text-dim); font-size: 11px; font-weight: 600; line-height: 1; letter-spacing: 0; text-transform: none; }
 /* A stopped task sinks below its section and loses its colour; only its controls keep full strength. */
 .task-card.state-stopped { background-image: none; }
-.task-card.state-stopped:not(.is-selected) { --task-idle-surface: color-mix(in srgb, var(--panel) 55%, var(--canvas)); background-color: var(--task-idle-surface); }
+.task-card.state-stopped:not(.is-selected) { --task-idle-surface: color-mix(in srgb, var(--surface) 45%, var(--panel)); background-color: var(--task-idle-surface); }
+.task-card.state-stopped:not(.is-selected):hover { --task-idle-surface: color-mix(in srgb, var(--surface-hover) 45%, var(--panel)); }
 .task-card.state-stopped:not(.is-selected) .status-pip { box-shadow: 0 0 0 2.5px var(--task-idle-surface); }
 /* The plate keeps its light ground so the glyph stays recognisable; the whole well just fades and loses saturation. */
 .task-card.state-stopped .icon-well { border-color: var(--hairline); opacity: .68; }
 .task-card.state-stopped .icon-well .tech-icon { filter: saturate(.35); }
 .task-card.state-stopped .tile-name { color: var(--text-dim); }
-.task-card.state-stopped .tile-metrics { border-style: dashed; background: transparent; }
-.task-card.state-stopped .port-chip { background: var(--surface-alt); color: var(--text-dim); }
+.task-card.state-stopped .tile-metrics { border-color: transparent; background: transparent; box-shadow: inset 0 0 0 1px var(--hairline); }
+.task-card.state-stopped .port-chip { color: var(--text-dim); }
 .task-card .metric-state.state-stopped { color: var(--text-dim); }
 .task-card .metric-state.state-running { color: var(--ok); }
 .task-card .metric-state.state-failed { color: var(--danger); }
 .task-card .metric-state.state-starting, .task-card .metric-state.state-stopping { color: var(--warning); }
 @media (prefers-reduced-motion: reduce) {
   .launch-profile-stack-card,
-  .launch-profile-header-toggle .ui-icon { transition: none; }
+  .launch-profile-header-toggle .ui-icon,
+  .console-toggle .ui-icon,
+  .restart-action { transition: none; }
 }

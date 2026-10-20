@@ -26,9 +26,14 @@ export function launchProfileIsFullyStopped(states: readonly LaunchState[]): boo
   return states.length > 0 && states.every((state) => state === "stopped");
 }
 
-/** Active and failed profiles stay expanded; fully stopped profiles expand only after the user chooses them. */
+/** Only a fully stopped profile with several tasks folds into a stack; a single card has nothing to hide. */
+export function launchProfileIsCollapsible(states: readonly LaunchState[]): boolean {
+  return states.length > 1 && launchProfileIsFullyStopped(states);
+}
+
+/** Non-collapsible profiles stay expanded; collapsible ones expand only after the user chooses them. */
 export function launchProfileIsExpanded(states: readonly LaunchState[], userExpanded: boolean): boolean {
-  return !launchProfileIsFullyStopped(states) || userExpanded;
+  return !launchProfileIsCollapsible(states) || userExpanded;
 }
 
 export function orderLaunchProfiles(

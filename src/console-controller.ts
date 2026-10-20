@@ -1,5 +1,4 @@
-import { uiIcon, type UiIconName } from "./icons";
-import { escapeHtml as h } from "./html";
+import { uiIcon } from "./icons";
 import { patchConsoleOutput } from "./console-dom";
 import {
   captureConsoleLogSelection,
@@ -44,7 +43,6 @@ export type ConsoleContainerState = {
 export type ConsoleControllerContext = {
   elements: {
     workspace: HTMLElement;
-    bottomTabs: HTMLElement;
   };
   state: {
     selectedTaskKey: () => string | null;
@@ -92,9 +90,7 @@ const MIN_CONSOLE_HEIGHT = 220;
 const DEFAULT_CONSOLE_HEIGHT = 336;
 const MIN_BOARD_HEIGHT = 140;
 const CONSOLE_RESIZE_STEP = 24;
-const BOTTOM_PANELS: ReadonlyArray<{ id: BottomPanelId; label: string; icon: UiIconName }> = [
-  { id: "console", label: "Console", icon: "terminal" }
-];
+const BOTTOM_PANELS: ReadonlyArray<{ id: BottomPanelId }> = [{ id: "console" }];
 const CONSOLE_SEARCH_HIGHLIGHT = "console-search-match";
 const CONSOLE_SEARCH_CURRENT_HIGHLIGHT = "console-search-current";
 const CONSOLE_SEARCH_HIGHLIGHT_CHUNK = 512;
@@ -128,24 +124,25 @@ export class ConsoleController {
     return this.activeBottomPanel === id;
   }
 
-  renderBottomPanelTabs(): string {
-    return BOTTOM_PANELS.map((panel) => {
-      const open = this.activeBottomPanel === panel.id;
-      const label = `${open ? "Hide" : "Show"} ${panel.label.toLowerCase()}`;
-      return `<button class="bottom-tab${open ? " is-active" : ""}" type="button" data-action="toggle-bottom-panel" data-panel-id="${h(panel.id)}" aria-pressed="${open ? "true" : "false"}" aria-label="${h(label)}" title="${h(label)}">${uiIcon(panel.icon, 15)}<span class="tab-label">${h(panel.label)}</span>${uiIcon("chevronDown", 12, "bottom-tab-caret")}</button>`;
-    }).join("");
+  // A minimized console keeps only its header, so this toggle is also how it comes back.
+  renderConsoleToggle(): string {
+    const open = this.activeBottomPanel === "console";
+    const label = open ? "Minimize console" : "Restore console";
+    return `<button class="console-toggle icon-only-button" type="button" data-action="toggle-bottom-panel" data-panel-id="console" aria-expanded="${open ? "true" : "false"}" aria-label="${label}" title="${label}">${uiIcon("chevronDown", 16)}</button>`;
   }
 
   toggleBottomPanel(id: string): void {
     const panel = BOTTOM_PANELS.find((item) => item.id === id);
     if (!panel) throw new Error("Unknown panel.");
+    const toggleFocused = document.activeElement?.classList.contains("console-toggle") ?? false;
     this.activeBottomPanel = this.activeBottomPanel === panel.id ? null : panel.id;
-    this.context.elements.bottomTabs.innerHTML = this.renderBottomPanelTabs();
     this.context.render.rerender(true);
     this.applyConsoleHeight();
+    if (toggleFocused) this.context.elements.workspace.querySelector<HTMLElement>(".console-toggle")?.focus();
   }
 
   renderConsoleResizer(): string {
+    if (this.activeBottomPanel !== "console") return "";
     return `<div class="console-resizer" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="Resize console" aria-valuemin="${MIN_CONSOLE_HEIGHT}" aria-valuemax="${this.maxConsoleHeight()}" aria-valuenow="${this.appliedConsoleHeight()}" title="Drag to resize the console"></div>`;
   }
 
