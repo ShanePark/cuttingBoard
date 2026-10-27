@@ -21,10 +21,17 @@ try {
 
 const browser = await chromium.launch({ headless: true });
 const problems = [];
+// The frontend picks its window chrome from the user agent: Linux draws its own window controls,
+// macOS leaves room for the traffic lights. Pin it so captures do not depend on the host.
+const USER_AGENTS = {
+  linux: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+  macos: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+};
 
-async function openApp(themeMode, viewport) {
+async function openApp(themeMode, viewport, platform = "linux") {
   const context = await browser.newContext({
     viewport,
+    userAgent: USER_AGENTS[platform],
     deviceScaleFactor: 1,
     colorScheme: themeMode === "light" ? "light" : "dark",
     reducedMotion: "reduce"
@@ -104,6 +111,12 @@ for (const theme of ["dark", "light"]) {
 {
   const { context, page } = await openApp("dark", { width: 600, height: 720 });
   await shot(page, "dark-7-services-600");
+  await context.close();
+}
+
+{
+  const { context, page } = await openApp("dark", { width: 1080, height: 720 }, "macos");
+  await shot(page, "dark-8-macos-toolbar");
   await context.close();
 }
 

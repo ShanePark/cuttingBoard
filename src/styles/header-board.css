@@ -91,7 +91,8 @@
 .system-metric-value { color: var(--text); }
 .system-metrics-separator { color: var(--text-dim); opacity: .6; }
 .gear-button,
-.update-button {
+.update-button,
+.window-control {
   flex: 0 0 32px;
   width: 32px;
   height: 32px;
@@ -107,6 +108,12 @@
 .gear-button .ui-icon,
 .update-button .ui-icon { width: 18px; height: 18px; flex-basis: 18px; }
 .gear-button:hover, .gear-button:focus-visible { color: var(--text); background: var(--surface-hover); }
+/* Linux only: the window has no native decorations, so the toolbar ends with its own controls. */
+.window-controls { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; margin-left: 4px; }
+.window-control:hover, .window-control:focus-visible { color: var(--text); background: var(--surface-hover); }
+.window-close:hover, .window-close:focus-visible { color: var(--danger); background: var(--danger-dim); }
+/* macOS draws its traffic lights over the top-left of the toolbar. */
+:root[data-platform="macos"] .toolbar { padding-left: 80px; }
 .update-button { color: var(--accent); }
 .update-button:hover, .update-button:focus-visible { color: var(--accent-hover); background: var(--accent-dim); }
 .update-button[hidden] { display: none; }

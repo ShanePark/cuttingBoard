@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Cutting Board",
+        "width": 1080,
+        "height": 720,
+        "minWidth": 560,
+        "minHeight": 420,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": false
+      }
+    ]
+  }
+}

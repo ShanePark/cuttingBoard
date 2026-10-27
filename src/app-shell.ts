@@ -1,9 +1,13 @@
 import { uiIcon } from "./icons";
+import { renderWindowControls, type WindowPlatform } from "./window-controls";
 
-export function renderAppShell(): string {
+export function renderAppShell(platform: WindowPlatform): string {
+  // Without a native title bar the empty toolbar moves the window; Tauri's drag script skips
+  // buttons and other interactive descendants of a "deep" region.
+  const dragRegion = platform === "linux" || platform === "macos" ? ' data-tauri-drag-region="deep"' : "";
   return `
   <div class="app-shell">
-    <header class="toolbar">
+    <header class="toolbar"${dragRegion}>
       <nav class="tabs" aria-label="Workspace">
         <button class="tab is-active" type="button" data-tab="services" aria-label="Services" title="Services">${uiIcon("power", 18)}<span class="tab-label">Services</span><span class="tab-count" id="services-count">0</span></button>
         <button class="tab" type="button" data-tab="docker" aria-label="Docker" title="Docker">${uiIcon("docker", 18)}<span class="tab-label">Docker</span><span class="tab-count" id="docker-count">0</span></button>
@@ -17,6 +21,7 @@ export function renderAppShell(): string {
           <span class="system-metric" data-system-metric="memory">MEM <span class="system-metric-value" data-system-metric-value="memory">—</span></span>
         </div>
         <button class="gear-button" type="button" data-action="settings" aria-label="Settings" title="Settings">${uiIcon("settings", 18)}</button>
+        ${renderWindowControls(platform)}
       </div>
     </header>
     <main id="workspace" class="workspace" aria-live="polite"></main>

@@ -30,3 +30,9 @@
   .update-progress-backdrop { padding: 10px; }
   .update-progress-dialog { width: min(100%, calc(100vw - 20px)); max-height: calc(100dvh - 20px); padding: 20px 16px; }
 }
+/* The Linux window controls and the macOS traffic-light inset take toolbar room, so narrow
+   windows keep the tab icons and counts and drop the labels (each tab keeps its title). */
+@media (max-width: 720px) {
+  :root[data-platform="linux"] .tab-label,
+  :root[data-platform="macos"] .tab-label { display: none; }
+}

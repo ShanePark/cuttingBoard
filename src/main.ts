@@ -23,6 +23,7 @@ import { createServiceConsoleData } from "./service-console-data";
 import { updateSettingsFromRadio } from "./settings";
 import { createUpdateController, UPDATE_CHECK_INTERVAL_MS } from "./update-controller";
 import { createUpdateProgressView, type UpdateProgressEvent } from "./update-progress";
+import { detectWindowPlatform, runWindowAction, trackMaximizedState } from "./window-controls";
 import { createServiceBoardGroupsSelector } from "./presentation";
 import {
   launchConsoleOutputKind,
@@ -93,7 +94,10 @@ const SYSTEM_METRICS_POLL_INTERVAL = 2000;
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing application root");
 
-root.innerHTML = renderAppShell();
+const windowPlatform = detectWindowPlatform(navigator.userAgent);
+document.documentElement.dataset.platform = windowPlatform;
+root.innerHTML = renderAppShell(windowPlatform);
+void trackMaximizedState(root).catch(() => undefined);
 
 const workspaceElement = byId("workspace");
 let activeTab: Tab = "services";
@@ -1047,6 +1051,7 @@ async function handleClick(event: Event): Promise<void> {
     }
     else if (action === "update" && appInfo?.update_supported && !appInfo.demo) await updateController.updateAndRestart();
     else if (action === "toggle-settings-info") modalForms.toggleSettingsInfo(target);
+    else if (action.startsWith("window-")) await runWindowAction(action);
     else if (action === "show-info") modalForms.showInfo(required(target.dataset.infoKind));
     else if (action === "profile-details") modalForms.showProfileDetails(findProfile(required(target.dataset.profileId)));
     else if (action === "task-details") modalForms.showTaskDetails(findProfile(required(target.dataset.profileId)), required(target.dataset.taskName));

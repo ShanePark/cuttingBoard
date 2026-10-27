@@ -47,6 +47,7 @@ const UI_CATALOG = {
   port: ["lucide", "ethernet-port"], warning: ["lucide", "triangle-alert"], check: ["lucide", "check"],
   bot: ["lucide", "bot"], claude: ["simple-icons", "claude"], copilot: ["simple-icons", "githubcopilot"],
   cursor: ["simple-icons", "cursor"], jetbrains: ["simple-icons", "jetbrains"],
+  minimize: ["lucide", "minus"], maximize: ["lucide", "square"], restore: ["lucide", "copy"],
 };
 
 const SIMPLE_ICONS = new Map(Object.values(simpleIcons)

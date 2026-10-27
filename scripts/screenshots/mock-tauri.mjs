@@ -137,6 +137,12 @@ export function installTauriMock({ themeMode }) {
     "plugin:event|listen": () => Math.floor(Math.random() * 1e9),
     "plugin:event|unlisten": () => null,
     "plugin:event|emit": () => null,
+    "plugin:window|is_maximized": () => false,
+    "plugin:window|minimize": () => null,
+    "plugin:window|toggle_maximize": () => null,
+    "plugin:window|close": () => null,
+    "plugin:window|start_dragging": () => null,
+    "plugin:window|internal_toggle_maximize": () => null,
     "plugin:opener|open_url": () => null,
     "plugin:opener|open_path": () => null,
     "plugin:dialog|open": () => null
