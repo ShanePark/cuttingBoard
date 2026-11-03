@@ -7,15 +7,17 @@
 
 use super::shell::shell_command;
 use crate::models::{
-    LaunchBuildTool, LaunchPrepareKind, LaunchPrepareSpec, LaunchProfile, LaunchTask,
+    now_epoch, LaunchBuildTool, LaunchPrepareKind, LaunchPrepareSpec, LaunchProfile, LaunchTask,
+    PrepareProgress, PrepareState,
 };
+use serde::Serialize;
 use sha1::{Digest, Sha1};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     env,
     ffi::{OsStr, OsString},
-    fs::{self, OpenOptions},
-    io::Write,
+    fs::{self, File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -85,6 +87,24 @@ struct ProjectRoots {
     build_root: PathBuf,
 }
 
+/// What the control socket reports about a preparation while the manager is held by it.
+struct PrepareReporter<'a> {
+    report: &'a dyn Fn(PrepareProgress),
+    started_at: u64,
+    tool: Option<&'static str>,
+}
+
+impl PrepareReporter<'_> {
+    fn send(&self, state: PrepareState) {
+        (self.report)(PrepareProgress {
+            state,
+            tool: self.tool,
+            started_at: self.started_at,
+            completed_at: (state != PrepareState::Running).then(now_epoch),
+        });
+    }
+}
+
 /// Prepare a Spring Boot task if it has explicit metadata or can be safely inferred from its
 /// command and project files. The result is `None` for ordinary shell tasks.
 pub(super) fn prepare_task(
@@ -93,20 +113,50 @@ pub(super) fn prepare_task(
     task: &LaunchTask,
     logs_dir: &Path,
     log_path: &Path,
+    report: &dyn Fn(PrepareProgress),
 ) -> Result<Option<PrepareResult>, String> {
+    let mut reporter = PrepareReporter {
+        report,
+        started_at: now_epoch(),
+        tool: None,
+    };
     append_log(
         log_path,
         &format!(
-            "=== Cutting Board prepare detection started · task={} · cwd={} ===",
-            task.name, task.cwd
+            "=== Cutting Board prepare detection started · task={} · cwd={} · at={} ===",
+            task.name, task.cwd, reporter.started_at
         ),
     )?;
+    let result = detect_and_run(cache, profile, task, logs_dir, log_path, &mut reporter);
+    if let Err(error) = &result {
+        let _ = append_log(
+            log_path,
+            &format!(
+                "=== Cutting Board prepare failed · {} · at={} ===",
+                error,
+                now_epoch()
+            ),
+        );
+        reporter.send(PrepareState::Failed);
+    }
+    result
+}
+
+fn detect_and_run(
+    cache: &mut PrepareCache,
+    profile: &LaunchProfile,
+    task: &LaunchTask,
+    logs_dir: &Path,
+    log_path: &Path,
+    reporter: &mut PrepareReporter<'_>,
+) -> Result<Option<PrepareResult>, String> {
     let Some(spec) = resolve_spec(profile, task)? else {
         append_log(
             log_path,
             &format!(
-                "=== Cutting Board prepare not required · task={} · using saved command ===",
-                task.name
+                "=== Cutting Board prepare not required · task={} · using saved command · at={} ===",
+                task.name,
+                now_epoch()
             ),
         )?;
         return Ok(None);
@@ -115,6 +165,7 @@ pub(super) fn prepare_task(
     fs::create_dir_all(logs_dir)
         .map_err(|error| format!("Could not create {}: {error}", logs_dir.display()))?;
     let plan = build_plan(profile, task, &spec)?;
+    reporter.tool = Some(plan.tool_name());
     let fingerprint = fingerprint(&plan, task, &spec)?;
     let launch = project_native_launch(&plan, task, &spec);
     let cache_path = logs_dir.join(PREPARE_CACHE_FILE);
@@ -134,10 +185,12 @@ pub(super) fn prepare_task(
         append_log(
             log_path,
             &format!(
-                "=== Cutting Board prepare skipped (unchanged inputs) · cache hit · fingerprint={} ===",
-                fingerprint
+                "=== Cutting Board prepare skipped (unchanged inputs) · cache hit · fingerprint={} · at={} ===",
+                fingerprint,
+                now_epoch()
             ),
         )?;
+        reporter.send(PrepareState::Skipped);
         return Ok(Some(PrepareResult {
             skipped: true,
             tool: plan.tool,
@@ -165,23 +218,20 @@ pub(super) fn prepare_task(
         log_path,
         "=== Cutting Board prepare output started · stdout/stderr follow ===",
     )?;
-    if let Err(error) = run_plan(&plan, log_path, task) {
-        let _ = append_log(
-            log_path,
-            &format!("=== Cutting Board prepare failed · {} ===", error),
-        );
-        return Err(error);
-    }
+    reporter.send(PrepareState::Running);
+    run_plan(&plan, log_path, task)?;
     append_log(
         log_path,
         &format!(
-            "=== Cutting Board prepare completed · tool={} · module={} ===",
+            "=== Cutting Board prepare completed · tool={} · module={} · at={} ===",
             plan.tool_name(),
-            plan.module.as_deref().unwrap_or("(root)")
+            plan.module.as_deref().unwrap_or("(root)"),
+            now_epoch()
         ),
     )?;
     cache.entries.insert(cache_key, fingerprint.clone());
     cache.save(&cache_path)?;
+    reporter.send(PrepareState::Succeeded);
     Ok(Some(PrepareResult {
         skipped: false,
         tool: plan.tool,
@@ -945,7 +995,148 @@ pub(super) fn append_log(path: &Path, line: &str) -> Result<(), String> {
         .append(true)
         .open(path)
         .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
-    writeln!(file, "{line}").map_err(|error| format!("Could not write {}: {error}", path.display()))
+    // A marker only counts as one at the start of a line, and the sanitized control log depends on
+    // recognizing it. Output cut off without a newline must not push it along that line.
+    let separator = if ends_mid_line(path) { "\n" } else { "" };
+    writeln!(file, "{separator}{line}")
+        .map_err(|error| format!("Could not write {}: {error}", path.display()))
+}
+
+fn ends_mid_line(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let mut last = [0_u8; 1];
+    file.seek(SeekFrom::End(-1)).is_ok() && file.read_exact(&mut last).is_ok() && last[0] != b'\n'
+}
+
+/// What a start of this task would actually run, from the same resolution `prepare_task` uses.
+/// Built from the saved command, so it holds whatever secrets that command holds.
+#[derive(Debug, Serialize)]
+pub(crate) struct ResolvedTask {
+    pub(crate) prepare: Option<ResolvedPrepare>,
+    pub(crate) launch: Option<ResolvedLaunch>,
+    pub(crate) error: Option<String>,
+    #[serde(skip)]
+    pub(crate) launch_source: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ResolvedPrepare {
+    origin: &'static str,
+    tool: &'static str,
+    module: Option<String>,
+    profiles: Vec<String>,
+    main_class: Option<String>,
+    command: String,
+    cwd: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ResolvedLaunch {
+    pub(crate) command: String,
+    cwd: String,
+    environment: BTreeMap<String, String>,
+    java_home: Option<String>,
+}
+
+pub(super) fn resolve_task(profile: &LaunchProfile, task: &LaunchTask) -> ResolvedTask {
+    // A plan that cannot be built still takes the prepare path: the next start fails there, before
+    // any command runs.
+    let unresolved = |error| ResolvedTask {
+        prepare: None,
+        launch: None,
+        error: Some(error),
+        launch_source: "prepare",
+    };
+    let saved_command = || ResolvedLaunch {
+        command: task.command.clone(),
+        cwd: task_root(profile, task).to_string_lossy().into_owned(),
+        environment: BTreeMap::new(),
+        java_home: None,
+    };
+    let spec = match resolve_spec(profile, task) {
+        Ok(Some(spec)) => spec,
+        Ok(None) => {
+            return ResolvedTask {
+                prepare: None,
+                launch: Some(saved_command()),
+                error: None,
+                launch_source: "saved_command",
+            }
+        }
+        Err(error) => return unresolved(error),
+    };
+    let plan = match build_plan(profile, task, &spec) {
+        Ok(plan) => plan,
+        Err(error) => return unresolved(error),
+    };
+    let native = project_native_launch(&plan, task, &spec);
+    let launch_source = if native.is_some() {
+        "prepare"
+    } else {
+        "saved_command"
+    };
+    ResolvedTask {
+        prepare: Some(ResolvedPrepare {
+            origin: if task.prepare.is_some() {
+                "saved"
+            } else {
+                "inferred"
+            },
+            tool: plan.tool_name(),
+            module: plan.module.clone(),
+            profiles: spec.profiles,
+            main_class: spec.main_class,
+            command: shell_words(&plan.program, &plan.args),
+            cwd: plan.cwd.to_string_lossy().into_owned(),
+        }),
+        launch: Some(native.map_or_else(saved_command, |native| {
+            ResolvedLaunch {
+                command: shell_words(&native.program, &native.args),
+                cwd: native.cwd.to_string_lossy().into_owned(),
+                environment: native
+                    .environment
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            name.to_string_lossy().into_owned(),
+                            value.to_string_lossy().into_owned(),
+                        )
+                    })
+                    .collect(),
+                java_home: native
+                    .java_home
+                    .map(|home| home.to_string_lossy().into_owned()),
+            }
+        })),
+        error: None,
+        launch_source,
+    }
+}
+
+pub(super) fn launch_source(profile: &LaunchProfile, task: &LaunchTask) -> &'static str {
+    resolve_task(profile, task).launch_source
+}
+
+/// One command line a shell reads back as these arguments, unlike the plain join logs show.
+fn shell_words(program: &OsStr, args: &[OsString]) -> String {
+    std::iter::once(program)
+        .chain(args.iter().map(OsString::as_os_str))
+        .map(|word| {
+            let word = word.to_string_lossy();
+            let plain = !word.is_empty()
+                && word.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || "-_./:=,@%+".contains(character)
+                });
+            if plain {
+                word.into_owned()
+            } else {
+                format!("'{}'", word.replace('\'', r"'\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn command_display(plan: &PreparePlan) -> String {
@@ -1212,6 +1403,7 @@ mod tests {
             &profile.tasks[0],
             &logs,
             &log,
+            &|_| {},
         )
         .unwrap()
         .unwrap();
@@ -1266,9 +1458,16 @@ mod tests {
         let log = logs.join("api.log");
         let mut cache = PrepareCache::default();
 
-        let first = prepare_task(&mut cache, &profile, &profile.tasks[0], &logs, &log)
-            .unwrap()
-            .unwrap();
+        let first = prepare_task(
+            &mut cache,
+            &profile,
+            &profile.tasks[0],
+            &logs,
+            &log,
+            &|_| {},
+        )
+        .unwrap()
+        .unwrap();
         assert!(!first.skipped);
         let output = fs::read_to_string(&log).unwrap();
         assert!(output.contains("-pl adm -am install -Dmaven.test.skip=true"));
@@ -1295,9 +1494,16 @@ mod tests {
             1
         );
 
-        let second = prepare_task(&mut cache, &profile, &profile.tasks[0], &logs, &log)
-            .unwrap()
-            .unwrap();
+        let second = prepare_task(
+            &mut cache,
+            &profile,
+            &profile.tasks[0],
+            &logs,
+            &log,
+            &|_| {},
+        )
+        .unwrap()
+        .unwrap();
         assert!(second.skipped);
         assert_eq!(
             fs::read_to_string(root.join("prepare-count"))
@@ -1312,9 +1518,16 @@ mod tests {
             "class App { int changed; }\n",
         )
         .unwrap();
-        let third = prepare_task(&mut cache, &profile, &profile.tasks[0], &logs, &log)
-            .unwrap()
-            .unwrap();
+        let third = prepare_task(
+            &mut cache,
+            &profile,
+            &profile.tasks[0],
+            &logs,
+            &log,
+            &|_| {},
+        )
+        .unwrap()
+        .unwrap();
         assert!(!third.skipped);
         assert_eq!(
             fs::read_to_string(root.join("prepare-count"))
@@ -1326,9 +1539,16 @@ mod tests {
 
         fs::create_dir(root.join(".mvn")).unwrap();
         fs::write(root.join(".mvn/maven.config"), "-q\n").unwrap();
-        let fourth = prepare_task(&mut cache, &profile, &profile.tasks[0], &logs, &log)
-            .unwrap()
-            .unwrap();
+        let fourth = prepare_task(
+            &mut cache,
+            &profile,
+            &profile.tasks[0],
+            &logs,
+            &log,
+            &|_| {},
+        )
+        .unwrap()
+        .unwrap();
         assert!(!fourth.skipped);
         assert_eq!(
             fs::read_to_string(root.join("prepare-count"))
@@ -1362,9 +1582,16 @@ mod tests {
         let logs = root.join("logs");
         let log = logs.join("api.log");
         let mut cache = PrepareCache::default();
-        let first = prepare_task(&mut cache, &profile, &profile.tasks[0], &logs, &log)
-            .unwrap()
-            .unwrap();
+        let first = prepare_task(
+            &mut cache,
+            &profile,
+            &profile.tasks[0],
+            &logs,
+            &log,
+            &|_| {},
+        )
+        .unwrap()
+        .unwrap();
         assert!(!first.skipped);
         assert!(fs::read_to_string(root.join("prepare-count"))
             .unwrap()
@@ -1376,9 +1603,16 @@ mod tests {
             .any(|argument| argument == ":adm:bootRun"));
 
         let mut reloaded = PrepareCache::default();
-        let second = prepare_task(&mut reloaded, &profile, &profile.tasks[0], &logs, &log)
-            .unwrap()
-            .unwrap();
+        let second = prepare_task(
+            &mut reloaded,
+            &profile,
+            &profile.tasks[0],
+            &logs,
+            &log,
+            &|_| {},
+        )
+        .unwrap()
+        .unwrap();
         assert!(second.skipped);
         assert_eq!(
             fs::read_to_string(root.join("prepare-count"))
@@ -1600,6 +1834,7 @@ mod tests {
             &profile.tasks[0],
             &root.join("logs"),
             &root.join("logs/api.log"),
+            &|_| {},
         )
         .unwrap();
         let fresh = Command::new("java")
@@ -1618,5 +1853,242 @@ mod tests {
             String::from_utf8_lossy(&fresh.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&fresh.stdout).trim(), "ok");
+    }
+
+    #[test]
+    fn appended_log_lines_start_on_their_own_line() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("task.log");
+
+        append_log(&path, "first").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "first\n");
+
+        fs::write(&path, "cut off without a newline").unwrap();
+        append_log(&path, "=== Cutting Board prepare failed · x ===").unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "cut off without a newline\n=== Cutting Board prepare failed · x ===\n"
+        );
+    }
+
+    fn maven_project(root: &Path, wrapper: &str) {
+        fs::write(root.join("pom.xml"), "<project/>").unwrap();
+        fs::create_dir_all(root.join("src/main/java")).unwrap();
+        fs::write(root.join("src/main/java/App.java"), "class App {}\n").unwrap();
+        executable_script(&root.join("mvnw"), wrapper);
+    }
+
+    fn reported_states(
+        profile: &LaunchProfile,
+        cache: &mut PrepareCache,
+        logs: &Path,
+    ) -> (Vec<PrepareProgress>, Result<(), String>) {
+        let reported = std::cell::RefCell::new(Vec::new());
+        let result = prepare_task(
+            cache,
+            profile,
+            &profile.tasks[0],
+            logs,
+            &logs.join("api.log"),
+            &|progress| reported.borrow_mut().push(progress),
+        );
+        (reported.into_inner(), result.map(|_| ()))
+    }
+
+    #[test]
+    fn progress_follows_the_build_and_a_cache_hit() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        maven_project(root, "#!/bin/sh\nexit 0\n");
+        let profile = profile(
+            root,
+            "java -cp stale.jar App",
+            Some(spring_spec(LaunchBuildTool::Maven)),
+        );
+        let logs = root.join("logs");
+        let mut cache = PrepareCache::default();
+
+        let (built, result) = reported_states(&profile, &mut cache, &logs);
+        result.unwrap();
+        assert_eq!(
+            built.iter().map(|update| update.state).collect::<Vec<_>>(),
+            [PrepareState::Running, PrepareState::Succeeded]
+        );
+        assert_eq!(built[0].tool, Some("maven"));
+        assert_eq!(built[0].completed_at, None);
+        assert!(built[1].completed_at.is_some());
+
+        let (cached, result) = reported_states(&profile, &mut cache, &logs);
+        result.unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].state, PrepareState::Skipped);
+    }
+
+    #[test]
+    fn a_task_without_a_build_reports_nothing() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let plain = profile(root, "npm run dev", None);
+        let (reported, result) =
+            reported_states(&plain, &mut PrepareCache::default(), &root.join("logs"));
+        result.unwrap();
+        assert!(reported.is_empty());
+    }
+
+    #[test]
+    fn a_plan_that_cannot_be_built_leaves_its_reason_in_the_log() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let mut broken = profile(
+            root,
+            "java -cp stale.jar App",
+            Some(spring_spec(LaunchBuildTool::Maven)),
+        );
+        broken.tasks[0].cwd = "missing".into();
+        let logs = root.join("logs");
+
+        let (reported, result) = reported_states(&broken, &mut PrepareCache::default(), &logs);
+
+        let error = result.unwrap_err();
+        assert_eq!(reported.len(), 1);
+        assert_eq!(reported[0].state, PrepareState::Failed);
+        assert_eq!(reported[0].tool, None);
+        let run = super::super::logs::read_prepare_run(&logs.join("api.log")).unwrap();
+        assert_eq!(run.state, PrepareState::Failed);
+        assert_eq!(run.failure.as_deref(), Some(error.as_str()));
+        assert!(run.started_at.is_some() && run.completed_at.is_some());
+    }
+
+    #[test]
+    fn a_failed_build_is_read_back_from_the_log_with_its_output() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        maven_project(
+            root,
+            "#!/bin/sh\necho '[ERROR] cannot find symbol'\nexit 1\n",
+        );
+        let profile = profile(
+            root,
+            "java -cp stale.jar App",
+            Some(spring_spec(LaunchBuildTool::Maven)),
+        );
+        let logs = root.join("logs");
+
+        let (reported, result) = reported_states(&profile, &mut PrepareCache::default(), &logs);
+
+        assert!(result.is_err());
+        assert_eq!(reported.last().unwrap().state, PrepareState::Failed);
+        assert_eq!(reported.last().unwrap().tool, Some("maven"));
+        let run = super::super::logs::read_prepare_run(&logs.join("api.log")).unwrap();
+        assert_eq!(run.state, PrepareState::Failed);
+        assert!(run.text.contains("[ERROR] cannot find symbol"));
+        assert!(run.failure.unwrap().contains("exited with"));
+    }
+
+    #[test]
+    fn resolved_task_gives_the_command_that_really_runs() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+
+        let plain = profile(root, "npm run dev", None);
+        let resolved = resolve_task(&plain, &plain.tasks[0]);
+        assert_eq!(resolved.launch_source, "saved_command");
+        assert!(resolved.prepare.is_none());
+        assert_eq!(resolved.launch.unwrap().command, "npm run dev");
+
+        maven_project(root, "#!/bin/sh\nexit 0\n");
+        let classpath = "A".repeat(4_096);
+        let inferred = profile(
+            root,
+            &format!(
+                "SECRET=hunter2 java -Xmx1g -Dspring.profiles.active=local -cp spring-boot-{classpath}.jar com.example.App"
+            ),
+            None,
+        );
+        let resolved = resolve_task(&inferred, &inferred.tasks[0]);
+        assert_eq!(resolved.launch_source, "prepare");
+        assert_eq!(resolved.error, None);
+        let prepare = resolved.prepare.unwrap();
+        assert_eq!(prepare.origin, "inferred");
+        assert_eq!(prepare.tool, "maven");
+        assert_eq!(prepare.profiles, ["local"]);
+        assert_eq!(prepare.main_class.as_deref(), Some("com.example.App"));
+        assert!(prepare
+            .command
+            .ends_with("mvnw install -Dmaven.test.skip=true"));
+        let launch = resolved.launch.unwrap();
+        assert!(launch.command.contains("exec-maven-plugin"));
+        assert!(launch.command.contains("-classpath %classpath"));
+        assert!(!launch.command.contains(&classpath));
+        // A shell has to read the whole of -Dexec.args back as one argument.
+        assert!(launch.command.contains("'-Dexec.args=-Xmx1g"));
+        assert_eq!(launch.environment["SECRET"], "hunter2");
+    }
+
+    #[test]
+    fn resolved_task_shows_a_build_followed_by_the_saved_command() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        maven_project(root, "#!/bin/sh\nexit 0\n");
+        fs::remove_file(root.join("src/main/java/App.java")).unwrap();
+        fs::write(root.join("src/main/java/Other.java"), "class Other {}\n").unwrap();
+        let saved = profile(root, "./run.sh", Some(spring_spec(LaunchBuildTool::Maven)));
+
+        let resolved = resolve_task(&saved, &saved.tasks[0]);
+
+        assert_eq!(resolved.launch_source, "saved_command");
+        assert_eq!(resolved.prepare.unwrap().origin, "saved");
+        assert_eq!(resolved.launch.unwrap().command, "./run.sh");
+    }
+
+    #[test]
+    fn resolved_task_reports_a_plan_that_cannot_be_built() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let mut broken = profile(root, "x", Some(spring_spec(LaunchBuildTool::Maven)));
+        broken.tasks[0].cwd = "missing".into();
+
+        let resolved = resolve_task(&broken, &broken.tasks[0]);
+
+        assert_eq!(resolved.launch_source, "prepare");
+        assert!(resolved.prepare.is_none() && resolved.launch.is_none());
+        assert!(resolved.error.unwrap().contains("does not exist"));
+    }
+
+    #[test]
+    fn shell_words_quote_only_what_a_shell_would_split() {
+        assert_eq!(
+            shell_words(
+                OsStr::new("/opt/mvnw"),
+                &[
+                    "install".into(),
+                    "-Dx=a b".into(),
+                    "it's".into(),
+                    "".into(),
+                    "%classpath".into()
+                ]
+            ),
+            r#"/opt/mvnw install '-Dx=a b' 'it'\''s' '' %classpath"#
+        );
+    }
+
+    #[test]
+    fn launch_source_follows_the_real_resolution() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+
+        let plain = profile(root, "npm run dev", None);
+        assert_eq!(launch_source(&plain, &plain.tasks[0]), "saved_command");
+
+        fs::write(
+            root.join("build.gradle"),
+            "plugins { id 'org.springframework.boot' version '3.4.0' }\n",
+        )
+        .unwrap();
+        let detected = profile(root, "java -cp stale.jar com.example.Application", None);
+        assert_eq!(launch_source(&detected, &detected.tasks[0]), "prepare");
+
+        let explicit = profile(root, "ignored", Some(spring_spec(LaunchBuildTool::Gradle)));
+        assert_eq!(launch_source(&explicit, &explicit.tasks[0]), "prepare");
     }
 }

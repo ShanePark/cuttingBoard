@@ -36,6 +36,33 @@ pub struct LaunchPrepareSpec {
     pub main_class: Option<String>,
 }
 
+/// How far a task's latest preparation got.
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PrepareState {
+    /// Nothing recorded a preparation.
+    #[default]
+    None,
+    NotRequired,
+    Running,
+    /// The inputs had not changed, so nothing was built.
+    Skipped,
+    Succeeded,
+    Failed,
+    /// It ended without saying how, for example because the app went away.
+    Interrupted,
+}
+
+/// A preparation as operation summaries report it. Those never carry commands, paths or output,
+/// so neither may this.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PrepareProgress {
+    pub state: PrepareState,
+    pub tool: Option<&'static str>,
+    pub started_at: u64,
+    pub completed_at: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LaunchTask {
     pub name: String,
@@ -72,6 +99,14 @@ pub struct LaunchProfile {
     pub tasks: Vec<LaunchTask>,
 }
 
+/// What Docker reported for a container task when the snapshot was taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainerDetail {
+    Listed { status: String, ports: Vec<u16> },
+    Missing { container: String },
+    DockerUnavailable { detail: Option<String> },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagedTaskSnapshot {
     pub profile_id: String,
@@ -94,4 +129,7 @@ pub struct ManagedTaskSnapshot {
     /// a log file it writes to, or the task log of an earlier Cutting Board session.
     #[serde(default)]
     pub external_log_path: Option<String>,
+    /// Backend only: the control socket masks this itself, and the UI reads `message`.
+    #[serde(skip)]
+    pub container_detail: Option<ContainerDetail>,
 }

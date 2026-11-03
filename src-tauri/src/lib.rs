@@ -234,30 +234,71 @@ fn preserve_saved_window_geometry(settings: &mut UiSettings, current: &UiSetting
     settings.window_geometry_logical = current.window_geometry_logical;
 }
 
+pub(crate) const SAVE_PROFILE_STORAGE_ERROR: &str = "configuration_error";
+
 #[tauri::command]
 fn load_profiles(state: State<'_, AppState>) -> Result<Vec<LaunchProfile>, String> {
     profiles_for_state(state.inner())
 }
 
+/// `baseline` is the profile as an edit form opened with it; a new profile has none.
 #[tauri::command]
 fn save_profile(
     state: State<'_, AppState>,
     profile: LaunchProfile,
+    baseline: Option<LaunchProfile>,
 ) -> Result<Vec<LaunchProfile>, String> {
-    reject_demo(state.inner())?;
-    let _profile_operation = state
-        .0
-        .control
-        .begin_profile_edit()
-        .map_err(|error| error.message)?;
-    let current_profiles = read_profiles(&state.0.profiles_path)?;
-    ensure_profile_inactive(
-        state.inner(),
-        &current_profiles,
-        &profile.id,
-        "Stop every task in this profile before editing it.",
-    )?;
-    persist_profile(&state.0.profiles_path, profile)
+    save_profile_from_form(state.inner(), profile, baseline)
+}
+
+fn save_profile_from_form(
+    state: &AppState,
+    profile: LaunchProfile,
+    baseline: Option<LaunchProfile>,
+) -> Result<Vec<LaunchProfile>, String> {
+    reject_demo(state)?;
+    save_profile_guarded(state, |current_profiles| {
+        // The form saves the whole profile, so a change made after it opened, by the control CLI
+        // for instance, would silently be reverted.
+        if let Some(baseline) = &baseline {
+            let latest = current_profiles.iter().find(|item| item.id == profile.id);
+            if latest != Some(baseline) {
+                return Err(control::ControlError {
+                    code: "profile_changed".into(),
+                    message: "This profile changed after this form was opened, and saving would overwrite that change. Close the form and open it again to edit the latest values.".into(),
+                });
+            }
+        }
+        ensure_profile_inactive(
+            state,
+            current_profiles,
+            &profile.id,
+            "Stop every task in this profile before editing it.",
+        )
+        .map_err(|message| control::ControlError {
+            code: "profile_active".into(),
+            message,
+        })?;
+        Ok(profile)
+    })
+    .map_err(|error| error.message)
+}
+
+/// The single path that writes a profile: `build` decides what to save from the profiles on disk,
+/// under the lease that keeps task and profile operations out until the file is written. It is
+/// responsible for refusing the edit of anything still running.
+pub(crate) fn save_profile_guarded(
+    state: &AppState,
+    build: impl FnOnce(&[LaunchProfile]) -> Result<LaunchProfile, control::ControlError>,
+) -> Result<Vec<LaunchProfile>, control::ControlError> {
+    let storage_error = |message| control::ControlError {
+        code: SAVE_PROFILE_STORAGE_ERROR.into(),
+        message,
+    };
+    let _profile_operation = state.0.control.begin_profile_edit()?;
+    let current_profiles = read_profiles(&state.0.profiles_path).map_err(storage_error)?;
+    let profile = build(&current_profiles)?;
+    persist_profile(&state.0.profiles_path, profile).map_err(storage_error)
 }
 
 #[tauri::command]
@@ -322,7 +363,7 @@ fn run_ui_task_action(
         .map_err(|error| error.message)?;
     let result = execute_control_task_action(state, request, action);
     lease.finish(&result);
-    result
+    result.map_err(|error| error.to_string())
 }
 
 /// The single native task-action path used by both Tauri and external control requests.
@@ -330,7 +371,7 @@ pub(crate) fn execute_control_task_action(
     state: &AppState,
     request: &TaskRequest,
     action: control_service::TaskAction,
-) -> Result<ManagedTaskSnapshot, String> {
+) -> Result<ManagedTaskSnapshot, control_service::TaskActionError> {
     reject_demo(state)?;
     let profiles = profiles_for_state(state)?;
     let profile = profiles
@@ -354,7 +395,8 @@ pub(crate) fn execute_control_task_action(
             control_service::TaskAction::Restart => {
                 launch_containers::restart(request, &container, state.0.demo)
             }
-        };
+        }
+        .map_err(Into::into);
     }
 
     let workspace = refresh_control_scan(state)?;
@@ -390,9 +432,7 @@ pub(crate) fn execute_control_task_action(
                 .as_ref()
                 .is_some_and(|snapshot| snapshot.external_pid.is_some() && match_count == 1);
             if !matched_external && port_is_occupied(port) {
-                return Err(format!(
-                    "The expected port {port} is already in use by a process that is not safely matched to this task."
-                ));
+                return Err(control_service::TaskActionError::PortInUse(port));
             }
         }
     }
@@ -408,6 +448,7 @@ pub(crate) fn execute_control_task_action(
             manager.restart_task(&profiles, request, &state.0.logs_dir, Some(&workspace))
         }
     }
+    .map_err(Into::into)
 }
 
 fn port_is_occupied(port: u16) -> bool {
@@ -445,24 +486,63 @@ pub(crate) fn control_is_demo(state: &AppState) -> bool {
     state.0.demo
 }
 
-pub(crate) fn control_task_log_tail(
+pub(crate) fn control_task_log(
     state: &AppState,
     profiles: &[LaunchProfile],
     request: &TaskRequest,
-) -> Result<String, String> {
+    workspace: Option<&WorkspaceSnapshot>,
+) -> Result<launch::TaskLog, control_service::TaskActionError> {
     if let Some(container) = launch_containers::container_for(profiles, request) {
-        let listing = docker::list_containers(state.0.demo);
-        let info = listing
-            .containers
-            .iter()
-            .find(|info| info.name == container)
-            .ok_or_else(|| "The registered container is unavailable.".to_string())?;
-        return docker::container_logs(&info.id, state.0.demo).map(|snapshot| snapshot.logs);
+        let text = launch_containers::log_tail(&container, state.0.demo)?;
+        return Ok(launch::TaskLog {
+            truncated: text.lines().count() >= 200,
+            text,
+            ..Default::default()
+        });
     }
-    LaunchManager::task_log_tail(profiles, request, &state.0.logs_dir)
+    let logs_dir = &state.0.logs_dir;
+    Ok(match state.0.launch.try_lock() {
+        Ok(mut launch) => launch.task_log(profiles, request, workspace, logs_dir),
+        Err(TryLockError::WouldBlock) => {
+            LaunchManager::task_log_while_busy(profiles, request, workspace, logs_dir)
+        }
+        Err(TryLockError::Poisoned(_)) => Err("Internal state lock was poisoned.".into()),
+    }?)
+}
+
+pub(crate) fn control_task_prepare_run(
+    state: &AppState,
+    profile: &LaunchProfile,
+    task: &models::LaunchTask,
+) -> std::io::Result<launch::PrepareRun> {
+    launch::task_prepare_run(&state.0.logs_dir, profile, task)
+}
+
+pub(crate) fn control_task_is_active(
+    state: &AppState,
+    profile: &LaunchProfile,
+    task: &models::LaunchTask,
+    workspace: &WorkspaceSnapshot,
+) -> Result<bool, control_service::TaskActionError> {
+    if let Some(container) = task.container_name() {
+        return Ok(launch_containers::is_active(container, state.0.demo)?);
+    }
+    Ok(lock(&state.0.launch)?.task_is_active(profile, task, Some(workspace)))
 }
 
 pub(crate) fn control_task_snapshots(
+    state: &AppState,
+    profiles: &[LaunchProfile],
+) -> Result<Option<Vec<ManagedTaskSnapshot>>, String> {
+    let Some(mut snapshots) = control_manager_snapshots(state, profiles)? else {
+        return Ok(None);
+    };
+    snapshots.extend(launch_containers::snapshots(profiles, state.0.demo));
+    Ok(Some(snapshots))
+}
+
+/// Snapshots of every task except container tasks, so Docker is not asked.
+fn control_manager_snapshots(
     state: &AppState,
     profiles: &[LaunchProfile],
 ) -> Result<Option<Vec<ManagedTaskSnapshot>>, String> {
@@ -472,10 +552,36 @@ pub(crate) fn control_task_snapshots(
         Err(TryLockError::Poisoned(_)) => return Err("Internal state lock was poisoned.".into()),
     };
     let workspace = current_workspace(state)?;
-    let mut snapshots = launch.snapshots(profiles, workspace.as_ref(), &state.0.logs_dir);
-    drop(launch);
-    snapshots.extend(launch_containers::snapshots(profiles, state.0.demo));
-    Ok(Some(snapshots))
+    Ok(Some(launch.snapshots(
+        profiles,
+        workspace.as_ref(),
+        &state.0.logs_dir,
+    )))
+}
+
+/// One task's snapshot, judged against the last scan. Docker is only asked about a container task,
+/// and `None` means an operation holds the manager.
+pub(crate) fn control_task_snapshot(
+    state: &AppState,
+    profiles: &[LaunchProfile],
+    request: &TaskRequest,
+) -> Result<Option<ManagedTaskSnapshot>, String> {
+    if let Some(container) = launch_containers::container_for(profiles, request) {
+        return Ok(Some(launch_containers::task_snapshot(
+            request,
+            &container,
+            state.0.demo,
+        )));
+    }
+    let mut launch = match state.0.launch.try_lock() {
+        Ok(launch) => launch,
+        Err(TryLockError::WouldBlock) => return Ok(None),
+        Err(TryLockError::Poisoned(_)) => return Err("Internal state lock was poisoned.".into()),
+    };
+    let workspace = current_workspace(state)?;
+    launch
+        .task_snapshot(profiles, request, workspace.as_ref(), &state.0.logs_dir)
+        .map(Some)
 }
 
 pub(crate) fn refresh_control_scan(state: &AppState) -> Result<WorkspaceSnapshot, String> {
@@ -546,13 +652,16 @@ async fn stop_profile(
             .begin_profile_action(&profile_id)
             .map_err(|error| error.message)?;
         let (profiles, workspace) = launch_context(&state)?;
-        let mut snapshots = launch_containers::stop_profile(&profiles, &profile_id, state.0.demo)?;
-        snapshots.extend(lock(&state.0.launch)?.stop_profile(
+        // Trouble with Docker is reported, but must not keep the other tasks running.
+        let containers = launch_containers::stop_profile(&profiles, &profile_id, state.0.demo);
+        let managed = lock(&state.0.launch)?.stop_profile(
             &profiles,
             &profile_id,
             &state.0.logs_dir,
             workspace.as_ref(),
-        )?);
+        );
+        let mut snapshots = containers?;
+        snapshots.extend(managed?);
         Ok(snapshots)
     })
     .await
@@ -745,6 +854,7 @@ pub fn run() {
                 }
             }
             let settings_io = Arc::new(Mutex::new(()));
+            let control = control_service::ControlState::default();
             let window_geometry = window::WindowGeometryPersistence::new(
                 settings_path.clone(),
                 Arc::clone(&settings_io),
@@ -757,8 +867,8 @@ pub fn run() {
                 settings_io,
                 window_geometry,
                 scan: Mutex::new(ScanState::default()),
-                launch: Mutex::new(LaunchManager::default()),
-                control: control_service::ControlState::default(),
+                launch: Mutex::new(LaunchManager::reporting_to(control.clone())),
+                control,
                 system_metrics: Mutex::new(SystemMetricsState::default()),
                 compose_down_logs: docker::ComposeDownLogs::default(),
             }));
@@ -848,13 +958,15 @@ pub fn run() {
 mod tests {
     use super::*;
     use crate::models::{LaunchTask, ServiceSnapshot};
+    use serde_json::Value;
     use std::time::Instant;
 
-    fn test_app_state(directory: &std::path::Path) -> AppState {
+    pub(crate) fn test_app_state(directory: &std::path::Path) -> AppState {
         let settings_path = directory.join("settings.json");
         let profiles_path = directory.join("launch-profiles.json");
         let logs_dir = directory.join("logs");
         let settings_io = Arc::new(Mutex::new(()));
+        let control = control_service::ControlState::default();
         AppState(Arc::new(AppStateInner {
             demo: false,
             settings_path: settings_path.clone(),
@@ -863,8 +975,8 @@ mod tests {
             settings_io: Arc::clone(&settings_io),
             window_geometry: window::WindowGeometryPersistence::new(settings_path, settings_io),
             scan: Mutex::new(ScanState::default()),
-            launch: Mutex::new(LaunchManager::default()),
-            control: control_service::ControlState::default(),
+            launch: Mutex::new(LaunchManager::reporting_to(control.clone())),
+            control,
             system_metrics: Mutex::new(SystemMetricsState::default()),
             compose_down_logs: docker::ComposeDownLogs::default(),
         }))
@@ -1124,5 +1236,681 @@ mod tests {
         };
         assert!(!failed.ok);
         assert_eq!(failed.error.unwrap().code, "missing_directory");
+    }
+
+    #[cfg(unix)]
+    struct ControlFixture {
+        temporary: tempfile::TempDir,
+        state: AppState,
+        socket: PathBuf,
+        _server: control::ControlServer,
+        _cleanup: StopTestTasks,
+    }
+
+    /// A real control server for temporary config, reached the way the CLI reaches it.
+    #[cfg(unix)]
+    fn control_fixture() -> ControlFixture {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let state = test_app_state(temporary.path());
+        let control_dir = temporary.path().join("control");
+        std::fs::create_dir(&control_dir).unwrap();
+        std::fs::set_permissions(&control_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = control_dir.join("control.sock");
+        let handler_state = state.clone();
+        let server = control::start_server_at(socket.clone(), move |request| {
+            control_service::dispatch(&handler_state, request)
+        })
+        .unwrap();
+        ControlFixture {
+            temporary,
+            state: state.clone(),
+            socket,
+            _server: server,
+            _cleanup: StopTestTasks(state),
+        }
+    }
+
+    #[cfg(unix)]
+    impl ControlFixture {
+        fn root(&self) -> &std::path::Path {
+            self.temporary.path()
+        }
+
+        fn save(&self, tasks: Vec<LaunchTask>) {
+            persist_profile(
+                &self.state.0.profiles_path,
+                LaunchProfile {
+                    id: "p".into(),
+                    name: "Control test".into(),
+                    project_root: self.root().to_string_lossy().into_owned(),
+                    tasks,
+                },
+            )
+            .unwrap();
+        }
+
+        fn saved_task(&self, name: &str) -> LaunchTask {
+            read_profiles(&self.state.0.profiles_path).unwrap()[0]
+                .tasks
+                .iter()
+                .find(|task| task.name == name)
+                .unwrap()
+                .clone()
+        }
+
+        fn run_action(&self, request: control::ControlRequest) -> control::ControlResponse {
+            let accepted = control_service::dispatch(&self.state, request);
+            let Some(operation_id) = accepted.operation_id.clone() else {
+                return accepted;
+            };
+            let deadline = Instant::now() + Duration::from_secs(60);
+            loop {
+                let response = control_service::dispatch(
+                    &self.state,
+                    control::ControlRequest::Operation {
+                        operation_id: operation_id.clone(),
+                    },
+                );
+                if response.completed {
+                    return response;
+                }
+                assert!(Instant::now() < deadline, "operation did not complete");
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        fn start(&self, task_name: &str) {
+            let response = self.run_action(control::ControlRequest::Start {
+                profile_id: "p".into(),
+                task_name: task_name.into(),
+            });
+            assert!(response.ok, "{:?}", response.error);
+        }
+
+        fn wait(
+            &self,
+            task_name: &str,
+            log_pattern: Option<&str>,
+            timeout: Duration,
+        ) -> (control::ControlResponse, i32) {
+            control::test_client::wait(
+                &self.socket,
+                &control::ControlRequest::Readiness {
+                    profile_id: "p".into(),
+                    task_name: task_name.into(),
+                    log_pattern: log_pattern.map(str::to_owned),
+                },
+                timeout,
+            )
+        }
+
+        fn logs(&self, task_name: &str, current_run: bool) -> control::ControlResponse {
+            control::test_client::send(
+                &self.socket,
+                &control::ControlRequest::Logs {
+                    profile_id: "p".into(),
+                    task_name: task_name.into(),
+                    lines: None,
+                    bytes: None,
+                    current_run,
+                    prepare: false,
+                },
+            )
+            .0
+        }
+
+        fn update(
+            &self,
+            task_name: &str,
+            change: impl FnOnce(&mut control::ControlRequest),
+        ) -> (control::ControlResponse, i32) {
+            let mut request = control::ControlRequest::Update {
+                profile_id: "p".into(),
+                task_name: task_name.into(),
+                command: None,
+                cwd: None,
+                expected_port: None,
+                clear_expected_port: false,
+                clear_prepare: false,
+            };
+            change(&mut request);
+            control::test_client::send(&self.socket, &request)
+        }
+    }
+
+    #[cfg(unix)]
+    fn plain_task(name: &str, command: &str) -> LaunchTask {
+        LaunchTask {
+            name: name.into(),
+            cwd: ".".into(),
+            command: command.into(),
+            expected_port: None,
+            container: None,
+            prepare: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn print_response(label: &str, response: &control::ControlResponse) {
+        println!("{label}: {}", serde_json::to_string(response).unwrap());
+    }
+
+    #[cfg(unix)]
+    fn free_port() -> u16 {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn listener_after(delay_seconds: u32, port: u16, directory: &std::path::Path) -> String {
+        format!(
+            "sleep {delay_seconds}; CUTTING_BOARD_TEST_LISTENER_PORT={port} CUTTING_BOARD_TEST_LISTENER_MARKER={} exec {} --exact launch::tests::managed_listener_process_fixture --nocapture",
+            directory.join("listener.marker").display(),
+            std::env::current_exe().unwrap().display(),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wait_waits_for_a_delayed_listener_and_a_timeout_cancels_nothing() {
+        let fixture = control_fixture();
+        let port = free_port();
+        let mut task = plain_task("api", &listener_after(5, port, fixture.root()));
+        task.expected_port = Some(port);
+        fixture.save(vec![task]);
+        fixture.start("api");
+
+        let (timed_out, exit) = fixture.wait("api", None, Duration::from_secs(1));
+        print_response("wait timeout", &timed_out);
+        assert_eq!(exit, 5);
+        assert!(!timed_out.ok);
+        assert_eq!(timed_out.result.as_ref().unwrap()["waiting_for"], "port");
+        assert_eq!(timed_out.error.unwrap().code, "timeout");
+
+        let (ready, exit) = fixture.wait("api", None, Duration::from_secs(30));
+        print_response("wait ready", &ready);
+        assert_eq!(exit, 0);
+        let ready = ready.result.unwrap();
+        assert_eq!(ready["ready"], true);
+        assert_eq!(ready["signal"], "port");
+        assert_eq!(ready["port"], port);
+        assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn old_output_does_not_satisfy_a_log_pattern_after_a_restart() {
+        let fixture = control_fixture();
+        fixture.save(vec![plain_task(
+            "api",
+            ": --password=hunter2; if [ -e second-run ]; then echo booting; sleep 6; echo 'Started App'; else touch second-run; echo 'Started App'; fi; sleep 60",
+        )]);
+        fixture.start("api");
+        let pattern = Some("Started App");
+        let (ready, exit) = fixture.wait("api", pattern, Duration::from_secs(10));
+        print_response("wait log pattern", &ready);
+        assert_eq!(exit, 0);
+        assert_eq!(ready.result.unwrap()["signal"], "log_pattern");
+
+        let restarted = fixture.run_action(control::ControlRequest::Restart {
+            profile_id: "p".into(),
+            task_name: "api".into(),
+        });
+        assert!(restarted.ok, "{:?}", restarted.error);
+        let (not_yet, exit) = fixture.wait("api", pattern, Duration::from_secs(2));
+        print_response("wait log pattern after restart", &not_yet);
+        assert_eq!(exit, 5);
+        assert_eq!(not_yet.result.unwrap()["waiting_for"], "log_pattern");
+
+        let plain = fixture.logs("api", false);
+        print_response("logs", &plain);
+        let plain = plain.result.unwrap();
+        assert!(plain["logs"].as_str().unwrap().contains("Started App"));
+        assert!(plain.get("current_run").is_none());
+        let current = fixture.logs("api", true);
+        print_response("logs --current-run", &current);
+        let current = current.result.unwrap();
+        let text = current["logs"].as_str().unwrap();
+        assert!(text.contains("booting"));
+        assert!(!text.contains("Started App"));
+        assert!(!text.contains("Cutting Board"));
+        assert_eq!(current["current_run"]["boundary"], "start_marker");
+        assert!(current["current_run"]["started_at"].is_u64());
+        for logs in [&plain, &current] {
+            let text = logs.to_string();
+            assert!(!text.contains("hunter2"));
+            assert!(!text.contains(&*fixture.root().to_string_lossy()));
+        }
+
+        let (ready, exit) = fixture.wait("api", pattern, Duration::from_secs(30));
+        assert_eq!(exit, 0);
+        assert_eq!(ready.result.unwrap()["signal"], "log_pattern");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_prepare_with_the_old_process_still_listening_is_not_ready() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = control_fixture();
+        let root = fixture.root();
+        let port = free_port();
+        let mut task = plain_task("api", &listener_after(0, port, root));
+        task.expected_port = Some(port);
+        fixture.save(vec![task.clone()]);
+        fixture.start("api");
+        let (ready, exit) = fixture.wait("api", None, Duration::from_secs(30));
+        assert_eq!(exit, 0, "{:?}", ready.error);
+
+        std::fs::write(root.join("pom.xml"), "<project/>").unwrap();
+        let wrapper = root.join("mvnw");
+        std::fs::write(&wrapper, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        task.prepare = Some(crate::models::LaunchPrepareSpec {
+            kind: crate::models::LaunchPrepareKind::SpringBoot,
+            build_tool: Some(crate::models::LaunchBuildTool::Maven),
+            module: None,
+            profiles: vec![],
+            main_class: Some("App".into()),
+        });
+        fixture.save(vec![task]);
+        let failed = fixture.run_action(control::ControlRequest::Restart {
+            profile_id: "p".into(),
+            task_name: "api".into(),
+        });
+        assert!(!failed.ok);
+        assert_eq!(failed.error.unwrap().code, "prepare_failed");
+        assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_ok());
+
+        let (result, exit) = fixture.wait("api", None, Duration::from_secs(10));
+        print_response("wait after failed prepare", &result);
+        assert_eq!(exit, 6);
+        assert_eq!(result.error.unwrap().code, "prepare_failed");
+    }
+
+    #[cfg(unix)]
+    fn prepare_logs(fixture: &ControlFixture, task_name: &str) -> (control::ControlResponse, i32) {
+        control::test_client::send(
+            &fixture.socket,
+            &control::ControlRequest::Logs {
+                profile_id: "p".into(),
+                task_name: task_name.into(),
+                lines: None,
+                bytes: None,
+                current_run: false,
+                prepare: true,
+            },
+        )
+    }
+
+    #[cfg(unix)]
+    fn maven_task(root: &std::path::Path, wrapper: &str, name: &str) -> LaunchTask {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::write(root.join("pom.xml"), "<project/>").unwrap();
+        let path = root.join("mvnw");
+        std::fs::write(&path, wrapper).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut task = plain_task(name, "sleep 60");
+        task.prepare = Some(crate::models::LaunchPrepareSpec {
+            kind: crate::models::LaunchPrepareKind::SpringBoot,
+            build_tool: Some(crate::models::LaunchBuildTool::Maven),
+            module: None,
+            profiles: vec![],
+            main_class: Some("App".into()),
+        });
+        task
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_first_start_explains_itself_through_the_control_socket() {
+        let fixture = control_fixture();
+        let root = fixture.root();
+        let task = maven_task(
+            root,
+            "#!/bin/sh\necho '[ERROR] cannot find symbol'\nexit 1\n",
+            "api",
+        );
+        fixture.save(vec![task]);
+
+        let failed = fixture.run_action(control::ControlRequest::Start {
+            profile_id: "p".into(),
+            task_name: "api".into(),
+        });
+        print_response("failed start", &failed);
+        let error = failed.error.clone().unwrap();
+        assert_eq!(error.code, "prepare_failed");
+        assert!(error.message.contains("logs --prepare"));
+        let operation = &failed.result.unwrap()["operation"];
+        assert_eq!(operation["prepare"]["state"], "failed");
+        assert_eq!(operation["prepare"]["tool"], "maven");
+        assert!(!operation.to_string().contains("mvnw"));
+
+        // The run has not started, so the current run has nothing to say about why.
+        assert_eq!(
+            fixture.logs("api", true).result.unwrap()["current_run"]["boundary"],
+            "none"
+        );
+        let (read, exit) = prepare_logs(&fixture, "api");
+        print_response("logs --prepare", &read);
+        assert_eq!(exit, 0);
+        let read = read.result.unwrap();
+        assert_eq!(read["logs"], "[ERROR] cannot find symbol");
+        assert_eq!(read["lines"], 1);
+        assert_eq!(read["prepare_run"]["state"], "failed");
+        assert!(read["prepare_run"]["failure"]
+            .as_str()
+            .unwrap()
+            .contains("exited with"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_logs_answer_for_tasks_without_a_build() {
+        let fixture = control_fixture();
+        let mut container = plain_task("db", "");
+        container.container = Some("db".into());
+        fixture.save(vec![plain_task("api", "sleep 60"), container]);
+
+        let (read, exit) = prepare_logs(&fixture, "api");
+        assert_eq!(exit, 0);
+        assert_eq!(read.result.unwrap()["prepare_run"]["state"], "none");
+
+        fixture.start("api");
+        let (read, _) = prepare_logs(&fixture, "api");
+        let read = read.result.unwrap();
+        assert_eq!(read["prepare_run"]["state"], "not_required");
+        assert_eq!(read["logs"], "");
+
+        let (read, exit) = prepare_logs(&fixture, "db");
+        assert_eq!(exit, 2);
+        assert_eq!(read.error.unwrap().code, "invalid_request");
+
+        let (combined, exit) = control::test_client::send(
+            &fixture.socket,
+            &control::ControlRequest::Logs {
+                profile_id: "p".into(),
+                task_name: "api".into(),
+                lines: None,
+                bytes: None,
+                current_run: true,
+                prepare: true,
+            },
+        );
+        assert_eq!(exit, 2);
+        assert_eq!(combined.error.unwrap().code, "invalid_request");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wait_and_status_show_a_build_while_it_runs() {
+        let fixture = control_fixture();
+        let root = fixture.root();
+        let release = root.join("release");
+        let task = maven_task(
+            root,
+            &format!(
+                "#!/bin/sh\necho compiling\nwhile [ ! -e '{}' ]; do sleep 0.05; done\nexit 1\n",
+                release.display()
+            ),
+            "api",
+        );
+        fixture.save(vec![task]);
+
+        let accepted = control_service::dispatch(
+            &fixture.state,
+            control::ControlRequest::Start {
+                profile_id: "p".into(),
+                task_name: "api".into(),
+            },
+        );
+        let operation_id = accepted.operation_id.unwrap();
+        let building = |response: &control::ControlResponse| {
+            response.result.as_ref().unwrap()["operation"]["prepare"]["state"] == "running"
+        };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let operation = control::ControlRequest::Operation {
+            operation_id: operation_id.clone(),
+        };
+        while !building(&control_service::dispatch(
+            &fixture.state,
+            operation.clone(),
+        )) {
+            assert!(
+                Instant::now() < deadline,
+                "the build never showed as running"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        let (waited, exit) = fixture.wait("api", None, Duration::from_secs(1));
+        assert_eq!(exit, 5);
+        assert_eq!(waited.result.unwrap()["waiting_for"], "prepare");
+        let (status, _) = control::test_client::send(
+            &fixture.socket,
+            &control::ControlRequest::Status {
+                profile_id: "p".into(),
+                task_name: "api".into(),
+            },
+        );
+        let status = status.result.unwrap();
+        assert_eq!(
+            status["task"]["last_operation"]["prepare"]["state"],
+            "running"
+        );
+        let (read, _) = prepare_logs(&fixture, "api");
+        let read = read.result.unwrap();
+        assert_eq!(read["prepare_run"]["state"], "running");
+        assert!(read["logs"].as_str().unwrap().contains("compiling"));
+
+        std::fs::write(&release, "").unwrap();
+        while !control_service::dispatch(&fixture.state, operation.clone()).completed {
+            assert!(Instant::now() < deadline, "the build never finished");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn show_gives_the_command_a_prepared_task_really_runs() {
+        let fixture = control_fixture();
+        let task = maven_task(fixture.root(), "#!/bin/sh\nexit 0\n", "api");
+        fixture.save(vec![task]);
+
+        let (shown, exit) = control::test_client::send(
+            &fixture.socket,
+            &control::ControlRequest::Show {
+                profile_id: "p".into(),
+                task_name: "api".into(),
+            },
+        );
+        print_response("show prepared", &shown);
+        assert_eq!(exit, 0);
+        let shown = shown.result.unwrap();
+        let task = &shown["task"];
+        assert_eq!(task["launch_source"], "prepare");
+        assert_eq!(task["resolved"]["prepare"]["origin"], "saved");
+        assert!(task["resolved"]["prepare"]["command"]
+            .as_str()
+            .unwrap()
+            .contains("mvnw install"));
+        assert!(task["resolved"]["launch"]["command"]
+            .as_str()
+            .unwrap()
+            .contains("exec-maven-plugin"));
+        assert_eq!(task["resolved"]["error"], Value::Null);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn show_and_update_round_trip_and_refuse_an_active_task() {
+        let fixture = control_fixture();
+        fixture.save(vec![
+            plain_task("api", "sleep 60"),
+            plain_task("sibling", "sleep 60"),
+        ]);
+        fixture.start("sibling");
+        let unsaved_port = free_port();
+
+        let (updated, exit) = fixture.update("api", |request| {
+            if let control::ControlRequest::Update {
+                command,
+                cwd,
+                expected_port,
+                ..
+            } = request
+            {
+                *command = Some("  sleep 61  ".into());
+                *cwd = Some(" . ".into());
+                *expected_port = Some(unsaved_port);
+            }
+        });
+        print_response("update", &updated);
+        assert_eq!(exit, 0, "{:?}", updated.error);
+        let updated = updated.result.unwrap();
+        assert_eq!(updated["changed"]["command"]["old"], "sleep 60");
+        assert_eq!(updated["changed"]["command"]["new"], "sleep 61");
+        assert_eq!(updated["changed"]["expected_port"]["old"], Value::Null);
+        assert!(updated["changed"].get("cwd").is_none());
+        assert_eq!(updated["warnings"], serde_json::json!([]));
+        assert_eq!(fixture.saved_task("api").command, "sleep 61");
+        assert_eq!(fixture.saved_task("api").expected_port, Some(unsaved_port));
+
+        let (shown, exit) = control::test_client::send(
+            &fixture.socket,
+            &control::ControlRequest::Show {
+                profile_id: "p".into(),
+                task_name: "api".into(),
+            },
+        );
+        print_response("show", &shown);
+        assert_eq!(exit, 0);
+        let shown = shown.result.unwrap();
+        assert_eq!(shown["task"], updated["task"]);
+        assert_eq!(shown["task"]["launch_source"], "saved_command");
+        assert_eq!(shown["task"]["command"], "sleep 61");
+        assert!(shown["task"]["resolved_cwd"]
+            .as_str()
+            .unwrap()
+            .starts_with(&*fixture.root().to_string_lossy()));
+
+        let (refused, exit) = fixture.update("sibling", |request| {
+            if let control::ControlRequest::Update { command, .. } = request {
+                *command = Some("sleep 62".into());
+            }
+        });
+        print_response("update of a running task", &refused);
+        assert_eq!(exit, 6);
+        assert_eq!(refused.error.unwrap().code, "task_active");
+        assert_eq!(fixture.saved_task("sibling").command, "sleep 60");
+
+        let (missing, exit) = fixture.update("nope", |request| {
+            if let control::ControlRequest::Update { command, .. } = request {
+                *command = Some("sleep 1".into());
+            }
+        });
+        assert_eq!(exit, 4);
+        assert_eq!(missing.error.unwrap().code, "unknown_task");
+
+        let (invalid, exit) = fixture.update("api", |request| {
+            if let control::ControlRequest::Update { expected_port, .. } = request {
+                *expected_port = Some(0);
+            }
+        });
+        assert_eq!(exit, 2);
+        assert_eq!(invalid.error.unwrap().code, "invalid_request");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_warns_when_the_saved_command_will_not_run_verbatim() {
+        let fixture = control_fixture();
+        std::fs::write(
+            fixture.root().join("build.gradle"),
+            "plugins { id 'org.springframework.boot' version '3.4.0' }\n",
+        )
+        .unwrap();
+        fixture.save(vec![plain_task(
+            "api",
+            "java -cp stale.jar com.example.Application",
+        )]);
+
+        let (updated, exit) = fixture.update("api", |request| {
+            if let control::ControlRequest::Update { expected_port, .. } = request {
+                *expected_port = Some(8080);
+            }
+        });
+        print_response("update on the prepare path", &updated);
+        assert_eq!(exit, 0, "{:?}", updated.error);
+        let updated = updated.result.unwrap();
+        assert_eq!(updated["task"]["launch_source"], "prepare");
+        assert!(updated["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("not run verbatim"));
+
+        let (cleared, exit) = fixture.update("api", |request| {
+            if let control::ControlRequest::Update { clear_prepare, .. } = request {
+                *clear_prepare = true;
+            }
+        });
+        assert_eq!(exit, 0, "{:?}", cleared.error);
+        assert!(cleared.result.unwrap()["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("auto-detection"));
+    }
+
+    #[test]
+    fn saving_an_edit_form_refuses_a_profile_that_changed_after_it_opened() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = test_app_state(temporary.path());
+        let profile_with = |command: &str| LaunchProfile {
+            id: "p".into(),
+            name: "Profile".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "api".into(),
+                cwd: ".".into(),
+                command: command.into(),
+                expected_port: None,
+                container: None,
+                prepare: None,
+            }],
+        };
+        let saved_command = || {
+            read_profiles(&state.0.profiles_path).unwrap()[0].tasks[0]
+                .command
+                .clone()
+        };
+        let opened = profile_with("as opened");
+
+        // A new profile has nothing to compare against.
+        save_profile_from_form(&state, opened.clone(), None).unwrap();
+        assert_eq!(saved_command(), "as opened");
+
+        save_profile_from_form(&state, profile_with("edited"), Some(opened.clone())).unwrap();
+        assert_eq!(saved_command(), "edited");
+
+        // The saved profile now differs from what this form opened with.
+        let error = save_profile_from_form(&state, profile_with("overwrite"), Some(opened.clone()))
+            .unwrap_err();
+        assert!(error.contains("changed after this form was opened"));
+        assert_eq!(saved_command(), "edited");
+
+        // So does a profile deleted meanwhile, which saving must not bring back.
+        let gone = LaunchProfile {
+            id: "gone".into(),
+            ..opened.clone()
+        };
+        let error = save_profile_from_form(&state, gone.clone(), Some(gone)).unwrap_err();
+        assert!(error.contains("changed after this form was opened"));
+        assert_eq!(read_profiles(&state.0.profiles_path).unwrap().len(), 1);
     }
 }

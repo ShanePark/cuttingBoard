@@ -1,6 +1,9 @@
-use crate::models::{
-    now_epoch, LaunchProfile, LaunchTask, ManagedTaskSnapshot, ServiceLogSnapshot, ServiceSnapshot,
-    TaskRequest, WorkspaceSnapshot,
+use crate::{
+    control_service::ControlState,
+    models::{
+        now_epoch, LaunchProfile, LaunchTask, ManagedTaskSnapshot, ServiceLogSnapshot,
+        ServiceSnapshot, TaskRequest, WorkspaceSnapshot,
+    },
 };
 pub mod containers;
 mod external;
@@ -8,14 +11,17 @@ mod logs;
 mod prepare;
 mod shell;
 
+pub(crate) use external::port_accepts_connection;
 use external::{
     external_log_path, external_snapshot, external_task_info, service_belongs_to_runtime,
     stop_external_task, task_matches_service, ExternalTaskInfo,
 };
+use logs::read_prepare_run;
 use logs::{
-    read_log_tail, recovered_external_task_log_path, recovered_managed_log_path, safe_name,
-    LogSource, LogSourceCache, LogSourceKind,
+    read_complete_log_tail, read_log_tail, recovered_external_task_log_path,
+    recovered_managed_log_path, safe_name, LogSource, LogSourceCache, LogSourceKind,
 };
+pub use logs::{PrepareRun, RunBoundary, TaskLog};
 use prepare::{
     append_log, apply_environment, apply_java_home, prepare_task, PrepareCache, PrepareResult,
 };
@@ -54,9 +60,18 @@ pub struct LaunchManager {
     tasks: HashMap<String, RuntimeTask>,
     log_sources: LogSourceCache,
     prepare_cache: PrepareCache,
+    /// Operation registry told about preparations, since a build holds the manager for minutes.
+    operations: ControlState,
 }
 
 impl LaunchManager {
+    pub(crate) fn reporting_to(operations: ControlState) -> Self {
+        Self {
+            operations,
+            ..Self::default()
+        }
+    }
+
     pub fn snapshots(
         &mut self,
         profiles: &[LaunchProfile],
@@ -71,43 +86,62 @@ impl LaunchManager {
                 if task.container_name().is_some() {
                     continue;
                 }
-                let key = task_key(&profile.id, &task.name);
-                if let Some(runtime) = self
-                    .tasks
-                    .get(&key)
-                    .filter(|runtime| is_active(&runtime.state))
-                {
-                    snapshots.push(snapshot_from(&profile.id, &task.name, runtime));
-                } else if let Some(mut external) = external_task_info(profile, task, workspace) {
-                    self.attach_external_log(
-                        &mut external,
-                        logs_dir,
-                        profiles,
-                        profile,
-                        task,
-                        workspace,
-                    );
-                    snapshots.push(external_snapshot(&profile.id, &task.name, external));
-                } else if let Some(runtime) = self.tasks.get(&key) {
-                    snapshots.push(snapshot_from(&profile.id, &task.name, runtime));
-                } else {
-                    snapshots.push(ManagedTaskSnapshot {
-                        profile_id: profile.id.clone(),
-                        task_name: task.name.clone(),
-                        state: "stopped".into(),
-                        main_pid: None,
-                        started_at: None,
-                        exit_code: None,
-                        message: None,
-                        log_tail: String::new(),
-                        external_pid: None,
-                        external_working_directory: None,
-                        external_log_path: None,
-                    });
-                }
+                snapshots.push(self.snapshot_of(profiles, profile, task, workspace, logs_dir));
             }
         }
         snapshots
+    }
+
+    /// `snapshots` for one task. `profiles` still has to be all of them, because they decide whose
+    /// log a process started by an earlier session writes to.
+    pub fn task_snapshot(
+        &mut self,
+        profiles: &[LaunchProfile],
+        request: &TaskRequest,
+        workspace: Option<&WorkspaceSnapshot>,
+        logs_dir: &Path,
+    ) -> Result<ManagedTaskSnapshot, String> {
+        self.refresh();
+        let (profile, task) = find_task(profiles, request)?;
+        Ok(self.snapshot_of(profiles, profile, task, workspace, logs_dir))
+    }
+
+    fn snapshot_of(
+        &mut self,
+        profiles: &[LaunchProfile],
+        profile: &LaunchProfile,
+        task: &LaunchTask,
+        workspace: Option<&WorkspaceSnapshot>,
+        logs_dir: &Path,
+    ) -> ManagedTaskSnapshot {
+        let key = task_key(&profile.id, &task.name);
+        if let Some(runtime) = self
+            .tasks
+            .get(&key)
+            .filter(|runtime| is_active(&runtime.state))
+        {
+            snapshot_from(&profile.id, &task.name, runtime)
+        } else if let Some(mut external) = external_task_info(profile, task, workspace) {
+            self.attach_external_log(&mut external, logs_dir, profiles, profile, task, workspace);
+            external_snapshot(&profile.id, &task.name, external)
+        } else if let Some(runtime) = self.tasks.get(&key) {
+            snapshot_from(&profile.id, &task.name, runtime)
+        } else {
+            ManagedTaskSnapshot {
+                profile_id: profile.id.clone(),
+                task_name: task.name.clone(),
+                state: "stopped".into(),
+                main_pid: None,
+                started_at: None,
+                exit_code: None,
+                message: None,
+                log_tail: String::new(),
+                external_pid: None,
+                external_working_directory: None,
+                external_log_path: None,
+                container_detail: None,
+            }
+        }
     }
 
     /// Read a task's log directly from disk without taking the manager mutex. This is used while
@@ -127,6 +161,50 @@ impl LaunchManager {
         }
     }
 
+    /// The log of a task as the UI sees it: the managed task log, unless a process Cutting Board
+    /// does not manage is behind the task.
+    pub fn task_log(
+        &mut self,
+        profiles: &[LaunchProfile],
+        request: &TaskRequest,
+        workspace: Option<&WorkspaceSnapshot>,
+        logs_dir: &Path,
+    ) -> Result<TaskLog, String> {
+        self.refresh();
+        let (profile, task) = find_task(profiles, request)?;
+        let active = self
+            .tasks
+            .get(&task_key(&profile.id, &task.name))
+            .is_some_and(|runtime| is_active(&runtime.state));
+        let external = (!active)
+            .then(|| external_task_info(profile, task, workspace))
+            .flatten();
+        read_task_log(logs_dir, profile, task, external, |pid, started_at| {
+            self.log_sources.resolve(pid, started_at, || {
+                external_log_source(
+                    logs_dir, profiles, profile, task, workspace, pid, started_at,
+                )
+            })
+        })
+    }
+
+    /// `task_log` for when a long preparation holds the manager. Without its runtime state, a
+    /// matched process is taken at face value: a running managed task resolves to its own log.
+    pub fn task_log_while_busy(
+        profiles: &[LaunchProfile],
+        request: &TaskRequest,
+        workspace: Option<&WorkspaceSnapshot>,
+        logs_dir: &Path,
+    ) -> Result<TaskLog, String> {
+        let (profile, task) = find_task(profiles, request)?;
+        let external = external_task_info(profile, task, workspace);
+        read_task_log(logs_dir, profile, task, external, |pid, started_at| {
+            external_log_source(
+                logs_dir, profiles, profile, task, workspace, pid, started_at,
+            )
+        })
+    }
+
     /// Attach the output of a process Cutting Board did not start: a file it writes to, or the
     /// task log of an earlier Cutting Board session that started it.
     fn attach_external_log(
@@ -142,20 +220,9 @@ impl LaunchManager {
             return;
         };
         let source = self.log_sources.resolve(pid, started_at, || {
-            external_log_path(pid)
-                .map(|path| LogSource {
-                    kind: LogSourceKind::Process,
-                    path,
-                })
-                .or_else(|| {
-                    recovered_external_task_log_path(
-                        logs_dir, profiles, profile, task, workspace, started_at,
-                    )
-                    .map(|path| LogSource {
-                        kind: LogSourceKind::Managed,
-                        path,
-                    })
-                })
+            external_log_source(
+                logs_dir, profiles, profile, task, workspace, pid, started_at,
+            )
         });
         let Some(source) = source else {
             return;
@@ -354,7 +421,17 @@ impl LaunchManager {
         let preparation = if preparation_attempted {
             prepared
         } else {
-            prepare_task(&mut self.prepare_cache, profile, task, logs_dir, &log_path)?
+            prepare_task(
+                &mut self.prepare_cache,
+                profile,
+                task,
+                logs_dir,
+                &log_path,
+                &|progress| {
+                    self.operations
+                        .record_prepare(&profile.id, &task.name, progress)
+                },
+            )?
         };
         let launch_description = preparation
             .as_ref()
@@ -542,8 +619,17 @@ impl LaunchManager {
                 task.name
             ),
         )?;
-        let preparation =
-            prepare_task(&mut self.prepare_cache, profile, task, logs_dir, &log_path)?;
+        let preparation = prepare_task(
+            &mut self.prepare_cache,
+            profile,
+            task,
+            logs_dir,
+            &log_path,
+            &|progress| {
+                self.operations
+                    .record_prepare(&profile.id, &task.name, progress)
+            },
+        )?;
         append_log(
             &log_path,
             &format!(
@@ -662,6 +748,19 @@ impl LaunchManager {
             .tasks
             .iter()
             .any(|task| external_task_info(profile, task, workspace).is_some())
+    }
+
+    pub fn task_is_active(
+        &mut self,
+        profile: &LaunchProfile,
+        task: &LaunchTask,
+        workspace: Option<&WorkspaceSnapshot>,
+    ) -> bool {
+        self.refresh();
+        self.tasks
+            .get(&task_key(&profile.id, &task.name))
+            .is_some_and(|runtime| is_active(&runtime.state))
+            || external_task_info(profile, task, workspace).is_some()
     }
 
     pub fn stop_all(&mut self) {
@@ -790,7 +889,104 @@ fn resolve_cwd(profile: &LaunchProfile, task: &LaunchTask) -> Result<PathBuf, St
     Ok(resolved)
 }
 
-fn task_cwd(profile: &LaunchProfile, task: &LaunchTask) -> PathBuf {
+fn external_log_source(
+    logs_dir: &Path,
+    profiles: &[LaunchProfile],
+    profile: &LaunchProfile,
+    task: &LaunchTask,
+    workspace: Option<&WorkspaceSnapshot>,
+    pid: u32,
+    started_at: u64,
+) -> Option<LogSource> {
+    external_log_path(pid)
+        .map(|path| LogSource {
+            kind: LogSourceKind::Process,
+            path,
+        })
+        .or_else(|| {
+            recovered_external_task_log_path(
+                logs_dir, profiles, profile, task, workspace, started_at,
+            )
+            .map(|path| LogSource {
+                kind: LogSourceKind::Managed,
+                path,
+            })
+        })
+}
+
+/// Reads the managed task log, or with `external` the source found for a process behind the task.
+/// That process may simply have no readable output, which is not a reason to show the managed log
+/// of an earlier run as if it were its own.
+fn read_task_log(
+    logs_dir: &Path,
+    profile: &LaunchProfile,
+    task: &LaunchTask,
+    external: Option<ExternalTaskInfo>,
+    log_source: impl FnOnce(u32, u64) -> Option<LogSource>,
+) -> Result<TaskLog, String> {
+    let managed_path = task_log_path(logs_dir, profile, task);
+    let (path, has_run_markers, process_started_at) = match external {
+        None => (managed_path, true, None),
+        Some(external) => {
+            let source = match (external.pid, external.started_at) {
+                (Some(pid), Some(started_at)) => log_source(pid, started_at),
+                _ => None,
+            };
+            let Some(source) = source else {
+                return Ok(TaskLog::default());
+            };
+            let has_markers = source.kind == LogSourceKind::Managed
+                || resolved_path(&source.path) == resolved_path(&managed_path);
+            (source.path, has_markers, external.started_at)
+        }
+    };
+    let (text, truncated) = match read_complete_log_tail(&path) {
+        Ok(tail) => tail,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Default::default(),
+        Err(error) => return Err(format!("Could not read the task log: {error}")),
+    };
+    Ok(TaskLog {
+        text,
+        truncated,
+        has_run_markers,
+        process_started_at,
+    })
+}
+
+/// lsof reports a resolved path, whereas the logs directory may be reached through a symlink.
+fn resolved_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+pub(crate) fn task_launch_source(profile: &LaunchProfile, task: &LaunchTask) -> &'static str {
+    if task.container_name().is_some() {
+        "container"
+    } else {
+        prepare::launch_source(profile, task)
+    }
+}
+
+/// `None` for a container task, which runs no command of its own.
+pub(crate) fn task_resolved(
+    profile: &LaunchProfile,
+    task: &LaunchTask,
+) -> Option<prepare::ResolvedTask> {
+    task.container_name()
+        .is_none()
+        .then(|| prepare::resolve_task(profile, task))
+}
+
+/// A preparation always writes to the task's own log, even when a process Cutting Board did not
+/// start is what `logs` would read.
+pub(crate) fn task_prepare_run(
+    logs_dir: &Path,
+    profile: &LaunchProfile,
+    task: &LaunchTask,
+) -> io::Result<PrepareRun> {
+    read_prepare_run(&task_log_path(logs_dir, profile, task))
+}
+
+pub(crate) fn task_cwd(profile: &LaunchProfile, task: &LaunchTask) -> PathBuf {
     let cwd = PathBuf::from(task.cwd.trim());
     if cwd.is_absolute() {
         cwd
@@ -1017,6 +1213,7 @@ fn snapshot_from(profile_id: &str, task_name: &str, runtime: &RuntimeTask) -> Ma
         external_pid: None,
         external_working_directory: None,
         external_log_path: None,
+        container_detail: None,
     }
 }
 
@@ -1645,6 +1842,7 @@ mod tests {
         let manager = LaunchManager {
             log_sources: LogSourceCache::default(),
             prepare_cache: PrepareCache::default(),
+            operations: ControlState::default(),
             tasks: HashMap::from([(
                 task_key("profile", "frontend"),
                 RuntimeTask {
@@ -1823,6 +2021,7 @@ mod tests {
         let mut manager = LaunchManager {
             log_sources: LogSourceCache::default(),
             prepare_cache: PrepareCache::default(),
+            operations: ControlState::default(),
             tasks: HashMap::from([(
                 task_key("profile", "frontend"),
                 RuntimeTask {
@@ -1930,6 +2129,7 @@ mod tests {
             let mut manager = LaunchManager {
                 log_sources: LogSourceCache::default(),
                 prepare_cache: PrepareCache::default(),
+                operations: ControlState::default(),
                 tasks: HashMap::from([(
                     task_key("profile", "web"),
                     RuntimeTask {
@@ -2074,6 +2274,7 @@ mod tests {
             )]),
             log_sources: LogSourceCache::default(),
             prepare_cache: PrepareCache::default(),
+            operations: ControlState::default(),
         };
 
         let error = manager
@@ -2171,6 +2372,7 @@ mod tests {
             )]),
             log_sources: LogSourceCache::default(),
             prepare_cache: PrepareCache::default(),
+            operations: ControlState::default(),
         };
         let (done_sender, done_receiver) = mpsc::channel();
         let worker_profile = profile.clone();
@@ -2567,5 +2769,177 @@ mod tests {
     #[test]
     fn task_key_separates_profile_and_name() {
         assert_ne!(task_key("ab", "c"), task_key("a", "bc"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_managed_log_reached_through_a_symlinked_logs_dir_keeps_its_run_markers() {
+        let temporary = tempfile::tempdir().unwrap();
+        let real_logs = temporary.path().join("real-logs");
+        fs::create_dir(&real_logs).unwrap();
+        let linked_logs = temporary.path().join("linked-logs");
+        std::os::unix::fs::symlink(&real_logs, &linked_logs).unwrap();
+        let task = LaunchTask {
+            name: "web".into(),
+            cwd: ".".into(),
+            command: "sleep 30".into(),
+            expected_port: None,
+            container: None,
+            prepare: None,
+        };
+        let profile = LaunchProfile {
+            id: "profile".into(),
+            name: "profile".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![task.clone()],
+        };
+        let contents = "=== Cutting Board start 7 · sleep 30 ===\noutput\n";
+        fs::write(real_logs.join("profile-web.log"), contents).unwrap();
+        let foreign = real_logs.join("app.log");
+        fs::write(&foreign, contents).unwrap();
+        let read = |logs_dir: &Path, path: PathBuf| {
+            let external = ExternalTaskInfo {
+                pid: Some(1),
+                started_at: Some(7),
+                uid: None,
+                expected_port: None,
+                endpoint_addresses: Vec::new(),
+                working_directory: None,
+                log_path: None,
+                log_tail: String::new(),
+            };
+            read_task_log(logs_dir, &profile, &task, Some(external), |_, _| {
+                Some(LogSource {
+                    kind: LogSourceKind::Process,
+                    path,
+                })
+            })
+            .unwrap()
+        };
+
+        // What lsof reports for the file the task log path points at.
+        let resolved = real_logs.join("profile-web.log").canonicalize().unwrap();
+        let log = read(&linked_logs, resolved);
+        assert_eq!(log.current_run().unwrap().started_at, Some(7));
+
+        assert_eq!(read(&linked_logs, foreign).current_run(), None);
+
+        // Neither side exists, so canonicalizing fails and the raw paths decide.
+        assert!(
+            read(
+                &temporary.path().join("gone"),
+                temporary.path().join("gone/profile-web.log")
+            )
+            .has_run_markers
+        );
+        assert!(
+            !read(
+                &temporary.path().join("gone"),
+                temporary.path().join("gone/other.log")
+            )
+            .has_run_markers
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn task_log_reads_the_output_of_an_external_process_not_a_stale_managed_log() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = LaunchProfile {
+            id: "profile".into(),
+            name: "profile".into(),
+            project_root: temporary.path().to_string_lossy().into_owned(),
+            tasks: vec![LaunchTask {
+                name: "web".into(),
+                cwd: ".".into(),
+                command: "sleep 30".into(),
+                expected_port: Some(5173),
+                container: None,
+                prepare: None,
+            }],
+        };
+        let request = TaskRequest {
+            profile_id: profile.id.clone(),
+            task_name: "web".into(),
+        };
+        let logs_dir = temporary.path().join("logs");
+        fs::create_dir(&logs_dir).unwrap();
+        fs::write(
+            logs_dir.join("profile-web.log"),
+            "=== Cutting Board start 1 · sleep 30 ===\nstale managed output\n",
+        )
+        .unwrap();
+        let output_path = temporary.path().join("external.out");
+        let output = fs::File::create(&output_path).unwrap();
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "echo external output; exec sleep 30"])
+            .stdout(output)
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut system = System::new();
+        let process_start = loop {
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+                true,
+                ProcessRefreshKind::nothing().without_tasks(),
+            );
+            if let Some(process) = system.process(Pid::from_u32(pid)) {
+                break process.start_time();
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while fs::read_to_string(&output_path)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        }
+        let mut workspace = workspace_with_project(5173, temporary.path());
+        workspace.services[0].process = Some(crate::models::ProcessInfo {
+            pid,
+            parent_pid: None,
+            name: "sleep".into(),
+            executable: None,
+            working_directory: Some(temporary.path().to_string_lossy().into_owned()),
+            command: "sleep 30".into(),
+            launch_command: Some("sleep 30".into()),
+            create_time: process_start,
+            uptime_seconds: 0,
+            cpu_percent: None,
+            memory_bytes: None,
+            uid: None,
+        });
+        let profiles = std::slice::from_ref(&profile);
+        let mut manager = LaunchManager::default();
+
+        let log = manager
+            .task_log(profiles, &request, Some(&workspace), &logs_dir)
+            .unwrap();
+        assert_eq!(log.text, "external output\n");
+        assert_eq!(log.current_run(), None);
+        assert_eq!(
+            LaunchManager::task_log_while_busy(profiles, &request, Some(&workspace), &logs_dir)
+                .unwrap()
+                .text,
+            "external output\n"
+        );
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        workspace.services[0].process.as_mut().unwrap().pid = u32::MAX;
+        let without_source = LaunchManager::default()
+            .task_log(profiles, &request, Some(&workspace), &logs_dir)
+            .unwrap();
+        assert_eq!(without_source, TaskLog::default());
+
+        let stopped = manager
+            .task_log(profiles, &request, None, &logs_dir)
+            .unwrap();
+        assert!(stopped.text.contains("stale managed output"));
+        assert_eq!(stopped.current_run().unwrap().started_at, Some(1));
     }
 }

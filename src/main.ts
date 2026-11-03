@@ -310,6 +310,7 @@ const launchActions = createLaunchActions({
   refreshLaunch,
   renderHeaderCounts,
   hasProfileForm: modalForms.hasProfileForm,
+  profileFormBaseline: modalForms.profileFormBaseline,
   readProfileForm: modalForms.readProfileForm,
   openModal,
   closeModal,

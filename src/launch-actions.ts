@@ -13,7 +13,7 @@ export type PendingLaunchAction =
   | { kind: "profile"; direction: "start" | "stop"; profileId: string };
 
 export type LaunchActionsApi = {
-  saveProfile: (profile: LaunchProfile) => Promise<LaunchProfile[]>;
+  saveProfile: (profile: LaunchProfile, baseline?: LaunchProfile) => Promise<LaunchProfile[]>;
   deleteProfile: (profileId: string) => Promise<LaunchProfile[]>;
   startTask: (profileId: string, taskName: string) => Promise<ManagedTaskSnapshot>;
   stopTask: (profileId: string, taskName: string) => Promise<ManagedTaskSnapshot>;
@@ -37,6 +37,7 @@ export type LaunchActionsContext = {
   refreshLaunch: (force?: boolean) => Promise<void>;
   renderHeaderCounts: () => void;
   hasProfileForm: () => boolean;
+  profileFormBaseline: () => string | undefined;
   readProfileForm: (id: string | null) => LaunchProfile | null;
   openModal: typeof openModal;
   closeModal: () => void;
@@ -252,7 +253,14 @@ export function createLaunchActions(context: LaunchActionsContext) {
     if (id && blocksEditing(findProfile(id))) throw new Error("Stop every task in this profile before editing it.");
     const profile = context.readProfileForm(id);
     if (!profile) return;
-    context.setProfiles(await context.api.saveProfile(profile));
+    const baseline = context.profileFormBaseline();
+    try {
+      context.setProfiles(await context.api.saveProfile(profile, baseline === undefined ? undefined : JSON.parse(baseline)));
+    } catch (error) {
+      // The refusal may be that the profile changed, which the board behind the form should show.
+      await context.refreshLaunch(true);
+      throw error;
+    }
     context.closeModal();
     context.renderHeaderCounts();
     context.renderLaunch(true);

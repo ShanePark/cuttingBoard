@@ -1,4 +1,4 @@
-use crate::models::{LaunchProfile, LaunchTask, ServiceSnapshot};
+use crate::models::{LaunchProfile, LaunchTask, PrepareState, ServiceSnapshot};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
@@ -111,14 +111,242 @@ pub(super) fn recovered_external_task_log_path(
     recovered_managed_log_path(logs_dir, profiles, service, process_start)
 }
 
-pub(super) fn read_log_tail(path: &Path) -> io::Result<String> {
+const LOG_TAIL_BYTES: u64 = 64 * 1024;
+
+/// The last bytes of the file, and whether anything before them was left out.
+fn read_tail_bytes(path: &Path) -> io::Result<(Vec<u8>, bool)> {
     let mut file = OpenOptions::new().read(true).open(path)?;
-    let length = file.metadata()?.len();
-    let start = length.saturating_sub(64 * 1024);
+    let start = file.metadata()?.len().saturating_sub(LOG_TAIL_BYTES);
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
+    Ok((bytes, start > 0))
+}
+
+pub(super) fn read_log_tail(path: &Path) -> io::Result<String> {
+    let (bytes, _) = read_tail_bytes(path)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A task's log tail for the control socket, with what it needs to find the current run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskLog {
+    pub text: String,
+    pub truncated: bool,
+    /// Whether this is a Cutting Board task log, whose start markers separate runs.
+    pub has_run_markers: bool,
+    /// When a process Cutting Board does not manage is behind the log, its start time.
+    pub process_started_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunBoundary {
+    StartMarker,
+    /// The marker has scrolled out of the tail, so the whole tail belongs to the current run.
+    LogTail,
+    /// The log shows no run at all.
+    None,
+}
+
+impl RunBoundary {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StartMarker => "start_marker",
+            Self::LogTail => "log_tail",
+            Self::None => "none",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurrentRun<'a> {
+    pub text: &'a str,
+    pub started_at: Option<u64>,
+    pub boundary: RunBoundary,
+    pub truncated: bool,
+}
+
+impl TaskLog {
+    /// The part of the log written since the last start. `None` means the log cannot tell runs
+    /// apart, so nothing in it can be attributed to the process that is running now.
+    pub fn current_run(&self) -> Option<CurrentRun<'_>> {
+        if !self.has_run_markers {
+            return None;
+        }
+        let mut offset = 0;
+        let mut last_start = None;
+        for line in self.text.split_inclusive('\n') {
+            if let Some(marker) = parse_log_start_marker(line) {
+                last_start = Some((offset, marker.started_at));
+            }
+            offset += line.len();
+        }
+        match last_start {
+            Some((_, started_at))
+                if self.process_started_at.is_some_and(|process_start| {
+                    process_start.abs_diff(started_at) > LOG_RECOVERY_START_SKEW_SECS
+                }) =>
+            {
+                None
+            }
+            Some((offset, started_at)) => Some(CurrentRun {
+                text: &self.text[offset..],
+                started_at: Some(started_at),
+                boundary: RunBoundary::StartMarker,
+                truncated: false,
+            }),
+            None if self.truncated => Some(CurrentRun {
+                text: &self.text,
+                started_at: None,
+                boundary: RunBoundary::LogTail,
+                truncated: true,
+            }),
+            None => Some(CurrentRun {
+                text: "",
+                started_at: None,
+                boundary: RunBoundary::None,
+                truncated: false,
+            }),
+        }
+    }
+}
+
+/// Reads the tail like `read_log_tail`, without the line the cut falls in. Output filters match
+/// whole lines, so the end of a marker cut in half would otherwise pass them with the rest of its
+/// command line. Also reports whether anything was cut.
+pub(super) fn read_complete_log_tail(path: &Path) -> io::Result<(String, bool)> {
+    let (mut bytes, truncated) = read_tail_bytes(path)?;
+    if truncated {
+        let line_end = bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(bytes.len(), |index| index + 1);
+        bytes.drain(..line_end);
+    }
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
+}
+
+/// The latest preparation in a task log. A preparation with no outcome yet reads as `Running`,
+/// and only the caller knows whether one is still in flight.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrepareRun {
+    pub state: PrepareState,
+    pub started_at: Option<u64>,
+    pub completed_at: Option<u64>,
+    pub failure: Option<String>,
+    pub text: String,
+    pub truncated: bool,
+}
+
+const PREPARE_MARKER_PREFIX: &[u8] = b"=== Cutting Board prepare ";
+
+/// Build output need not be UTF-8, so lines are only decoded once they look like a marker. A
+/// failure can scroll out of the tail behind a chatty old process, so this looks further back.
+pub(super) fn read_prepare_run(path: &Path) -> io::Result<PrepareRun> {
+    let file = match OpenOptions::new().read(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(PrepareRun::default()),
+        Err(error) => return Err(error),
+    };
+    let scan_start = file.metadata()?.len().saturating_sub(LOG_MARKER_SCAN_BYTES);
+    let mut reader = BufReader::new(file);
+    reader.seek(SeekFrom::Start(scan_start))?;
+    let mut line = Vec::new();
+    let mut offset = scan_start;
+    if scan_start > 0 {
+        offset += reader.read_until(b'\n', &mut line)? as u64;
+    }
+    let scanned_from = offset;
+
+    let mut run = PrepareRun::default();
+    let mut range = None;
+    loop {
+        line.clear();
+        let bytes = reader.read_until(b'\n', &mut line)? as u64;
+        if bytes == 0 {
+            break;
+        }
+        if let Some(marker) = parse_prepare_marker(&line) {
+            match marker.state {
+                PrepareState::Running => {
+                    run = PrepareRun {
+                        state: PrepareState::Running,
+                        started_at: marker.at,
+                        ..Default::default()
+                    };
+                    range = Some((offset, None));
+                }
+                state => {
+                    // Its start has scrolled out of what was scanned.
+                    let start = range.map_or(scanned_from, |(start, _)| start);
+                    run.truncated |= range.is_none();
+                    run.state = state;
+                    run.completed_at = marker.at;
+                    run.failure = marker.failure;
+                    range = Some((start, Some(offset)));
+                }
+            }
+        }
+        offset += bytes;
+    }
+
+    if let Some((start, end)) = range {
+        let end = end.unwrap_or(offset);
+        let from = start.max(end.saturating_sub(LOG_TAIL_BYTES));
+        reader.seek(SeekFrom::Start(from))?;
+        let mut bytes = Vec::new();
+        reader.take(end - from).read_to_end(&mut bytes)?;
+        if from > start {
+            let line_end = bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |index| index + 1);
+            bytes.drain(..line_end);
+            run.truncated = true;
+        }
+        run.text = String::from_utf8_lossy(&bytes).into_owned();
+    }
+    Ok(run)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PrepareMarker {
+    /// `Running` for the marker that starts a preparation.
+    state: PrepareState,
+    at: Option<u64>,
+    failure: Option<String>,
+}
+
+fn parse_prepare_marker(line: &[u8]) -> Option<PrepareMarker> {
+    if !line.starts_with(PREPARE_MARKER_PREFIX) {
+        return None;
+    }
+    let line = String::from_utf8_lossy(line);
+    let body = line
+        .trim_end_matches(['\r', '\n'])
+        .strip_prefix("=== Cutting Board prepare ")?
+        .strip_suffix(" ===")?;
+    // Logs written before markers carried a time have none.
+    let (body, at) = match body.rsplit_once(" · at=") {
+        Some((body, at)) => (body, at.parse().ok()),
+        None => (body, None),
+    };
+    let mut failure = None;
+    let state = if body.starts_with("detection started") {
+        PrepareState::Running
+    } else if body.starts_with("not required") {
+        PrepareState::NotRequired
+    } else if body.starts_with("skipped") {
+        PrepareState::Skipped
+    } else if body.starts_with("completed") {
+        PrepareState::Succeeded
+    } else if let Some(reason) = body.strip_prefix("failed · ") {
+        failure = Some(reason.to_owned());
+        PrepareState::Failed
+    } else {
+        return None;
+    };
+    Some(PrepareMarker { state, at, failure })
 }
 
 pub(super) const LOG_RECOVERY_START_SKEW_SECS: u64 = 15 * 60;
@@ -1173,5 +1401,239 @@ mod tests {
             browser_url: None,
             active_profiles: Vec::new(),
         }
+    }
+
+    fn managed_log(text: &str, truncated: bool) -> TaskLog {
+        TaskLog {
+            text: text.into(),
+            truncated,
+            has_run_markers: true,
+            process_started_at: None,
+        }
+    }
+
+    fn read_run(contents: &[u8]) -> PrepareRun {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("task.log");
+        fs::write(&path, contents).unwrap();
+        read_prepare_run(&path).unwrap()
+    }
+
+    const STARTED: &str =
+        "=== Cutting Board prepare detection started · task=api · cwd=. · at=100 ===\n";
+
+    #[test]
+    fn prepare_run_is_the_latest_attempt_up_to_its_outcome() {
+        let log = format!(
+            "{STARTED}first build\n=== Cutting Board prepare completed · tool=maven · module=(root) · at=110 ===\n\
+             \n=== Cutting Board start 111 · cmd ===\napp output\n\
+             === Cutting Board prepare detection started · task=api · cwd=. · at=200 ===\n\
+             second build\n\
+             === Cutting Board prepare failed · Could not prepare api: mvnw exited with exit status: 1. · at=245 ===\n\
+             old process output\n"
+        );
+        let run = read_run(log.as_bytes());
+        assert_eq!(run.state, PrepareState::Failed);
+        assert_eq!((run.started_at, run.completed_at), (Some(200), Some(245)));
+        assert_eq!(
+            run.failure.as_deref(),
+            Some("Could not prepare api: mvnw exited with exit status: 1.")
+        );
+        assert!(run.text.contains("second build"));
+        assert!(!run.text.contains("first build"));
+        assert!(!run.text.contains("old process output"));
+        assert!(!run.truncated);
+    }
+
+    #[test]
+    fn prepare_run_without_an_outcome_reads_as_running() {
+        let run = read_run(format!("{STARTED}compiling\n").as_bytes());
+        assert_eq!(run.state, PrepareState::Running);
+        assert_eq!((run.started_at, run.completed_at), (Some(100), None));
+        assert!(run.text.contains("compiling"));
+    }
+
+    #[test]
+    fn prepare_run_reports_each_outcome_a_log_can_hold() {
+        for (marker, state) in [
+            (
+                "=== Cutting Board prepare not required · task=api · using saved command · at=101 ===",
+                PrepareState::NotRequired,
+            ),
+            (
+                "=== Cutting Board prepare skipped (unchanged inputs) · cache hit · fingerprint=abc · at=101 ===",
+                PrepareState::Skipped,
+            ),
+            (
+                "=== Cutting Board prepare completed · tool=gradle · module=(root) · at=101 ===",
+                PrepareState::Succeeded,
+            ),
+        ] {
+            let run = read_run(format!("{STARTED}{marker}\n").as_bytes());
+            assert_eq!(run.state, state);
+            assert_eq!(run.completed_at, Some(101));
+            assert_eq!(run.failure, None);
+        }
+    }
+
+    #[test]
+    fn prepare_run_is_none_without_a_log_or_any_marker() {
+        let temporary = tempfile::tempdir().unwrap();
+        assert_eq!(
+            read_prepare_run(&temporary.path().join("missing.log")).unwrap(),
+            PrepareRun::default()
+        );
+        assert_eq!(read_run(b"only app output\n"), PrepareRun::default());
+    }
+
+    #[test]
+    fn prepare_run_reads_markers_written_before_they_carried_a_time() {
+        let run = read_run(
+            b"=== Cutting Board prepare detection started \xC2\xB7 task=api \xC2\xB7 cwd=. ===\n\
+              === Cutting Board prepare failed \xC2\xB7 boom ===\n",
+        );
+        assert_eq!(run.state, PrepareState::Failed);
+        assert_eq!((run.started_at, run.completed_at), (None, None));
+        assert_eq!(run.failure.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn prepare_run_survives_output_that_is_not_utf8() {
+        let mut log = STARTED.as_bytes().to_vec();
+        log.extend_from_slice(b"\xC7\xD1\xB1\xDB build output\n");
+        log.extend_from_slice(
+            "=== Cutting Board prepare completed · tool=maven · module=(root) · at=120 ===\n"
+                .as_bytes(),
+        );
+        let run = read_run(&log);
+        assert_eq!(run.state, PrepareState::Succeeded);
+        assert!(run.text.contains("build output"));
+    }
+
+    #[test]
+    fn prepare_run_keeps_the_end_of_a_long_build_on_whole_lines() {
+        let mut log = STARTED.to_owned();
+        log.push_str(&"x".repeat(LOG_TAIL_BYTES as usize));
+        log.push_str("\n[ERROR] the reason\n");
+        log.push_str("=== Cutting Board prepare failed · boom · at=150 ===\n");
+        let run = read_run(log.as_bytes());
+        assert!(run.truncated);
+        assert_eq!(run.text, "[ERROR] the reason\n");
+        assert_eq!(run.started_at, Some(100));
+    }
+
+    #[test]
+    fn prepare_run_finds_a_failure_behind_more_than_a_tail_of_later_output() {
+        let mut log = STARTED.to_owned();
+        log.push_str("[ERROR] the reason\n");
+        log.push_str("=== Cutting Board prepare failed · boom · at=150 ===\n");
+        log.push_str(&"old process\n".repeat(LOG_TAIL_BYTES as usize / 4));
+        let run = read_run(log.as_bytes());
+        assert_eq!(run.state, PrepareState::Failed);
+        assert_eq!(run.text.lines().nth(1), Some("[ERROR] the reason"));
+        assert!(!run.truncated);
+    }
+
+    #[test]
+    fn prepare_run_marks_an_outcome_whose_start_scrolled_out_of_the_scan() {
+        let mut log = "x\n".repeat(LOG_MARKER_SCAN_BYTES as usize / 2 + 1);
+        log.push_str("=== Cutting Board prepare failed · boom · at=150 ===\n");
+        let run = read_run(log.as_bytes());
+        assert_eq!(run.state, PrepareState::Failed);
+        assert_eq!(run.started_at, None);
+        assert!(run.truncated);
+    }
+
+    #[test]
+    fn current_run_starts_at_the_last_start_marker() {
+        let log = managed_log(
+            "\n=== Cutting Board start 100 · old ===\nStarted old\n\n=== Cutting Board start 200 · new ===\nbooting\n",
+            true,
+        );
+        let run = log.current_run().unwrap();
+        assert_eq!(run.started_at, Some(200));
+        assert_eq!(run.boundary, RunBoundary::StartMarker);
+        assert!(!run.truncated);
+        assert_eq!(run.text, "=== Cutting Board start 200 · new ===\nbooting\n");
+    }
+
+    #[test]
+    fn current_run_only_counts_a_marker_at_the_start_of_a_line() {
+        let log = managed_log(
+            "=== Cutting Board start 100 · cmd ===\nsaid === Cutting Board start 200 · cmd ===\n",
+            false,
+        );
+        assert_eq!(log.current_run().unwrap().started_at, Some(100));
+    }
+
+    #[test]
+    fn current_run_is_the_whole_tail_once_the_marker_has_scrolled_out() {
+        let log = managed_log("still booting\n", true);
+        let run = log.current_run().unwrap();
+        assert_eq!(run.boundary, RunBoundary::LogTail);
+        assert_eq!(run.started_at, None);
+        assert!(run.truncated);
+        assert_eq!(run.text, "still booting\n");
+    }
+
+    #[test]
+    fn current_run_is_empty_for_a_complete_log_without_a_marker() {
+        let run = managed_log("", false);
+        let run = run.current_run().unwrap();
+        assert_eq!(run.boundary, RunBoundary::None);
+        assert_eq!(run.text, "");
+    }
+
+    #[test]
+    fn current_run_is_unknown_without_markers_or_for_another_process() {
+        let foreign = TaskLog {
+            has_run_markers: false,
+            ..managed_log("=== Cutting Board start 100 · cmd ===\n", false)
+        };
+        assert_eq!(foreign.current_run(), None);
+
+        let marker = "=== Cutting Board start 10000 · cmd ===\n";
+        let other_process = TaskLog {
+            process_started_at: Some(10_000 + LOG_RECOVERY_START_SKEW_SECS + 1),
+            ..managed_log(marker, false)
+        };
+        assert_eq!(other_process.current_run(), None);
+        let same_process = TaskLog {
+            process_started_at: Some(10_000 + LOG_RECOVERY_START_SKEW_SECS),
+            ..managed_log(marker, false)
+        };
+        assert_eq!(same_process.current_run().unwrap().started_at, Some(10_000));
+    }
+
+    #[test]
+    fn complete_tail_drops_the_line_the_cut_falls_in() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("task.log");
+
+        fs::write(&path, "short\nlog\n").unwrap();
+        assert_eq!(
+            read_complete_log_tail(&path).unwrap(),
+            ("short\nlog\n".to_string(), false)
+        );
+
+        // The whole marker no longer fits, so the cut leaves just its secret end behind.
+        let marker_end = "--password=secret ===\n";
+        let filler = "x".repeat(LOG_TAIL_BYTES as usize - marker_end.len() - "next\n".len());
+        let filler_line = format!("{}\nnext\n", &filler[1..]);
+        fs::write(
+            &path,
+            format!("=== Cutting Board prepare command · {marker_end}{filler_line}"),
+        )
+        .unwrap();
+        let (tail, truncated) = read_complete_log_tail(&path).unwrap();
+        assert!(truncated);
+        assert!(!tail.contains("secret"));
+        assert!(tail.ends_with("next\n"));
+
+        fs::write(&path, "y".repeat(LOG_TAIL_BYTES as usize + 10)).unwrap();
+        assert_eq!(
+            read_complete_log_tail(&path).unwrap(),
+            (String::new(), true)
+        );
     }
 }

@@ -1,10 +1,10 @@
-use std::thread;
+use std::{io, thread, time::Duration};
 
 use crate::models::{ContainerActionResult, ContainerListing, ContainerLogSnapshot};
 
 pub use compose_log::ComposeDownLogs;
 
-mod cli;
+pub(crate) mod cli;
 mod compose_log;
 mod demo;
 mod parser;
@@ -15,6 +15,7 @@ const CONTAINER_LIST_FORMAT: &str = concat!(
     "{{.Label \"com.docker.compose.service\"}}\t",
     "{{.Label \"com.docker.compose.project.working_dir\"}}"
 );
+const CONTAINER_LIST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn list_containers(demo_mode: bool) -> ContainerListing {
     if demo_mode {
@@ -28,18 +29,13 @@ pub fn list_containers(demo_mode: bool) -> ContainerListing {
             message: Some(cli::not_found_message().into()),
         };
     };
-    let output = match cli::run(
+    let output = match cli::run_with_timeout(
         &executable,
         ["ps", "-a", "--no-trunc", "--format", CONTAINER_LIST_FORMAT],
+        CONTAINER_LIST_TIMEOUT,
     ) {
         Ok(output) => output,
-        Err(error) => {
-            return ContainerListing {
-                available: false,
-                containers: vec![],
-                message: Some(format!("Could not start Docker: {error}")),
-            };
-        }
+        Err(error) => return listing_after_run_error(&error),
     };
     if !output.status.success() {
         return ContainerListing {
@@ -55,6 +51,22 @@ pub fn list_containers(demo_mode: bool) -> ContainerListing {
         available: true,
         containers: parser::parse_containers(&String::from_utf8_lossy(&output.stdout)),
         message: None,
+    }
+}
+
+fn listing_after_run_error(error: &io::Error) -> ContainerListing {
+    let message = if error.kind() == io::ErrorKind::TimedOut {
+        format!(
+            "Docker did not respond within {} seconds.",
+            CONTAINER_LIST_TIMEOUT.as_secs()
+        )
+    } else {
+        format!("Could not start Docker: {error}")
+    };
+    ContainerListing {
+        available: false,
+        containers: vec![],
+        message: Some(message),
     }
 }
 
@@ -267,6 +279,24 @@ fn validate_compose_project(project: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_listing_that_times_out_is_unavailable_and_says_why() {
+        let timed_out = listing_after_run_error(&io::ErrorKind::TimedOut.into());
+        assert!(!timed_out.available);
+        assert!(timed_out.containers.is_empty());
+        assert_eq!(
+            timed_out.message.as_deref(),
+            Some("Docker did not respond within 10 seconds.")
+        );
+
+        let not_started = listing_after_run_error(&io::ErrorKind::PermissionDenied.into());
+        assert!(!not_started.available);
+        assert!(not_started
+            .message
+            .unwrap()
+            .starts_with("Could not start Docker:"));
+    }
 
     #[test]
     fn validates_container_ids() {

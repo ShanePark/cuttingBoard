@@ -10,8 +10,15 @@
 ## Rust build artifacts
 
 - The default Rust `dev` profile keeps line tables for the application while omitting debug information from dependencies; use the opt-in `debugging` profile when full debug information is required.
-- For disposable agent-only `cargo check` and `cargo test` runs, set `CARGO_TARGET_DIR` to a task-specific temporary directory and set `CARGO_INCREMENTAL=0`. Remove that temporary directory after verification.
-- Keep the persistent `src-tauri/target` directory for the required macOS and Linux rebuild/install/restart workflows below, because their documented executable and bundle paths depend on it.
+- A cold build compiles about 500 crates with every core by default, so a few at once overload the machine. Agent-only Cargo runs (`check`, `test`, `clippy`), including those of parallel subagents and sessions and from any worktree, share one target directory: compiled dependencies are reused, and Cargo's build lock queues compiles instead of stacking them. Always run them like this:
+
+  ```bash
+  CARGO_TARGET_DIR=/tmp/cutting-board-agent-target CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4 nice -n 10 cargo test --manifest-path src-tauri/Cargo.toml <filter>
+  ```
+
+- Never give an agent Cargo run its own new target directory or more jobs. Keep the shared directory between runs, and remove it only to reclaim disk space while no agent is using it.
+- Start with focused tests. Run a full `--all-targets` test or clippy pass once per finished change set, not again on an unchanged tree, and not in several parallel workstreams at once: one owner runs it after the work comes together.
+- Keep the persistent `src-tauri/target` directory for the required macOS and Linux rebuild/install/restart workflows below, because their documented executable and bundle paths depend on it. Those rebuilds use the same `CARGO_BUILD_JOBS=4 nice -n 10` limits and run after other Rust work has finished.
 - Do not run `cargo clean` after every command. Clean the persistent target only when its accumulated artifacts are intentionally being reclaimed.
 
 ## Language
@@ -23,7 +30,7 @@
 
 - The main agent's primary role is orchestration: planning, decomposition, delegation, coordination, review, user communication, and handling additional work—not hands-on execution.
 - Delegate repository exploration, implementation, testing, and verification to subagents by default. Do not occupy the main agent with substantial work that can be delegated.
-- Maximize safe parallelism across independent workstreams.
+- Maximize safe parallelism across independent workstreams, except that Rust builds follow the limits in "Rust build artifacts".
 - The main agent may directly handle only brief, local tasks that do not benefit from delegation, as well as integration, conflict resolution, or work that requires its broader context.
 - Give each delegated task a single owner with explicit scope, deliverables, dependencies, and verification criteria.
 - Parallelize only independent work. Concurrent writes must not overlap in files, mutable state, or contracts.
@@ -64,3 +71,10 @@
 - Before any requested version-control write, inspect the working tree and relevant diffs.
 - Commit only changes made for the current task.
 - Treat pre-existing changes as user-owned. Never discard, overwrite, stage, or commit unrelated work.
+
+## Versioning
+
+- Versions follow `0.MINOR.PATCH`: bump MINOR for features or control CLI contract changes, and PATCH for fixes only.
+- Bump when a set of changes is released, not on every commit.
+- Set the version with `npm run bump-version -- <x.y.z>` and add its `CHANGELOG.md` entry in the same change.
+- Tag the release commit `vX.Y.Z` only when explicitly asked.

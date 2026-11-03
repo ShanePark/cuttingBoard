@@ -1,0 +1,109 @@
+CONTROL:
+    Operates saved launch tasks through the running app, addressed by profile ID and task name.
+    It cannot run an arbitrary command or target an arbitrary PID. The app must be running as the
+    same user and listens on a private per-user socket, not on TCP. A CLI newer than the running
+    app gets invalid_request with a message saying to restart the app.
+
+COMMANDS:
+    cutting-board control list
+        All profiles and their tasks with state. --profile takes the id from here, not the name.
+        A task is addressed by its current name.
+
+    cutting-board control status --profile <ID> --task <NAME>
+        One task's state, process IDs, exit code, in_flight and last_operation.
+
+    cutting-board control start|stop|restart --profile <ID> --task <NAME> [--timeout-seconds N]
+        Runs the action and waits up to N seconds (default 30, at most 300). A timeout cancels
+        nothing; the operation continues in the app. A completed start or restart means the process
+        was spawned, not that it is ready, so follow it with wait. A failed build during a restart
+        leaves the old process running. start reports a matching process started outside the app
+        instead of duplicating it; restart replaces it. A second action on a task in flight is
+        refused as busy.
+
+    cutting-board control wait --profile <ID> --task <NAME> [--log-pattern <TEXT>] [--timeout-seconds N]
+        Waits until the task is ready (default 120 seconds, at most 300). See WAIT below.
+
+    cutting-board control logs --profile <ID> --task <NAME> [--lines N] [--max-bytes N] [--current-run | --prepare]
+        Tail of the task's output: 200 lines by default, at most 1000 lines and 65536 bytes.
+        Logs are append-only, so plain logs also shows earlier runs.
+        --current-run   Only what the latest start wrote, with current_run.boundary: start_marker,
+                        log_tail (the start scrolled out, so the whole tail counts) or none.
+                        Fails with run_boundary_unknown for containers and for processes started
+                        outside the app. Leaves out build output once the run has started.
+        --prepare       Only the latest build, with prepare_run.state (running, skipped, succeeded,
+                        failed, interrupted, not_required or none) and failure. Use it for a compile
+                        error or a start that never got that far. Refused for containers.
+
+    cutting-board control show --profile <ID> --task <NAME>
+        The task's saved values, unmasked. launch_source says what a start uses: saved_command,
+        prepare (the saved command is not run verbatim) or container. resolved gives the build and
+        launch commands a start would really run; resolved.prepare.origin is saved or inferred, so
+        prepare: null can still mean a build runs. resolved is null for a container task.
+
+    cutting-board control update --profile <ID> --task <NAME> [--command S] [--cwd S] [--expected-port N | --clear-expected-port] [--clear-prepare] [--timeout-seconds N]
+        Changes a stopped task; an active one is refused with task_active. Edits apply at the next
+        start. Returns the same as show, plus changed: { field: { old, new } } and warnings.
+        Container tasks have no command or prepare settings to change. --clear-prepare does not
+        guarantee a verbatim run, because project detection can still choose a build; check
+        launch_source.
+
+    cutting-board control operation <ID>
+        One snapshot of an operation, with its task. Repeat it while the state is running, and use
+        it rather than a second action when task.in_flight is true. The app keeps the latest 64
+        finished operations in memory, and none across an app restart.
+
+TYPICAL RESTART:
+    cutting-board control list
+    cutting-board control restart --profile <ID> --task <NAME> --timeout-seconds 180
+    cutting-board control wait --profile <ID> --task <NAME> --timeout-seconds 180
+    On failure, read logs --current-run, or logs --prepare for a build that failed.
+
+RESPONSES:
+    Every command prints one JSON object to stdout: ok, accepted, completed, then result or
+    error: { code, message }. An action still in progress has completed: false and operation_id.
+    Timestamps are Unix epoch seconds.
+
+    Task states are starting, running, stopping, restarting, stopped or failed; containers report
+    Docker's state. unknown means the state could not be determined, not that the task stopped.
+    snapshot_stale is true when a scan failed or was partial; refresh_error gives the reason.
+    Operation states are running, succeeded or failed. An operation's prepare field reports its
+    build: state (running, skipped, succeeded, failed, interrupted), tool, started_at, completed_at.
+
+EXIT CODES:
+    0   Success.
+    2   invalid_request, or wait has no signal to judge by: readiness_unavailable,
+        run_boundary_unknown.
+    3   busy: an operation on the task is in flight.
+    4   unknown_profile, unknown_task, unknown_operation.
+    5   timeout: the caller's wait ended and nothing was cancelled, so run wait or operation again.
+    6   The action or task failed. error.code is more specific, for example prepare_failed,
+        process_exited, not_running, task_active, container_missing, docker_unavailable,
+        container_action_failed or container_unhealthy.
+    7   unavailable: the app or its socket cannot be reached, including an app that quits during
+        wait. acknowledgement_unknown: the action may have been accepted, so check status before
+        sending it again.
+
+WAIT:
+    Asks the app about once per second and decides in this order:
+    1. An operation is in flight, or the state cannot be determined: keep waiting.
+    2. The last operation failed since this run started: fail with its code.
+    3. The task is not running: fail with process_exited, not_running, container_missing or
+       docker_unavailable.
+    4. A container with a healthcheck uses its health. Without one, a connection to its expected or
+       first published port counts.
+    5. With --log-pattern, a case-sensitive substring in the current run's log replaces the port
+       check. It searches the last 64 KiB and fails with run_boundary_unknown for containers and
+       processes started outside the app.
+    6. Otherwise the expected port must accept a connection from a listener no older than this run.
+       No expected port and no pattern fails with readiness_unavailable.
+
+    Ready: result.ready is true and result.signal is port, log_pattern, container_health or
+    container_port. Timeout: result.ready is false and waiting_for is operation, prepare, task_state,
+    port, listener_predates_run, log_pattern or container_health. Run it again to keep waiting.
+    Straight after an app restart, a task that has not bound its port yet reports not_running.
+
+SECRETS:
+    logs, show and update print logged and saved text as is, which may contain credentials. list,
+    status and operation never include commands, working directories, environment values or log
+    text. Anyone who can use the socket can change what a task runs, so treat access to it as the
+    ability to run commands as this user.

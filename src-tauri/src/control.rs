@@ -20,6 +20,11 @@ const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 16;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATION_POLL_INTERVAL: Duration = Duration::from_millis(150);
+const READINESS_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// How long a `wait` tolerates a socket nothing listens on after reaching the app, so that a quick
+/// app restart does not end it.
+const APP_GONE_GRACE: Duration = Duration::from_secs(5);
+const MAX_LOG_PATTERN_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
@@ -36,6 +41,35 @@ pub(crate) enum ControlRequest {
         lines: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bytes: Option<u32>,
+        // Left out when unset so that plain `logs` keeps working against an older app.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        current_run: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        prepare: bool,
+    },
+    Readiness {
+        profile_id: String,
+        task_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        log_pattern: Option<String>,
+    },
+    Show {
+        profile_id: String,
+        task_name: String,
+    },
+    Update {
+        profile_id: String,
+        task_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_port: Option<u16>,
+        #[serde(default)]
+        clear_expected_port: bool,
+        #[serde(default)]
+        clear_prepare: bool,
     },
     Start {
         profile_id: String,
@@ -108,6 +142,10 @@ impl ControlRequest {
                 profile_id,
                 task_name,
             }
+            | Self::Show {
+                profile_id,
+                task_name,
+            }
             | Self::Start {
                 profile_id,
                 task_name,
@@ -125,13 +163,70 @@ impl ControlRequest {
                 task_name,
                 lines,
                 bytes,
+                current_run,
+                prepare,
             } => {
                 validate_task(profile_id, task_name)?;
+                if *current_run && *prepare {
+                    return Err("--current-run and --prepare cannot be combined.".into());
+                }
                 if lines.is_some_and(|value| !(1..=1_000).contains(&value)) {
                     return Err("lines must be from 1 to 1000.".into());
                 }
                 if bytes.is_some_and(|value| !(1..=65_536).contains(&value)) {
                     return Err("bytes must be from 1 to 65536.".into());
+                }
+                Ok(())
+            }
+            Self::Readiness {
+                profile_id,
+                task_name,
+                log_pattern,
+            } => {
+                validate_task(profile_id, task_name)?;
+                if log_pattern.as_deref().is_some_and(|pattern| {
+                    pattern.trim().is_empty()
+                        || pattern.len() > MAX_LOG_PATTERN_BYTES
+                        || pattern.contains(['\n', '\r'])
+                }) {
+                    return Err(format!(
+                        "log_pattern must be a single line of 1 to {MAX_LOG_PATTERN_BYTES} bytes."
+                    ));
+                }
+                Ok(())
+            }
+            Self::Update {
+                profile_id,
+                task_name,
+                command,
+                cwd,
+                expected_port,
+                clear_expected_port,
+                clear_prepare,
+            } => {
+                validate_task(profile_id, task_name)?;
+                if command.is_none()
+                    && cwd.is_none()
+                    && expected_port.is_none()
+                    && !clear_expected_port
+                    && !clear_prepare
+                {
+                    return Err("update requires at least one change.".into());
+                }
+                // A line break would let the rest of a saved value escape the log marker that
+                // carries it, and with it the log filter.
+                for (name, value) in [("command", command), ("cwd", cwd)] {
+                    if value.as_deref().is_some_and(|value| {
+                        value.trim().is_empty() || value.contains(['\n', '\r'])
+                    }) {
+                        return Err(format!("{name} must be a single non-empty line."));
+                    }
+                }
+                if *expected_port == Some(0) {
+                    return Err("expected_port must be from 1 to 65535.".into());
+                }
+                if expected_port.is_some() && *clear_expected_port {
+                    return Err("expected_port and clear_expected_port cannot be combined.".into());
                 }
                 Ok(())
             }
@@ -192,7 +287,7 @@ where
 }
 
 #[cfg(unix)]
-fn start_server_at<F>(socket_path: PathBuf, handler: F) -> Result<ControlServer, String>
+pub(crate) fn start_server_at<F>(socket_path: PathBuf, handler: F) -> Result<ControlServer, String>
 where
     F: Fn(ControlRequest) -> ControlResponse + Send + Sync + 'static,
 {
@@ -567,12 +662,57 @@ pub(crate) fn run_cli(command: ControlCommand) -> i32 {
             task_name,
             lines,
             max_bytes,
+            current_run,
+            prepare,
         } => run_read_request(ControlRequest::Logs {
             profile_id,
             task_name,
             lines,
             bytes: max_bytes,
+            current_run,
+            prepare,
         }),
+        ControlCommand::Wait {
+            profile_id,
+            task_name,
+            log_pattern,
+            timeout_seconds,
+        } => run_wait(
+            ControlRequest::Readiness {
+                profile_id,
+                task_name,
+                log_pattern,
+            },
+            timeout_seconds,
+        ),
+        ControlCommand::Show {
+            profile_id,
+            task_name,
+        } => run_read_request(ControlRequest::Show {
+            profile_id,
+            task_name,
+        }),
+        ControlCommand::Update {
+            profile_id,
+            task_name,
+            command,
+            cwd,
+            expected_port,
+            clear_expected_port,
+            clear_prepare,
+            timeout_seconds,
+        } => run_action(
+            ControlRequest::Update {
+                profile_id,
+                task_name,
+                command,
+                cwd,
+                expected_port,
+                clear_expected_port,
+                clear_prepare,
+            },
+            timeout_seconds,
+        ),
         ControlCommand::Operation { operation_id } => {
             run_read_request(ControlRequest::Operation { operation_id })
         }
@@ -726,6 +866,118 @@ fn run_action(request: ControlRequest, timeout_seconds: u32) -> i32 {
             Err(_) => continue,
         }
     }
+}
+
+#[cfg(unix)]
+fn run_wait(request: ControlRequest, timeout_seconds: u32) -> i32 {
+    let response = wait_for_readiness(
+        &request,
+        Duration::from_secs(u64::from(timeout_seconds)),
+        send_request_with_deadline,
+    );
+    print_response(&response);
+    response_exit_code(&response)
+}
+
+/// Asks the app once per interval. The server only ever answers for the moment it is asked, so a
+/// slow service holds no connection slot, and giving up here cancels nothing.
+#[cfg(unix)]
+fn wait_for_readiness(
+    request: &ControlRequest,
+    timeout: Duration,
+    mut send: impl FnMut(&ControlRequest, Instant) -> Result<ControlResponse, ControlTransportError>,
+) -> ControlResponse {
+    let deadline = Instant::now() + timeout;
+    let mut last_judgement = None;
+    let mut reached_app = false;
+    let mut transport_error = None;
+    let mut nothing_listening_since: Option<Instant> = None;
+    loop {
+        match send(request, deadline.min(Instant::now() + IO_TIMEOUT)) {
+            Ok(response) => {
+                reached_app = true;
+                nothing_listening_since = None;
+                let is_busy = response
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.code == "busy");
+                if !response.ok && !is_busy {
+                    return response;
+                }
+                if response.ok {
+                    let ready = response
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.get("ready"))
+                        .and_then(Value::as_bool);
+                    if ready != Some(false) {
+                        return response;
+                    }
+                    last_judgement = response.result;
+                }
+            }
+            Err(error) => {
+                // A request that went out found something listening, even if no answer came back.
+                reached_app |= error.acknowledgement_unknown;
+                // Only a failed connection says the app is gone. One that is merely slow or busy
+                // to answer is still there.
+                if error.acknowledgement_unknown || error.timed_out || error.busy {
+                    nothing_listening_since = None;
+                } else {
+                    nothing_listening_since.get_or_insert_with(Instant::now);
+                }
+                transport_error = Some(error.message);
+            }
+        }
+        if reached_app
+            && nothing_listening_since.is_some_and(|since| since.elapsed() >= APP_GONE_GRACE)
+        {
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        thread::sleep(READINESS_POLL_INTERVAL.min(remaining));
+        if Instant::now() >= deadline {
+            break;
+        }
+    }
+    if !reached_app || nothing_listening_since.is_some() {
+        return ControlResponse::error(
+            "unavailable",
+            transport_error.unwrap_or_else(|| "The control socket did not respond.".into()),
+        );
+    }
+    ControlResponse {
+        ok: false,
+        accepted: true,
+        completed: false,
+        operation_id: None,
+        result: last_judgement,
+        error: Some(ControlError {
+            code: "timeout".into(),
+            message: format!(
+                "The task was not ready within {} seconds. Nothing was cancelled; it may still become ready.",
+                timeout.as_secs()
+            ),
+        }),
+    }
+}
+
+/// A newer CLI talking to an app that has not been restarted since the update.
+#[cfg(unix)]
+fn explain_unsupported_request(mut response: ControlResponse) -> ControlResponse {
+    if let Some(error) = response.error.as_mut().filter(|error| {
+        error.code == "invalid_request"
+            && error.message.starts_with("Invalid control request:")
+            && (error.message.contains("unknown variant")
+                || error.message.contains("unknown field"))
+    }) {
+        error.message =
+            "The running Cutting Board app does not support this request. Restart the app so it matches this CLI.".into();
+    }
+    response
 }
 
 #[cfg(unix)]
@@ -969,8 +1221,17 @@ fn send_request_with_deadline(
     deadline: Instant,
 ) -> Result<ControlResponse, ControlTransportError> {
     let path = control_socket_path().map_err(ControlTransportError::before_send)?;
-    validate_client_socket_path(&path).map_err(ControlTransportError::before_send)?;
-    let mut stream = connect_unix_socket(&path, deadline).map_err(|error| {
+    send_request_at(&path, request, deadline)
+}
+
+#[cfg(unix)]
+fn send_request_at(
+    path: &Path,
+    request: &ControlRequest,
+    deadline: Instant,
+) -> Result<ControlResponse, ControlTransportError> {
+    validate_client_socket_path(path).map_err(ControlTransportError::before_send)?;
+    let mut stream = connect_unix_socket(path, deadline).map_err(|error| {
         if error.kind() == io::ErrorKind::TimedOut {
             ControlTransportError::before_deadline(format!(
                 "The connection deadline expired before the request was sent: {error}"
@@ -1047,11 +1308,13 @@ fn send_request_with_deadline(
         ));
     }
     response_bytes.pop();
-    serde_json::from_slice(&response_bytes).map_err(|error| {
-        ControlTransportError::after_send(format!(
-            "The control server returned invalid JSON: {error}"
-        ))
-    })
+    serde_json::from_slice(&response_bytes)
+        .map(explain_unsupported_request)
+        .map_err(|error| {
+            ControlTransportError::after_send(format!(
+                "The control server returned invalid JSON: {error}"
+            ))
+        })
 }
 
 #[cfg(unix)]
@@ -1092,7 +1355,7 @@ fn response_exit_code(response: &ControlResponse) -> i32 {
         .map(|error| error.code.as_str())
         .unwrap_or("action_failed");
     match code {
-        "invalid_request" => EXIT_INVALID,
+        "invalid_request" | "readiness_unavailable" | "run_boundary_unknown" => EXIT_INVALID,
         "busy" => EXIT_BUSY,
         "unknown_profile" | "unknown_task" | "unknown_operation" | "not_found" => EXIT_NOT_FOUND,
         "timeout" => EXIT_TIMEOUT,
@@ -1115,11 +1378,39 @@ const EXIT_TIMEOUT: i32 = 5;
 const EXIT_ACTION_FAILED: i32 = 6;
 const EXIT_UNAVAILABLE: i32 = 7;
 
+/// The CLI's `wait` and action paths against a socket of the test's own.
+#[cfg(all(test, unix))]
+pub(crate) mod test_client {
+    use super::*;
+
+    pub(crate) fn send(path: &Path, request: &ControlRequest) -> (ControlResponse, i32) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let response = send_request_at(path, request, deadline).map_err(|error| error.message);
+        let response = response.unwrap();
+        let code = response_exit_code(&response);
+        (response, code)
+    }
+
+    pub(crate) fn wait(
+        path: &Path,
+        request: &ControlRequest,
+        timeout: Duration,
+    ) -> (ControlResponse, i32) {
+        let response = wait_for_readiness(request, timeout, |request, deadline| {
+            send_request_at(path, request, deadline)
+        });
+        let code = response_exit_code(&response);
+        (response, code)
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        connect_unix_socket, start_server_at, wait_for_poll, ControlRequest, ControlResponse,
-        MAX_REQUEST_BYTES,
+        connect_unix_socket, explain_unsupported_request, response_exit_code, send_request_at,
+        start_server_at, wait_for_poll, wait_for_readiness, ControlError, ControlRequest,
+        ControlResponse, ControlTransportError, EXIT_ACTION_FAILED, EXIT_INVALID, EXIT_TIMEOUT,
+        EXIT_UNAVAILABLE, MAX_REQUEST_BYTES,
     };
     use serde_json::json;
     use std::{
@@ -1352,5 +1643,327 @@ mod tests {
         drop(server);
         assert!(started.elapsed() < Duration::from_secs(1));
         thread::yield_now();
+    }
+
+    fn readiness_request() -> ControlRequest {
+        ControlRequest::Readiness {
+            profile_id: "p".into(),
+            task_name: "api".into(),
+            log_pattern: None,
+        }
+    }
+
+    fn waiting() -> ControlResponse {
+        response(json!({ "ready": false, "waiting_for": "port" }))
+    }
+
+    fn failed(code: &str) -> ControlResponse {
+        ControlResponse::error(code, "message")
+    }
+
+    /// Answers from `script` and repeats its last entry.
+    fn scripted_wait(
+        script: Vec<Result<ControlResponse, ControlTransportError>>,
+        timeout: Duration,
+    ) -> (ControlResponse, usize) {
+        let mut script = std::collections::VecDeque::from(script);
+        let mut calls = 0;
+        let response = wait_for_readiness(&readiness_request(), timeout, |_, _| {
+            calls += 1;
+            if script.len() > 1 {
+                return script.pop_front().unwrap();
+            }
+            match script.front().unwrap() {
+                Ok(response) => {
+                    Ok(serde_json::from_value(serde_json::to_value(response).unwrap()).unwrap())
+                }
+                Err(error) => Err(ControlTransportError {
+                    message: error.message.clone(),
+                    ..*error
+                }),
+            }
+        });
+        (response, calls)
+    }
+
+    #[test]
+    fn wait_polls_through_waiting_busy_and_transport_errors_until_ready() {
+        let ready = response(json!({ "ready": true, "signal": "port" }));
+        let (result, calls) = scripted_wait(
+            vec![
+                Err(ControlTransportError::before_send("no socket")),
+                Ok(failed("busy")),
+                Ok(waiting()),
+                Ok(ready),
+            ],
+            Duration::from_secs(10),
+        );
+        assert!(result.ok);
+        assert_eq!(result.result.unwrap()["signal"], "port");
+        assert_eq!(calls, 4);
+    }
+
+    #[test]
+    fn wait_timeout_carries_the_last_judgement_and_cancels_nothing() {
+        let (result, _) = scripted_wait(vec![Ok(waiting())], Duration::from_millis(1100));
+        assert!(!result.ok);
+        assert!(result.accepted);
+        assert!(!result.completed);
+        assert_eq!(response_exit_code(&result), EXIT_TIMEOUT);
+        assert_eq!(result.result.as_ref().unwrap()["waiting_for"], "port");
+        assert!(result
+            .error
+            .unwrap()
+            .message
+            .contains("Nothing was cancelled"));
+    }
+
+    #[test]
+    fn wait_reports_an_app_it_never_reached_as_unavailable() {
+        let (result, calls) = scripted_wait(
+            vec![Err(ControlTransportError::before_send("no socket"))],
+            Duration::from_millis(1100),
+        );
+        assert_eq!(response_exit_code(&result), EXIT_UNAVAILABLE);
+        assert!(calls >= 2, "transport errors must be retried");
+        assert_eq!(result.error.unwrap().message, "no socket");
+    }
+
+    #[test]
+    fn wait_reports_an_app_that_never_answered_in_time_as_a_timeout() {
+        for error in [
+            ControlTransportError::after_send("incomplete response"),
+            ControlTransportError::after_deadline("response deadline expired"),
+            ControlTransportError::after_send_io(
+                "Could not read the control response",
+                std::io::ErrorKind::TimedOut.into(),
+            ),
+        ] {
+            let (result, _) = scripted_wait(vec![Err(error)], Duration::from_millis(10));
+            assert_eq!(response_exit_code(&result), EXIT_TIMEOUT);
+            assert_eq!(result.error.unwrap().code, "timeout");
+        }
+    }
+
+    #[test]
+    fn wait_reports_a_socket_it_could_not_send_to_as_unavailable() {
+        for error in [
+            ControlTransportError::before_send("no socket"),
+            ControlTransportError::before_deadline("connection deadline expired"),
+            ControlTransportError::before_busy("temporarily busy"),
+        ] {
+            let (result, _) = scripted_wait(vec![Err(error)], Duration::from_millis(10));
+            assert_eq!(response_exit_code(&result), EXIT_UNAVAILABLE);
+            assert_eq!(result.error.unwrap().code, "unavailable");
+        }
+    }
+
+    #[test]
+    fn wait_reports_an_app_that_quit_as_unavailable_without_waiting_out_the_timeout() {
+        let started = std::time::Instant::now();
+        let (result, _) = scripted_wait(
+            vec![
+                Ok(waiting()),
+                Err(ControlTransportError::before_send("no socket")),
+            ],
+            Duration::from_secs(60),
+        );
+        assert_eq!(response_exit_code(&result), EXIT_UNAVAILABLE);
+        assert_eq!(result.error.unwrap().message, "no socket");
+        assert!(started.elapsed() < Duration::from_secs(15));
+    }
+
+    #[test]
+    fn wait_ending_inside_the_grace_period_still_reports_an_app_that_quit() {
+        let (result, _) = scripted_wait(
+            vec![
+                Ok(waiting()),
+                Err(ControlTransportError::before_send("no socket")),
+            ],
+            Duration::from_millis(1100),
+        );
+        assert_eq!(response_exit_code(&result), EXIT_UNAVAILABLE);
+    }
+
+    #[test]
+    fn wait_survives_a_quick_app_restart() {
+        let (result, calls) = scripted_wait(
+            vec![
+                Ok(waiting()),
+                Err(ControlTransportError::before_send("no socket")),
+                Err(ControlTransportError::before_send("no socket")),
+                Ok(response(json!({ "ready": true, "signal": "port" }))),
+            ],
+            Duration::from_secs(60),
+        );
+        assert!(result.ok);
+        assert_eq!(calls, 4);
+    }
+
+    #[test]
+    fn wait_does_not_mistake_a_slow_or_busy_app_for_one_that_quit() {
+        for error in [
+            ControlTransportError::before_deadline("connection deadline expired"),
+            ControlTransportError::before_busy("temporarily busy"),
+            ControlTransportError::after_deadline("response deadline expired"),
+            ControlTransportError::after_send("incomplete response"),
+        ] {
+            let (result, _) = scripted_wait(
+                vec![
+                    Err(ControlTransportError::before_send("no socket")),
+                    Ok(waiting()),
+                    Err(error),
+                ],
+                Duration::from_millis(2100),
+            );
+            assert_eq!(response_exit_code(&result), EXIT_TIMEOUT);
+        }
+    }
+
+    #[test]
+    fn wait_notices_a_server_that_goes_away_over_a_real_socket() {
+        let (_temporary, path) = socket_path();
+        let server = start_server_at(path.clone(), |_| {
+            response(json!({ "ready": false, "waiting_for": "port" }))
+        })
+        .unwrap();
+        let stop = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            drop(server);
+        });
+        let result = wait_for_readiness(
+            &readiness_request(),
+            Duration::from_millis(1500),
+            |request, deadline| send_request_at(&path, request, deadline),
+        );
+        stop.join().unwrap();
+        assert_eq!(response_exit_code(&result), EXIT_UNAVAILABLE);
+    }
+
+    #[test]
+    fn wait_tells_a_slow_app_from_a_missing_socket_over_a_real_socket() {
+        let (_temporary, path) = socket_path();
+        let server = start_server_at(path.clone(), |_| {
+            thread::sleep(Duration::from_secs(2));
+            response(json!({ "ready": true }))
+        })
+        .unwrap();
+        let wait = || {
+            wait_for_readiness(
+                &readiness_request(),
+                Duration::from_millis(200),
+                |request, deadline| send_request_at(&path, request, deadline),
+            )
+        };
+
+        let slow = wait();
+        assert_eq!(response_exit_code(&slow), EXIT_TIMEOUT);
+        assert!(slow.result.is_none());
+
+        drop(server);
+        let missing = wait();
+        assert_eq!(response_exit_code(&missing), EXIT_UNAVAILABLE);
+    }
+
+    #[test]
+    fn wait_stops_at_the_first_real_failure() {
+        for (code, exit) in [
+            ("prepare_failed", EXIT_ACTION_FAILED),
+            ("readiness_unavailable", EXIT_INVALID),
+            ("run_boundary_unknown", EXIT_INVALID),
+        ] {
+            let (result, calls) = scripted_wait(vec![Ok(failed(code))], Duration::from_secs(10));
+            assert_eq!(calls, 1);
+            assert_eq!(response_exit_code(&result), exit);
+        }
+    }
+
+    #[test]
+    fn validation_covers_the_new_requests() {
+        let update = |command: Option<&str>, port: Option<u16>, clear_port: bool| {
+            ControlRequest::Update {
+                profile_id: "p".into(),
+                task_name: "api".into(),
+                command: command.map(str::to_owned),
+                cwd: None,
+                expected_port: port,
+                clear_expected_port: clear_port,
+                clear_prepare: false,
+            }
+            .validate()
+        };
+        assert!(update(Some("run"), None, false).is_ok());
+        assert!(update(None, Some(80), false).is_ok());
+        assert!(update(None, None, true).is_ok());
+        assert!(update(None, None, false).is_err());
+        assert!(update(Some(" "), None, false).is_err());
+        assert!(update(Some("a\nb"), None, false).is_err());
+        assert!(update(None, Some(0), false).is_err());
+        assert!(update(None, Some(80), true).is_err());
+
+        let wait = |pattern: &str| {
+            ControlRequest::Readiness {
+                profile_id: "p".into(),
+                task_name: "api".into(),
+                log_pattern: Some(pattern.into()),
+            }
+            .validate()
+        };
+        assert!(wait("Started App").is_ok());
+        assert!(wait("  ").is_err());
+        assert!(wait(&"x".repeat(1025)).is_err());
+    }
+
+    #[test]
+    fn plain_logs_request_stays_readable_by_an_older_app() {
+        let plain = ControlRequest::Logs {
+            profile_id: "p".into(),
+            task_name: "api".into(),
+            lines: None,
+            bytes: None,
+            current_run: false,
+            prepare: false,
+        };
+        let plain = serde_json::to_value(&plain).unwrap();
+        assert!(plain.get("current_run").is_none());
+        assert!(plain.get("prepare").is_none());
+    }
+
+    #[test]
+    fn a_request_an_older_app_rejects_gets_an_understandable_message() {
+        let (_temporary, path) = socket_path();
+        let server = start_server_at(path.clone(), |_| response(json!({}))).unwrap();
+        // What an app without this request answers, spoken to like the CLI does.
+        for request in [
+            r#"{"op":"from_the_future","profile_id":"p"}"#,
+            r#"{"op":"status","profile_id":"p","task_name":"api","new_field":1}"#,
+        ] {
+            let client = UnixStream::connect(&path).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut client = client;
+            writeln!(client, "{request}").unwrap();
+            let mut line = String::new();
+            BufReader::new(client).read_line(&mut line).unwrap();
+            let raw: ControlResponse = serde_json::from_str(line.trim()).unwrap();
+            let explained = explain_unsupported_request(raw);
+            assert_eq!(response_exit_code(&explained), EXIT_INVALID);
+            assert!(explained
+                .error
+                .unwrap()
+                .message
+                .contains("does not support this request"));
+        }
+        drop(server);
+
+        let other = explain_unsupported_request(ControlResponse {
+            error: Some(ControlError {
+                code: "invalid_request".into(),
+                message: "Log limits are off.".into(),
+            }),
+            ..failed("invalid_request")
+        });
+        assert_eq!(other.error.unwrap().message, "Log limits are off.");
     }
 }

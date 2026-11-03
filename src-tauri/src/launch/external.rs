@@ -8,14 +8,13 @@ use std::{
     io,
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     thread,
     time::Duration,
 };
 use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 
 #[cfg(unix)]
-use std::time::Instant;
+use crate::docker::cli::run_with_timeout;
 
 #[derive(Debug)]
 pub(super) struct ExternalTaskInfo {
@@ -85,6 +84,7 @@ pub(super) fn external_snapshot(
         external_log_path: external
             .log_path
             .map(|path| path.to_string_lossy().into_owned()),
+        container_detail: None,
     }
 }
 
@@ -287,9 +287,35 @@ fn process_identity_is_live(
         && !matches!(status, ProcessStatus::Zombie | ProcessStatus::Dead)
 }
 
+fn loopback_if_unspecified(address: IpAddr) -> IpAddr {
+    if !address.is_unspecified() {
+        return address;
+    }
+    match address {
+        IpAddr::V4(_) => IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        IpAddr::V6(_) => IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+    }
+}
+
+fn connect_to_port(address: IpAddr, port: u16) -> io::Result<TcpStream> {
+    const CONNECT_TIMEOUT: Duration = Duration::from_millis(150);
+    TcpStream::connect_timeout(&SocketAddr::new(address, port), CONNECT_TIMEOUT)
+}
+
+/// Whether anything accepts a connection on the port. This only connects: binding, as a startup
+/// check may, could collide with a service that is booting.
+pub(crate) fn port_accepts_connection(port: u16, endpoints: &[IpAddr]) -> bool {
+    [
+        IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+    ]
+    .into_iter()
+    .chain(endpoints.iter().copied().map(loopback_if_unspecified))
+    .any(|address| connect_to_port(address, port).is_ok())
+}
+
 fn wait_for_port_release(task_name: &str, port: u16, endpoints: &[IpAddr]) -> Result<(), String> {
     const PORT_RELEASE_TIMEOUT: Duration = Duration::from_secs(3);
-    const CONNECT_TIMEOUT: Duration = Duration::from_millis(150);
     let addresses = if endpoints.is_empty() {
         vec![
             IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
@@ -301,14 +327,8 @@ fn wait_for_port_release(task_name: &str, port: u16, endpoints: &[IpAddr]) -> Re
     let deadline = std::time::Instant::now() + PORT_RELEASE_TIMEOUT;
     loop {
         let mut occupied = false;
-        for mut address in addresses.iter().copied() {
-            if address.is_unspecified() {
-                address = match address {
-                    IpAddr::V4(_) => IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-                    IpAddr::V6(_) => IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
-                };
-            }
-            match TcpStream::connect_timeout(&SocketAddr::new(address, port), CONNECT_TIMEOUT) {
+        for address in addresses.iter().copied().map(loopback_if_unspecified) {
+            match connect_to_port(address, port) {
                 Ok(stream) => {
                     drop(stream);
                     occupied = true;
@@ -380,6 +400,7 @@ fn external_stopped_snapshot(
         external_pid: None,
         external_working_directory: None,
         external_log_path: None,
+        container_detail: None,
     }
 }
 
@@ -565,33 +586,14 @@ pub(super) fn service_belongs_to_runtime(
 #[cfg(unix)]
 pub(super) fn external_log_path(pid: u32) -> Option<PathBuf> {
     const TIMEOUT: Duration = Duration::from_secs(2);
-    const POLL_INTERVAL: Duration = Duration::from_millis(20);
     // `-b` skips the blocking stat of every mount point, which costs about a second on a machine
     // with Docker volumes, and `-w` silences the warnings that skip would print.
-    let mut child = Command::new("lsof")
-        .args(["-b", "-w", "-nP", "-a", "-p", &pid.to_string(), "-Ffatn"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => thread::sleep(POLL_INTERVAL),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-    let output = child.wait_with_output().ok()?;
+    let output = run_with_timeout(
+        Path::new("lsof"),
+        ["-b", "-w", "-nP", "-a", "-p", &pid.to_string(), "-Ffatn"],
+        TIMEOUT,
+    )
+    .ok()?;
     if !output.status.success() && output.stdout.is_empty() {
         return None;
     }
@@ -750,6 +752,7 @@ pub(super) fn path_matches_task(candidate: &str, task_root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use std::time::SystemTime;
 
     fn open_file(fd: u32, writable: bool, path: &Path) -> OpenFile {
@@ -759,6 +762,43 @@ mod tests {
             regular: true,
             path: path.to_path_buf(),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_log_path_reads_lsof_output_larger_than_a_pipe_buffer() {
+        use std::os::unix::process::CommandExt;
+
+        // lsof repeats the path for every descriptor, so a long path keeps this well past 64 KiB
+        // while staying under a low descriptor limit such as the 256 macOS shells default to.
+        const DUPLICATE_DESCRIPTORS: usize = 200;
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary
+            .path()
+            .join("d".repeat(200))
+            .join("d".repeat(200))
+            .join("d".repeat(200));
+        fs::create_dir_all(&directory).unwrap();
+        let log = directory.join("stdout.log");
+        let mut command = Command::new("sleep");
+        command.arg("30").stdout(fs::File::create(&log).unwrap());
+        unsafe {
+            command.pre_exec(|| {
+                for _ in 0..DUPLICATE_DESCRIPTORS {
+                    if libc::dup(1) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().unwrap();
+
+        let found = external_log_path(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert_eq!(found, Some(log.canonicalize().unwrap()));
     }
 
     #[cfg(unix)]
@@ -890,5 +930,18 @@ mod tests {
             &identity,
             Some(&(124, ProcessStatus::Sleep, None))
         ));
+    }
+
+    #[test]
+    fn connect_probe_sees_a_listener_on_any_address_without_binding() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(port_accepts_connection(port, &[]));
+        assert!(port_accepts_connection(
+            port,
+            &[IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)]
+        ));
+        drop(listener);
+        assert!(!port_accepts_connection(port, &[]));
     }
 }
