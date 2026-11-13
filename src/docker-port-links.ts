@@ -1,19 +1,14 @@
 import type { ContainerInfo, PublishedPortMapping } from "./types";
 
-const HTTP_CONTAINER_PORTS = new Set([
-  80, 3000, 3001, 4173, 4200, 5000, 5173, 8000, 8008, 8025, 8080, 8081, 8082, 8083,
-  8088, 8180, 8888, 8983, 9090, 9001, 15672, 5601, 16686, 18080
-]);
-const HTTPS_CONTAINER_PORTS = new Set([443, 8443, 9443]);
-
 export function containerBrowserUrl(container: ContainerInfo, hostPort: number): string | null {
   if (container.state.trim().toLowerCase() !== "running") return null;
   const mappings = (container.port_mappings ?? [])
     .filter((mapping) => mapping.host_port === hostPort && mapping.protocol.trim().toLowerCase() === "tcp")
-    .sort((left, right) => Number(schemeFor(right.container_port) === "https") - Number(schemeFor(left.container_port) === "https"));
+    .sort((left, right) => Number(right.web_scheme === "https") - Number(left.web_scheme === "https"));
   for (const mapping of mappings) {
-    const scheme = schemeFor(mapping.container_port);
-    if (!scheme) continue;
+    // Only the backend's network probe decides whether a port serves a web page.
+    const scheme = mapping.web_scheme;
+    if (scheme !== "http" && scheme !== "https") continue;
     const host = browserHost(mapping.host_ip);
     if (!host) continue;
     return `${scheme}://${host}:${mapping.host_port}/`;
@@ -28,11 +23,6 @@ export function dockerTilePorts(container: ContainerInfo): number[] {
   return browserPort === undefined || ports[0] === browserPort
     ? ports
     : [browserPort, ...ports.filter((port) => port !== browserPort)];
-}
-
-function schemeFor(containerPort: number): "http" | "https" | null {
-  if (HTTPS_CONTAINER_PORTS.has(containerPort)) return "https";
-  return HTTP_CONTAINER_PORTS.has(containerPort) ? "http" : null;
 }
 
 function browserHost(value: PublishedPortMapping["host_ip"]): string | null {

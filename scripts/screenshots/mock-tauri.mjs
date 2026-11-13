@@ -50,13 +50,13 @@ export function installTauriMock({ themeMode }) {
     service("demo-cache", "local-redis", "redis", "cache", 6379, "/Users/shane/Developer/local-stack", 710, "terminal", "iTerm2")
   ];
 
-  const mapping = (port) => ({ host_ip: "0.0.0.0", host_port: port, container_port: port, protocol: "tcp" });
+  const mapping = (port, webScheme = null) => ({ host_ip: "0.0.0.0", host_port: port, container_port: port, protocol: "tcp", web_scheme: webScheme });
   const containerListing = {
     available: true,
     message: null,
     containers: [
       { id: "4d2a92d5c814", name: "local-postgres", image: "postgres:16", state: "running", status: "Up 2 hours", ports: [5432], port_mappings: [mapping(5432)], compose_project: "local-stack", compose_service: "database", compose_working_dir: "/Users/shane/Developer/local-stack" },
-      { id: "e9396d773a34", name: "mailpit", image: "axllent/mailpit:latest", state: "running", status: "Up 2 hours", ports: [1025, 8025], port_mappings: [mapping(1025), mapping(8025)], compose_project: "local-stack", compose_service: "mail", compose_working_dir: "/Users/shane/Developer/local-stack" },
+      { id: "e9396d773a34", name: "mailpit", image: "axllent/mailpit:latest", state: "running", status: "Up 2 hours", ports: [1025, 8025], port_mappings: [mapping(1025), mapping(8025, "http")], compose_project: "local-stack", compose_service: "mail", compose_working_dir: "/Users/shane/Developer/local-stack" },
       { id: "91fd0fb2d381", name: "old-redis", image: "redis:7", state: "exited", status: "Exited (0) 3 days ago", ports: [], port_mappings: [], compose_project: null, compose_service: null, compose_working_dir: null }
     ]
   };

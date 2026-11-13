@@ -51,6 +51,7 @@ struct AppStateInner {
     control: control_service::ControlState,
     system_metrics: Mutex<SystemMetricsState>,
     compose_down_logs: docker::ComposeDownLogs,
+    port_probes: docker::PortProbes,
 }
 
 impl AppState {
@@ -86,10 +87,17 @@ async fn scan_workspace(state: State<'_, AppState>) -> Result<WorkspaceSnapshot,
 
 #[tauri::command]
 async fn list_containers(state: State<'_, AppState>) -> Result<ContainerListing, String> {
-    let demo = state.0.demo;
-    tauri::async_runtime::spawn_blocking(move || Ok(docker::list_containers(demo)))
-        .await
-        .map_err(|error| format!("Docker task failed: {error}"))?
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut listing = docker::list_containers(state.0.demo);
+        // Only the Docker tab needs web links; other listing callers must not start probes.
+        if !state.0.demo {
+            state.0.port_probes.annotate(&mut listing);
+        }
+        Ok(listing)
+    })
+    .await
+    .map_err(|error| format!("Docker task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -871,6 +879,7 @@ pub fn run() {
                 control,
                 system_metrics: Mutex::new(SystemMetricsState::default()),
                 compose_down_logs: docker::ComposeDownLogs::default(),
+                port_probes: docker::PortProbes::default(),
             }));
             app.manage(state.clone());
             #[cfg(unix)]
@@ -979,6 +988,7 @@ mod tests {
             control,
             system_metrics: Mutex::new(SystemMetricsState::default()),
             compose_down_logs: docker::ComposeDownLogs::default(),
+            port_probes: docker::PortProbes::default(),
         }))
     }
 
@@ -1065,6 +1075,7 @@ mod tests {
             control: control_service::ControlState::default(),
             system_metrics: Mutex::new(SystemMetricsState::default()),
             compose_down_logs: docker::ComposeDownLogs::default(),
+            port_probes: docker::PortProbes::default(),
         }));
 
         let snapshot = read_service_logs(&state, "service").unwrap();

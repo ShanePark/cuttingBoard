@@ -79,6 +79,8 @@ export interface PublishedPortMapping {
   host_port: number;
   container_port: number;
   protocol: string;
+  /** Set once the backend's network probe confirmed that the port serves a web page. */
+  web_scheme?: "http" | "https" | null;
 }
 
 export interface ContainerListing {

@@ -3,11 +3,13 @@ use std::{io, thread, time::Duration};
 use crate::models::{ContainerActionResult, ContainerListing, ContainerLogSnapshot};
 
 pub use compose_log::ComposeDownLogs;
+pub use port_probe::PortProbes;
 
 pub(crate) mod cli;
 mod compose_log;
 mod demo;
 mod parser;
+mod port_probe;
 
 const CONTAINER_LIST_FORMAT: &str = concat!(
     "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.Ports}}\t",

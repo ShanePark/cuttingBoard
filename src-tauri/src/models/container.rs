@@ -22,6 +22,16 @@ pub struct PublishedPortMapping {
     pub host_port: u16,
     pub container_port: u16,
     pub protocol: String,
+    /// Set when a network probe confirmed that the port serves HTTP or HTTPS.
+    #[serde(default)]
+    pub web_scheme: Option<WebScheme>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum WebScheme {
+    Http,
+    Https,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

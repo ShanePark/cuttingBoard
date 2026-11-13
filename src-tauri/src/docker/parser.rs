@@ -88,6 +88,7 @@ fn parse_published_port_mappings(value: &str) -> Vec<PublishedPortMapping> {
             host_port,
             container_port,
             protocol,
+            web_scheme: None,
         });
     }
     mappings.into_iter().collect()
@@ -129,24 +130,28 @@ mod tests {
                     host_port: 9999,
                     container_port: 53,
                     protocol: "udp".into(),
+                    web_scheme: None,
                 },
                 PublishedPortMapping {
                     host_ip: Some("0.0.0.0".into()),
                     host_port: 18080,
                     container_port: 80,
                     protocol: "tcp".into(),
+                    web_scheme: None,
                 },
                 PublishedPortMapping {
                     host_ip: Some("127.0.0.1".into()),
                     host_port: 1025,
                     container_port: 1025,
                     protocol: "tcp".into(),
+                    web_scheme: None,
                 },
                 PublishedPortMapping {
                     host_ip: Some("::".into()),
                     host_port: 18443,
                     container_port: 443,
                     protocol: "tcp".into(),
+                    web_scheme: None,
                 },
             ]
         );
@@ -161,6 +166,7 @@ mod tests {
                 host_port: 18443,
                 container_port: 443,
                 protocol: "tcp".into(),
+                web_scheme: None,
             }]
         );
     }
@@ -179,6 +185,7 @@ mod tests {
                 host_port: 5432,
                 container_port: 5432,
                 protocol: "tcp".into(),
+                web_scheme: None,
             }]
         );
         assert_eq!(item.compose_project.as_deref(), Some("stack"));

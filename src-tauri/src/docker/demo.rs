@@ -1,4 +1,4 @@
-use crate::models::{ContainerInfo, ContainerListing, PublishedPortMapping};
+use crate::models::{ContainerInfo, ContainerListing, PublishedPortMapping, WebScheme};
 
 pub(crate) fn container_listing() -> ContainerListing {
     ContainerListing {
@@ -16,6 +16,7 @@ pub(crate) fn container_listing() -> ContainerListing {
                     host_port: 5432,
                     container_port: 5432,
                     protocol: "tcp".into(),
+                    web_scheme: None,
                 }],
                 compose_project: Some("local-stack".into()),
                 compose_service: Some("database".into()),
@@ -34,12 +35,14 @@ pub(crate) fn container_listing() -> ContainerListing {
                         host_port: 1025,
                         container_port: 1025,
                         protocol: "tcp".into(),
+                        web_scheme: None,
                     },
                     PublishedPortMapping {
                         host_ip: Some("0.0.0.0".into()),
                         host_port: 8025,
                         container_port: 8025,
                         protocol: "tcp".into(),
+                        web_scheme: Some(WebScheme::Http),
                     },
                 ],
                 compose_project: Some("local-stack".into()),
