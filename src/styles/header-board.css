@@ -431,7 +431,6 @@
 .accent-runtime { background: var(--runtime); }
 .accent-other { background: var(--other); }
 .accent-container { background: var(--violet); }
-.container-tile.is-stopped { opacity: .72; }
 
 @media (prefers-reduced-motion: reduce) {
   .tab, .gear-button, .update-button, .group-title-button, .section-action, .info-button, .icon-only-button,

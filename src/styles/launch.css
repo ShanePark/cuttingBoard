@@ -106,17 +106,26 @@
 .launch-profile.is-idle .section-accent { background: var(--text-dim); opacity: .4; }
 .launch-profile.is-idle .launch-profile-heading h2 { color: var(--text-dim); }
 .section-state { flex: 0 0 auto; height: calc(20px - 2px * var(--tile-density)); display: inline-flex; align-items: center; padding: 0 8px; border: 0; border-radius: var(--radius-pill); background: var(--surface-alt); color: var(--text-dim); font-size: 11px; font-weight: 600; line-height: 1; letter-spacing: 0; text-transform: none; }
-/* A stopped task sinks below its section and loses its colour; only its controls keep full strength. */
+/* A stopped task or container sinks below its section and loses its colour; only its controls keep full strength.
+   A stopped container that is starting keeps its full card so the busy state reads clearly. */
 .task-card.state-stopped { background-image: none; }
-.task-card.state-stopped:not(.is-selected) { --task-idle-surface: color-mix(in srgb, var(--surface) 45%, var(--panel)); background-color: var(--task-idle-surface); }
-.task-card.state-stopped:not(.is-selected):hover { --task-idle-surface: color-mix(in srgb, var(--surface-hover) 45%, var(--panel)); }
-.task-card.state-stopped:not(.is-selected) .status-pip { box-shadow: 0 0 0 2.5px var(--task-idle-surface); }
+.task-card.state-stopped:not(.is-selected),
+.container-tile.is-stopped:not(.is-busy, .is-selected) { --task-idle-surface: color-mix(in srgb, var(--surface) 45%, var(--panel)); background-color: var(--task-idle-surface); }
+.task-card.state-stopped:not(.is-selected):hover,
+.container-tile.is-stopped:not(.is-busy, .is-selected):hover { --task-idle-surface: color-mix(in srgb, var(--surface-hover) 45%, var(--panel)); }
+.task-card.state-stopped:not(.is-selected) .status-pip,
+.container-tile.is-stopped:not(.is-busy, .is-selected) .status-pip { box-shadow: 0 0 0 2.5px var(--task-idle-surface); }
 /* The plate keeps its light ground so the glyph stays recognisable; the whole well just fades and loses saturation. */
-.task-card.state-stopped .icon-well { border-color: var(--hairline); opacity: .68; }
-.task-card.state-stopped .icon-well .tech-icon { filter: saturate(.35); }
-.task-card.state-stopped .tile-name { color: var(--text-dim); }
-.task-card.state-stopped .tile-metrics { border-color: transparent; background: transparent; box-shadow: inset 0 0 0 1px var(--hairline); }
-.task-card.state-stopped .port-chip { color: var(--text-dim); }
+.task-card.state-stopped .icon-well,
+.container-tile.is-stopped:not(.is-busy) .icon-well { border-color: var(--hairline); opacity: .68; }
+.task-card.state-stopped .icon-well .tech-icon,
+.container-tile.is-stopped:not(.is-busy) .icon-well .tech-icon { filter: saturate(.35); }
+.task-card.state-stopped .tile-name,
+.container-tile.is-stopped:not(.is-busy) .tile-name { color: var(--text-dim); }
+.task-card.state-stopped .tile-metrics,
+.container-tile.is-stopped:not(.is-busy) .tile-metrics { border-color: transparent; background: transparent; box-shadow: inset 0 0 0 1px var(--hairline); }
+.task-card.state-stopped .port-chip,
+.container-tile.is-stopped:not(.is-busy) .port-chip { color: var(--text-dim); }
 .task-card .metric-state.state-stopped { color: var(--text-dim); }
 .task-card .metric-state.state-running { color: var(--ok); }
 .task-card .metric-state.state-failed { color: var(--danger); }

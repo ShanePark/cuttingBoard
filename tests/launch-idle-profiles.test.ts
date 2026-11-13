@@ -51,9 +51,9 @@ test("collapsed stopped profiles render a non-interactive card stack behind one 
 test("idle profiles and stopped task cards carry their own muted styling", () => {
   assert.match(styles, /^\.launch-profile\.is-idle \{/m);
   assert.match(styles, /^\.section-state \{/m);
-  assert.match(styles, /^\.task-card\.state-stopped:not\(\.is-selected\) \{ --task-idle-surface:/m);
-  assert.match(styles, /^\.task-card\.state-stopped \.icon-well \{ border-color: var\(--hairline\); opacity: \.68; \}/m);
-  assert.match(styles, /^\.task-card\.state-stopped \.icon-well \.tech-icon \{ filter: saturate\(\.35\); \}/m);
+  assert.match(styles, /^\.task-card\.state-stopped:not\(\.is-selected\),\n\.container-tile\.is-stopped:not\(\.is-busy, \.is-selected\) \{ --task-idle-surface:/m);
+  assert.match(styles, /^\.task-card\.state-stopped \.icon-well,\n\.container-tile\.is-stopped:not\(\.is-busy\) \.icon-well \{ border-color: var\(--hairline\); opacity: \.68; \}/m);
+  assert.match(styles, /^\.task-card\.state-stopped \.icon-well \.tech-icon,\n\.container-tile\.is-stopped:not\(\.is-busy\) \.icon-well \.tech-icon \{ filter: saturate\(\.35\); \}/m);
   assert.match(styles, /^\.task-card \.metric-state\.state-stopped \{ color: var\(--text-dim\); \}/m);
   assert.match(styles, /^\.task-list\[hidden\] \{ display: none; \}/m);
   assert.match(styles, /^\.launch-profile-toggle \{/m);
